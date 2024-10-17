@@ -16,16 +16,26 @@ require_sudo() {
 }
 
 log_action() {
-  local status="$1"
+  local level="$1"
   local message="$2"
-  echo "$(date +'%Y-%m-%d %H:%M:%S') - [$status] - $message" >>"$LOG_FILE"
+  local current_time
+  current_time=$(date +'%Y-%m-%d %H:%M:%S')
+  case "$level" in
+    DEBUG|INFO|WARN|ERROR)
+      echo "$current_time - [$level] - $message" >>"$LOG_FILE"
+      ;;
+    *)
+      echo "$current_time - [UNKNOWN] - $message" >>"$LOG_FILE"
+      ;;
+  esac
 }
 
 safe_run() {
   if [[ "$dry_run" == true ]]; then
     echo "Dry run: $@"
+    log_action "DEBUG" "Dry run: $@"
   else
-    echo "Running command: $@" >>"$LOG_FILE"
+    log_action "INFO" "Running command: $@"
     "$@"
     local status=$?
     if [ $status -ne 0 ]; then
@@ -65,7 +75,7 @@ install_php_version() {
 
 configure_web_server_and_install_php() {
   local version="$1"
-  declare -A servers=(["apache2"]="Apache" ["nginx"]="Nginx" ["lighttpd"]="Lighttpd")
+  declare -A servers=( ["apache2"]="Apache" ["nginx"]="Nginx" ["lighttpd"]="Lighttpd" )
   local available_servers=()
 
   for service in "${!servers[@]}"; do
@@ -95,22 +105,22 @@ configure_web_server_and_install_php() {
   install_php_version "$version"
 
   case "$selected_server" in
-  apache2)
-    if systemctl status php$version-fpm &>/dev/null; then
-      echo -e "${YELLOW}Apache is using PHP-FPM...${NC}"
-      a2enconf "php$version-fpm"
-      systemctl restart apache2
-    else
-      echo -e "${YELLOW}Apache is not using PHP-FPM. Installing regular PHP module...${NC}"
-      a2dismod "php$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
-      a2enmod "php$version"
-      systemctl restart apache2
-    fi
-    ;;
-  nginx | lighttpd)
-    echo -e "${YELLOW}Configuring $selected_server to use PHP-FPM...${NC}"
-    echo -e "Update your config to point to: /run/php/php$version-fpm.sock"
-    ;;
+    apache2)
+      if systemctl status php$version-fpm &>/dev/null; then
+        echo -e "${YELLOW}Apache is using PHP-FPM...${NC}"
+        a2enconf "php$version-fpm"
+        systemctl restart apache2
+      else
+        echo -e "${YELLOW}Apache is not using PHP-FPM. Installing regular PHP module...${NC}"
+        a2dismod "php$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
+        a2enmod "php$version"
+        systemctl restart apache2
+      fi
+      ;;
+    nginx|lighttpd)
+      echo -e "${YELLOW}Configuring $selected_server to use PHP-FPM...${NC}"
+      echo -e "Update your config to point to: /run/php/php$version-fpm.sock"
+      ;;
   esac
 }
 
@@ -146,7 +156,7 @@ install_php_extensions() {
   fi
 
   echo -e "${YELLOW}Fetching installed PHP extensions for PHP $version...${NC}"
-  local installed_extensions=($(dpkg -l | grep "^ii" | grep "php$version-" | awk '{print $2}' | sort))
+  local installed_extensions=( $(dpkg -l | grep "^ii" | grep "php$version-" | awk '{print $2}' | sort) )
 
   if [[ ${#installed_extensions[@]} -eq 0 ]]; then
     echo -e "${RED}No PHP extensions are installed for PHP $version.${NC}"
@@ -156,7 +166,7 @@ install_php_extensions() {
   fi
 
   echo -e "${YELLOW}Fetching installable PHP extensions for PHP $version...${NC}"
-  local available_extensions=($(apt-cache pkgnames | grep "^php$version-"))
+  local available_extensions=( $(apt-cache pkgnames | grep "^php$version-") )
   local extensions_to_install=""
 
   echo "Installable PHP extensions for PHP $version:"
@@ -171,7 +181,8 @@ install_php_extensions() {
   done
 
   if [[ -n "$extensions_to_install" ]]; then
-    safe_run apt install -y $extensions_to_install
+    echo -e "${YELLOW}Installing selected extensions in parallel...${NC}"
+    echo "$extensions_to_install" | xargs -n1 -P4 -I{} safe_run apt install -y "{}"
     log_action "SUCCESS" "Extensions installed for PHP $version: $extensions_to_install"
     echo -e "${GREEN}Extensions installed for PHP $version: $extensions_to_install${NC}"
   else
@@ -231,6 +242,9 @@ serve() {
       shift
       root_dir="$1"
       ;;
+    --dry-run)
+      dry_run=true
+      ;;
     *)
       echo -e "${RED}Unknown argument: $1${NC}"
       return 1
@@ -285,7 +299,7 @@ display_usage() {
   echo -e "  ${GREEN}install <pecl_package>${NC}  Installs a PECL package (or multiple PECL packages separated by commas or spaces)."
   echo
   echo -e "  ${GREEN}serve${NC}                   Starts a PHP built-in web server from the current directory or specified root."
-  echo -e "                           Options: --host=<host> --port=<port> --root=<root_dir>"
+  echo -e "                           Options: --host=<host> --port=<port> --root=<root_dir> --dry-run"
   echo
   echo -e "  ${GREEN}run <php_version> <script_path>${NC}  Runs a PHP script using the specified PHP version."
   echo
@@ -325,6 +339,22 @@ remove_php_extension() {
   safe_run apt purge -y "php$version-$extension"
   log_action "SUCCESS" "Removed PHP extension $extension for PHP $version."
 }
+
+perform_system_checks() {
+  echo -e "${YELLOW}Performing system checks...${NC}"
+  if ! ping -c 1 google.com &>/dev/null; then
+    echo -e "${RED}No internet connection detected. Please check your network.${NC}"
+    exit 1
+  fi
+  local free_space
+  free_space=$(df / | tail -1 | awk '{print $4}')
+  if (( free_space < 50000 )); then
+    echo -e "${RED}Insufficient disk space. At least 50MB free space is required.${NC}"
+    exit 1
+  fi
+}
+
+perform_system_checks
 
 case "$1" in
 switch | s)
