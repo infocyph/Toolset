@@ -5,7 +5,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-LOG_FILE="/var/log/pexi.log"
+LOG_FILE="/var/log/phpx.log"
 dry_run=false
 
 require_sudo() {
@@ -14,20 +14,28 @@ require_sudo() {
     exit 1
   fi
 }
+
 log_action() {
   local status="$1"
   local message="$2"
   echo "$(date +'%Y-%m-%d %H:%M:%S') - [$status] - $message" >>"$LOG_FILE"
 }
+
 safe_run() {
-  "$@"
-  local status=$?
-  if [ $status -ne 0 ]; then
-    echo -e "${RED}Error occurred during: $@${NC}"
-    log_action "ERROR" "Failed to execute: $@"
-    exit $status
+  if [[ "$dry_run" == true ]]; then
+    echo "Dry run: $@"
+  else
+    echo "Running command: $@" >>"$LOG_FILE"
+    "$@"
+    local status=$?
+    if [ $status -ne 0 ]; then
+      echo -e "${RED}Error occurred during: $@${NC}"
+      log_action "ERROR" "Failed to execute: $@"
+      exit $status
+    fi
   fi
 }
+
 validate_php_version() {
   local version="$1"
   if ! [[ "$version" =~ ^[0-9]+\.[0-9]+$ ]]; then
@@ -35,6 +43,7 @@ validate_php_version() {
     exit 1
   fi
 }
+
 check_and_add_sury_repo() {
   if ! grep -q "^deb .\+sury" /etc/apt/sources.list /etc/apt/sources.list.d/*; then
     echo -e "${YELLOW}Sury repository not found. Adding it...${NC}"
@@ -45,6 +54,7 @@ check_and_add_sury_repo() {
     log_action "SUCCESS" "Sury repository added."
   fi
 }
+
 install_php_version() {
   local version="$1"
   validate_php_version "$version"
@@ -76,9 +86,16 @@ configure_web_server_and_install_php() {
   done
 
   read -rp "Select a web server to configure with PHP $version (enter number): " server_selection
+  while ! [[ "$server_selection" =~ ^[0-9]+$ && "$server_selection" -ge 1 && "$server_selection" -le ${#available_servers[@]} ]]; do
+    echo -e "${RED}Invalid selection. Please enter a number between 1 and ${#available_servers[@]}.${NC}"
+    read -rp "Select a web server to configure with PHP $version (enter number): " server_selection
+  done
   local selected_server="${available_servers[$((server_selection - 1))]}"
 
-  if [[ "$selected_server" == "apache2" ]]; then
+  install_php_version "$version"
+
+  case "$selected_server" in
+  apache2)
     if systemctl status php$version-fpm &>/dev/null; then
       echo -e "${YELLOW}Apache is using PHP-FPM...${NC}"
       a2enconf "php$version-fpm"
@@ -89,13 +106,14 @@ configure_web_server_and_install_php() {
       a2enmod "php$version"
       systemctl restart apache2
     fi
-  elif [[ "$selected_server" == "nginx" || "$selected_server" == "lighttpd" ]]; then
+    ;;
+  nginx | lighttpd)
     echo -e "${YELLOW}Configuring $selected_server to use PHP-FPM...${NC}"
     echo -e "Update your config to point to: /run/php/php$version-fpm.sock"
-  fi
-
-  install_php_version "$version"
+    ;;
+  esac
 }
+
 switch_php_version() {
   require_sudo
   local version="$1"
@@ -114,7 +132,6 @@ switch_php_version() {
   safe_run update-alternatives --set phar.phar "/usr/bin/phar.phar$version"
   echo -e "${GREEN}Switched PHP CLI to version $version.${NC}"
 
-  # Correct function call for configuring the web server
   configure_web_server_and_install_php "$version"
 }
 
@@ -124,26 +141,26 @@ install_php_extensions() {
 
   # Auto-detect the currently active PHP version if no version is provided
   if [[ -z "$version" ]]; then
-    version=$(detect_php_version)
+    version=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
     echo -e "${YELLOW}No PHP version provided. Using detected PHP version: $version${NC}"
   fi
 
   echo -e "${YELLOW}Fetching installed PHP extensions for PHP $version...${NC}"
-  installed_extensions=($(dpkg -l | grep "^ii" | grep "php$version-" | awk '{print $2}' | sort))
+  local installed_extensions=($(dpkg -l | grep "^ii" | grep "php$version-" | awk '{print $2}' | sort))
 
   if [[ ${#installed_extensions[@]} -eq 0 ]]; then
     echo -e "${RED}No PHP extensions are installed for PHP $version.${NC}"
   else
     echo -e "${GREEN}Installed PHP extensions for PHP $version:${NC}"
-    display_in_table "${installed_extensions[@]}"
+    printf '%s\n' "${installed_extensions[@]}"
   fi
 
   echo -e "${YELLOW}Fetching installable PHP extensions for PHP $version...${NC}"
-  available_extensions=($(apt-cache pkgnames | grep "^php$version-"))
+  local available_extensions=($(apt-cache pkgnames | grep "^php$version-"))
+  local extensions_to_install=""
 
-  filter_installed_extensions "${installed_extensions[@]}"
   echo "Installable PHP extensions for PHP $version:"
-  display_in_table "${available_extensions[@]}"
+  printf '%s\n' "${available_extensions[@]}"
 
   read -rp "Enter the numbers of the extensions you want to install (comma-separated or range): " extension_selection
   IFS=',' read -ra selection_array <<<"$extension_selection"
@@ -161,6 +178,7 @@ install_php_extensions() {
     echo -e "${YELLOW}No new extensions were selected for installation.${NC}"
   fi
 }
+
 install_composer() {
   require_sudo
   if command -v composer >/dev/null 2>&1; then
@@ -191,12 +209,12 @@ install_pecl_package() {
     log_action "SUCCESS" "$package installed successfully."
   done
 }
+
 serve() {
   local host="127.0.0.1"
   local port="8000"
   local root_dir
   root_dir=$(pwd)
-  local index_file=""
 
   # Check for optional host, port, and root arguments
   while [[ "$1" ]]; do
@@ -221,19 +239,39 @@ serve() {
     shift
   done
 
-  # Detect entry point (index.php)
-  index_file=$(detect_entry_point "$root_dir")
+  is_port_available "$port"
+  echo -e "${YELLOW}Serving from $root_dir on $host:$port${NC}"
+  php -S "$host:$port" -t "$root_dir"
+}
 
-  if [[ -n "$index_file" ]]; then
-    echo -e "${YELLOW}Serving from $index_file${NC}"
-    php -S "$host:$port" -t "$(dirname "$index_file")" "$index_file"
-  else
-    echo -e "${YELLOW}No specific entry point found, serving from $root_dir${NC}"
-    php -S "$host:$port" -t "$root_dir"
+is_port_available() {
+  local port="$1"
+  if lsof -i:"$port" &>/dev/null; then
+    echo -e "${RED}Port $port is already in use. Please choose another port.${NC}"
+    exit 1
   fi
 }
+
+run_php_script() {
+  local version="$1"
+  local script_path="$2"
+
+  if [[ ! -f "$script_path" ]]; then
+    echo -e "${RED}Error: Script file not found at $script_path.${NC}"
+    exit 1
+  fi
+
+  if ! command -v "/usr/bin/php$version" &>/dev/null; then
+    echo -e "${RED}PHP version $version is not installed.${NC}"
+    exit 1
+  fi
+
+  echo -e "${YELLOW}Running script with PHP $version...${NC}"
+  "/usr/bin/php$version" "$script_path"
+}
+
 display_usage() {
-  echo -e "${GREEN}Usage: phpx {switch|ext|install|serve} <php_version|composer|pecl_package>${NC}"
+  echo -e "${GREEN}Usage: phpx {switch|ext|install|serve|run|remove} <php_version|composer|pecl_package|script_path>${NC}"
   echo
   echo -e "${YELLOW}Commands:${NC}"
   echo -e "  ${GREEN}switch|s <php_version>${NC}    Switch to a specified PHP version, installing it if not found."
@@ -249,12 +287,43 @@ display_usage() {
   echo -e "  ${GREEN}serve${NC}                   Starts a PHP built-in web server from the current directory or specified root."
   echo -e "                           Options: --host=<host> --port=<port> --root=<root_dir>"
   echo
+  echo -e "  ${GREEN}run <php_version> <script_path>${NC}  Runs a PHP script using the specified PHP version."
+  echo
+  echo -e "  ${GREEN}remove <php_version>${NC}  Removes the specified PHP version, including PHP-CLI and PHP-FPM."
+  echo -e "  ${GREEN}remove <php_version> <extension>${NC}  Removes a specified PHP extension for a given version."
+  echo
   echo -e "${YELLOW}Examples:${NC}"
   echo -e "  ${GREEN}phpx switch 8.2${NC}         Switches to PHP 8.2, installs it if needed, and configures the web server."
   echo -e "  ${GREEN}phpx ext${NC}                Lists installed extensions for the currently active PHP version."
   echo -e "  ${GREEN}phpx install composer${NC}   Installs Composer globally and updates it."
   echo -e "  ${GREEN}phpx install xdebug,redis${NC}  Installs multiple PECL packages (xdebug and redis)."
   echo -e "  ${GREEN}phpx serve --host=192.168.0.1 --port=8080${NC}  Serves from the current directory at the specified host and port."
+  echo -e "  ${GREEN}phpx run 8.2 my_script.php${NC}  Runs the specified PHP script using PHP version 8.2."
+}
+
+remove_php_version() {
+  require_sudo
+  local version="$1"
+  validate_php_version "$version"
+
+  echo -e "${YELLOW}Removing PHP $version...${NC}"
+  safe_run apt purge -y "php$version" "php$version-cli" "php$version-fpm"
+  log_action "SUCCESS" "Removed PHP $version, PHP-CLI, and PHP-FPM."
+}
+
+remove_php_extension() {
+  require_sudo
+  local version="$1"
+  local extension="$2"
+
+  if [[ -z "$version" || -z "$extension" ]]; then
+    echo -e "${RED}Please provide both PHP version and extension to remove.${NC}"
+    exit 1
+  fi
+
+  echo -e "${YELLOW}Removing PHP extension $extension for PHP $version...${NC}"
+  safe_run apt purge -y "php$version-$extension"
+  log_action "SUCCESS" "Removed PHP extension $extension for PHP $version."
 }
 
 case "$1" in
@@ -276,6 +345,20 @@ install | i)
   ;;
 serve)
   serve "$@"
+  ;;
+run)
+  run_php_script "$2" "$3"
+  ;;
+remove)
+  if [[ -n "$2" && -n "$3" ]]; then
+    remove_php_extension "$2" "$3"
+  elif [[ -n "$2" ]]; then
+    remove_php_version "$2"
+  else
+    echo -e "${RED}Invalid usage. See help for details.${NC}"
+    display_usage
+    exit 1
+  fi
   ;;
 *)
   display_usage
