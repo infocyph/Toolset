@@ -60,6 +60,7 @@ configure_web_server_and_install_php() {
   local version="$1"
   declare -A servers=(["apache2"]="Apache" ["nginx"]="Nginx" ["lighttpd"]="Lighttpd")
   local available_servers=()
+  local service
 
   for service in "${!servers[@]}"; do
     if systemctl status "$service" &>/dev/null; then
@@ -74,6 +75,7 @@ configure_web_server_and_install_php() {
   fi
 
   echo -e "${YELLOW}Detected web servers:${NC}"
+  local i
   for i in "${!available_servers[@]}"; do
     echo "$((i + 1)). ${servers[${available_servers[$i]}]}"
   done
@@ -195,12 +197,29 @@ install_composer() {
 install_pecl_package() {
   require_sudo
   local packages="$1"
+
+  if [[ -z "$packages" ]]; then
+    echo -e "${RED}No PECL packages specified. Please provide package names.${NC}"
+    return 1
+  fi
+
   IFS=', ' read -ra package_list <<<"$packages"
+  local package
 
   for package in "${package_list[@]}"; do
     echo -e "${YELLOW}Installing PECL package: $package...${NC}"
-    pecl install "$package"
-    log_action "INFO" "$package installed successfully."
+    if pecl list | grep -q "^$package\\s"; then
+      echo -e "${GREEN}$package is already installed. Skipping...${NC}"
+      log_action "INFO" "$package is already installed. Skipped installation."
+    else
+      if ! pecl install "$package"; then
+        echo -e "${RED}Failed to install PECL package: $package.${NC}"
+        log_action "ERROR" "Failed to install $package."
+      else
+        echo -e "${GREEN}$package installed successfully.${NC}"
+        log_action "INFO" "$package installed successfully."
+      fi
+    fi
   done
 }
 
@@ -247,12 +266,16 @@ is_port_available() {
 }
 
 run_php_script() {
-  local version="$1"
-  local script_path="$2"
+  local version="$2"
+  local script_path="$1"
 
   if [[ ! -f "$script_path" ]]; then
     echo -e "${RED}Error: Script file not found at $script_path.${NC}"
     exit 1
+  fi
+
+  if [[ -z "$version" ]]; then
+    version=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
   fi
 
   if ! command -v "/usr/bin/php$version" &>/dev/null; then
@@ -274,14 +297,14 @@ display_usage() {
   echo -e "  ${GREEN}ext|extensions|x [php_version]${NC}       Show installed PHP extensions for a given version and allow the user to install new ones."
   echo -e "                           If no version is provided, the currently active PHP version is used."
   echo
-  echo -e "  ${GREEN}install composer${NC}        Installs Composer globally if not already installed and runs composer self-update."
+  echo -e "  ${GREEN}install composer${NC}        Installs Composer globally if not already installed."
   echo
   echo -e "  ${GREEN}install <pecl_package>${NC}  Installs a PECL package (or multiple PECL packages separated by commas or spaces)."
   echo
   echo -e "  ${GREEN}serve${NC}                   Starts a PHP built-in web server from the current directory or specified root."
-  echo -e "                           Options: --host=<host> --port=<port> --root=<root_dir> --dry-run"
+  echo -e "                           Options: --host=<host> --port=<port> --root=<root_dir>"
   echo
-  echo -e "  ${GREEN}run <php_version> <script_path>${NC}  Runs a PHP script using the specified PHP version."
+  echo -e "  ${GREEN}run <script_path> [php_version]${NC}  Runs a PHP script using the specified or currently active PHP version."
   echo
   echo -e "  ${GREEN}remove <php_version>${NC}  Removes the specified PHP version, including PHP-CLI and PHP-FPM."
   echo -e "  ${GREEN}remove <php_version> <extension>${NC}  Removes a specified PHP extension for a given version."
