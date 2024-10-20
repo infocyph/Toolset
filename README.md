@@ -1,6 +1,6 @@
 # Toolset
 
-Welcome to **Toolset**, a collection of essential scripts for managing Docker environments and PHP versions with ease. This repository includes powerful tools like `dockex` and `phpx` to automate various tasks, from Docker container management to switching PHP versions and managing extensions.
+Welcome to **Toolset**, a versatile set of scripts designed to streamline your Docker and PHP environment management tasks. This repository provides two key utilities: `dockex` for Docker container management, and `phpx` for PHP version and extension management.
 
 ## Table of Contents
 - [Installation](#installation)
@@ -15,10 +15,16 @@ Welcome to **Toolset**, a collection of essential scripts for managing Docker en
 
 ## Installation
 
-To start using the **Toolset**, clone this repository to your local machine:
+To start using **Toolset**, clone the repository to your local machine:
 
 ```bash
 git clone https://github.com/abmmhasan/Toolset.git
+```
+
+Make the scripts executable:
+
+```bash
+chmod +x Docker/dockex PHP/phpx
 ```
 
 ### Requirements
@@ -29,74 +35,92 @@ git clone https://github.com/abmmhasan/Toolset.git
 ## Scripts Overview
 
 ### dockex
-`dockex` is a Docker utility script designed to streamline container and service management. It automates tasks like starting, stopping, and managing Docker containers, networks, and volumes.
+
+`dockex` is a Docker management utility that simplifies common Docker operations. It allows you to manage containers, monitor resource usage, perform benchmarks, and backup/restore data.
 
 #### Key Features:
-- Manage Docker containers and images
-- Inspect and manipulate volumes and networks
-- Benchmark container performance
-- Simplified syntax for common Docker tasks
+- Manage Docker containers (start, stop, restart, etc.)
+- Inspect detailed container stats (CPU, memory, network, and more)
+- Benchmark containers using Apache Benchmark (ab)
+- Backup and restore container data
+- Dynamically update container resources (CPU, memory)
+- Interactive mode for container creation
 
 ### phpx
-`phpx` is a PHP version management script that makes switching between PHP versions easy, installing new extensions, and managing PHP configurations.
+
+`phpx` is a PHP management script that allows you to switch between PHP versions, manage extensions, and handle PHP-FPM and CLI configurations. It also offers built-in web server capabilities.
 
 #### Key Features:
 - Switch between multiple PHP versions
 - Install and manage PHP extensions
-- Modify PHP-FPM and CLI configurations
-- Automate composer installations
+- Serve a PHP application with a built-in PHP web server
+- Install Composer and PECL packages easily
+- Remove PHP versions and extensions when no longer needed
 
 ## Usage
 
 ### dockex Commands
 
 ```bash
-dockex [command] [options]
-```
-
-#### Help
-
-To see all available commands:
-
-```bash
-dockex --help
+dockex <container_name> <command> [options]
 ```
 
 #### Available Commands:
-- `dockex start <service>`: Start a specific Docker service.
-- `dockex stop <service>`: Stop a running Docker service.
-- `dockex restart <service>`: Restart a Docker service.
-- `dockex list`: List all running containers and services.
-- `dockex clean`: Remove all stopped containers, unused networks, and dangling images.
-- `dockex benchmark`: Benchmark container performance and view resource usage statistics.
+- **info** | **stats** | **inspect**: Show detailed information about a container's resource usage, IP, health status, environment variables, etc.
+- **logs**: Display container logs (optional: specify number of lines).
+- **start**: Start a stopped container.
+- **stop**: Stop a running container.
+- **restart**: Restart a container.
+- **benchmark**: Perform a stress test using Apache Benchmark.
+- **update_resources**: Dynamically update CPU and memory limits for a container.
+- **stream_logs**: Stream container logs in real-time.
+- **backup**: Backup container volume data.
+- **restore**: Restore container data from a backup.
+- **list**: List all Docker images, containers, networks, and volumes.
+- **create**: Interactively create a new Docker container.
+- **interactive**: Interactive mode for Docker commands.
 
-For detailed options and arguments, refer to the in-script help section by running `dockex --help`.
+#### Examples:
+```bash
+dockex my_container info         # Show detailed container info and resource usage
+dockex my_container logs 50      # Show the last 50 lines of logs
+dockex my_container start        # Start a stopped container
+dockex my_container benchmark 5  # Run a multi-node benchmark with 5 instances
+dockex my_container backup       # Backup data from a selected container volume
+dockex create nginx my_container # Create a new container using the nginx image
+```
 
 ### phpx Commands
 
 ```bash
-phpx [command] [options]
-```
-
-#### Help
-
-To see all available commands:
-
-```bash
-phpx --help
+phpx {switch|ext|install|serve|run|remove} <php_version|composer|pecl_package|script_path>
 ```
 
 #### Available Commands:
-- `phpx switch <version>`: Switch between PHP versions (CLI and FPM). If the version is not installed, the script prompts for installation.
-- `phpx ext <version>`: Manage PHP extensions. View installed extensions, and select new extensions to install.
-- `phpx install composer`: Install Composer globally if not already installed, and update it if it is.
-- `phpx install <extension>`: Install one or multiple PHP extensions using PECL.
+- **switch** | **s** `<php_version>`: Switch to a specified PHP version, installing it if not found. Also installs PHP-FPM if needed for Nginx or Lighttpd.
+- **ext** | **extensions** | **x** `[php_version]`: Show installed PHP extensions for a given version and allow new ones to be installed. Defaults to the current PHP version if none is provided.
+- **install composer**: Install Composer globally if not already installed.
+- **install** `<pecl_package>`: Install a PECL package (or multiple packages separated by commas).
+- **serve**: Start a PHP built-in web server from the current or specified root directory.
+- **run** `<script_path>` `[php_version]`: Run a PHP script using the specified or currently active PHP version.
+- **remove** `<php_version>`: Remove the specified PHP version (CLI and FPM).
+- **remove** `<php_version> <extension>`: Remove a specified PHP extension for a given version.
 
-For more information, use the `phpx --help` command to view a complete list of features and options.
+#### Examples:
+```bash
+phpx switch 8.2                       # Switch to PHP 8.2 and install if necessary
+phpx ext                              # Show installed extensions for the current PHP version
+phpx install composer                 # Install Composer globally
+phpx install xdebug,redis             # Install multiple PECL packages (xdebug and redis)
+phpx serve --host=192.168.0.1 --port=8080  # Serve the current directory at the specified host and port
+phpx run 8.2 my_script.php            # Run a PHP script using PHP version 8.2
+phpx remove 8.1                       # Remove PHP version 8.1
+phpx remove 8.2 xdebug                # Remove xdebug extension from PHP version 8.2
+```
 
 ## Contributing
 
-We welcome contributions! Feel free to submit issues, request new features, or submit pull requests to enhance **Toolset**. Follow the [GitHub Flow](https://guides.github.com/introduction/flow/) for contributions.
+We welcome contributions! Whether you're fixing bugs, adding new features, or improving documentation, feel free to submit issues or pull requests to enhance **Toolset**.
 
 ## License
 
