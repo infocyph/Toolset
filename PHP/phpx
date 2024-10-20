@@ -68,7 +68,7 @@ install_php_version() {
   fi
 }
 
-configure_web_server_and_install_php() {
+configure_web_server() {
   local version="$1"
   declare -A servers=(["apache2"]="Apache" ["nginx"]="Nginx" ["lighttpd"]="Lighttpd")
   local available_servers=()
@@ -82,7 +82,6 @@ configure_web_server_and_install_php() {
 
   if [[ ${#available_servers[@]} -eq 0 ]]; then
     echo -e "${YELLOW}No supported web servers (Apache, Nginx, Lighttpd) detected.${NC}"
-    install_php_version "$version"
     return 0
   fi
 
@@ -99,8 +98,6 @@ configure_web_server_and_install_php() {
   done
   local selected_server="${available_servers[$((server_selection - 1))]}"
 
-  install_php_version "$version"
-
   case "$selected_server" in
   apache2)
     if systemctl status php$version-fpm &>/dev/null; then
@@ -115,7 +112,7 @@ configure_web_server_and_install_php() {
     fi
     ;;
   nginx | lighttpd)
-    echo -e "${YELLOW}Configuring $selected_server to use PHP-FPM...${NC}"
+    echo -e "${YELLOW}Configure $selected_server to use PHP-FPM:${NC}"
     echo -e "Update your config to point to: /run/php/php$version-fpm.sock"
     ;;
   esac
@@ -127,19 +124,15 @@ switch_php_version() {
   if ! command -v "/usr/bin/php$version" &>/dev/null; then
     echo -e "${YELLOW}PHP $version is not installed.${NC}"
     check_and_add_sury_repo
-    configure_web_server_and_install_php "$version"
-  else
-    echo -e "${GREEN}PHP $version is already installed.${NC}"
-    log_action "INFO" "Switched to PHP $version"
+    install_php_version "$version"
   fi
 
-  # Set PHP CLI version using update-alternatives
+  # Set PHP version using update-alternatives
   update-alternatives --set php "/usr/bin/php$version"
   update-alternatives --set phar "/usr/bin/phar$version"
   update-alternatives --set phar.phar "/usr/bin/phar.phar$version"
-  echo -e "${GREEN}Switched PHP CLI to version $version.${NC}"
-
-  configure_web_server_and_install_php "$version"
+  echo -e "${GREEN}Switched PHP to version $version.${NC}"
+  configure_web_server "$version"
 }
 
 install_php_extensions() {
@@ -259,9 +252,11 @@ serve() {
   local host="127.0.0.1"
   local port="8000"
   local root_dir
+  local verbose=false
+  local router_file=""
   root_dir=$(pwd)
 
-  # Check for optional host, port, and root arguments
+  # Parse arguments
   while [[ "$1" ]]; do
     case $1 in
     --host)
@@ -276,6 +271,13 @@ serve() {
       shift
       root_dir="$1"
       ;;
+    --router)
+      shift
+      router_file="$1"
+      ;;
+    --verbose|-v)
+      verbose=true
+      ;;
     *)
       echo -e "${RED}Unknown argument: $1${NC}"
       return 1
@@ -284,16 +286,65 @@ serve() {
     shift
   done
 
-  is_port_available "$port"
-  echo -e "${YELLOW}Serving from $root_dir on $host:$port${NC}"
-  php -S "$host:$port" -t "$root_dir"
-}
+  # Verbose logging function
+  log() {
+    if [[ "$verbose" == true ]]; then
+      echo -e "$1"
+    fi
+  }
 
-is_port_available() {
-  local port="$1"
-  if lsof -i:"$port" &>/dev/null; then
-    echo -e "${RED}Port $port is already in use. Please choose another port.${NC}"
-    exit 1
+  # Check if the provided root directory exists
+  if [[ ! -d "$root_dir" ]]; then
+    echo -e "${RED}The root directory $root_dir does not exist.${NC}"
+    return 1
+  fi
+
+  if lsof -i:"$port" > /dev/null; then
+    echo -e "${RED}Port $1 is already in use.${NC}"
+    return 1
+  fi
+
+  # Check for common index files in prioritized directories
+  local index_files=(
+    "$root_dir/public/index.php"
+    "$root_dir/public/index.html"
+    "$root_dir/index.php"
+    "$root_dir/index.html"
+  )
+
+  local found_root_dir=""
+
+  for index_file in "${index_files[@]}"; do
+    if [[ -f "$index_file" ]]; then
+      found_root_dir=$(dirname "$index_file")
+      log "${GREEN}Found index file in: $found_root_dir${NC}"
+      break
+    fi
+  done
+
+  # If no index file is found, use the provided root directory
+  if [[ -z "$found_root_dir" ]]; then
+    echo -e "${YELLOW}No index.php or index.html found, using provided root directory: $root_dir${NC}"
+    found_root_dir="$root_dir"
+  fi
+
+  # Log details if verbose is enabled
+  log "${YELLOW}Root directory: $found_root_dir${NC}"
+  log "${YELLOW}Serving on $host:$port${NC}"
+
+  # Check for custom router
+  if [[ -n "$router_file" ]]; then
+    if [[ ! -f "$router_file" ]]; then
+      echo -e "${RED}The router file $router_file does not exist.${NC}"
+      return 1
+    else
+      log "${YELLOW}Using custom router file: $router_file${NC}"
+      php -S "$host:$port" -t "$found_root_dir" "$router_file"
+    fi
+  else
+    # Serve without router if no custom router is provided
+    log "${YELLOW}No custom router provided. Serving directly from $found_root_dir${NC}"
+    php -S "$host:$port" -t "$found_root_dir"
   fi
 }
 
