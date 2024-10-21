@@ -20,7 +20,7 @@ log_action() {
   local current_time
   current_time=$(date +'%Y-%m-%d %H:%M:%S')
   case "$level" in
-  DEBUG | INFO | WARN | ERROR)
+  DEBUG | INFO | WARN | ERROR | CRITICAL | SUCCESS)
     echo "$current_time - [$level] - $message" >>"$LOG_FILE"
     ;;
   *)
@@ -105,7 +105,7 @@ configure_web_server() {
       a2enconf "php$version-fpm"
       systemctl restart apache2
     else
-      echo -e "${YELLOW}Apache is not using PHP-FPM. Installing regular PHP module...${NC}"
+      echo -e "${YELLOW}Apache is not using PHP-FPM.${NC}"
       a2dismod "php$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
       a2enmod "php$version"
       systemctl restart apache2

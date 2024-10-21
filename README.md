@@ -1,6 +1,6 @@
 # Toolset
 
-Welcome to **Toolset**, a versatile set of scripts designed to streamline your Docker and PHP environment management tasks. This repository provides two key utilities: `dockex` for Docker container management, and `phpx` for PHP version and extension management.
+Welcome to **Toolset**, a versatile set of scripts designed to streamline your Linux based development environment management tasks. This repository provides two key utilities: `dockex` for Docker container management, and `phpx` for PHP version and extension management.
 
 ## Table of Contents
 - [Installation](#installation)

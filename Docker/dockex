@@ -332,10 +332,6 @@ interactive_mode() {
 }
 
 show_docker_listings() {
-  echo "=== Docker Information ==="
-  docker info
-
-  echo
   echo "=== Locally Available Images ==="
   docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}"
 
