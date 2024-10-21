@@ -531,6 +531,7 @@ trap "echo -e '${RED}Process interrupted. Exiting.${NC}'; log_action 'ERROR' 'Pr
 if [[ "$EUID" -eq 0 ]]; then
   if [[ ! -d "$LOG_DIR" ]]; then
     mkdir -p "$LOG_DIR"
+    chmod 755 "$LOG_DIR"
   fi
 else
   if [[ ! -d "$LOG_DIR" ]]; then
