@@ -8,9 +8,6 @@ NC='\033[0m'
 LOG_DIR="/var/log/phpx"
 LOG_FILE="$LOG_DIR/$(date +'%Y-%m-%d').log"
 
-# Ensure the log directory exists
-mkdir -p "$LOG_DIR"
-
 require_sudo() {
   if [[ "$EUID" -ne 0 ]]; then
     echo -e "${RED}Please run the script with sudo.${NC}"
@@ -529,6 +526,19 @@ perform_system_checks() {
 }
 
 trap "echo -e '${RED}Process interrupted. Exiting.${NC}'; log_action 'ERROR' 'Process interrupted by user'; exit 6" SIGINT SIGTERM
+
+# Ensure the log directory exists
+if [[ "$EUID" -eq 0 ]]; then
+  if [[ ! -d "$LOG_DIR" ]]; then
+    mkdir -p "$LOG_DIR"
+  fi
+else
+  if [[ ! -d "$LOG_DIR" ]]; then
+    echo -e "${RED}Log directory $LOG_DIR does not exist. Please run the script with sudo to create it.${NC}"
+    log_action "ERROR" "Log directory $LOG_DIR does not exist. Exiting."
+    exit 1
+  fi
+fi
 
 perform_system_checks
 
