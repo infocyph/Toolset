@@ -37,15 +37,36 @@ validate_php_version() {
   fi
 }
 
-check_and_add_sury_repo() {
-  if ! grep -q "^deb .\+sury" /etc/apt/sources.list /etc/apt/sources.list.d/*; then
-    echo -e "${YELLOW}Sury repository not found. Adding it...${NC}"
-    apt install -y ca-certificates apt-transport-https software-properties-common
-    wget -q https://packages.sury.org/php/apt.gpg -O- | tee /etc/apt/trusted.gpg.d/php-sury.gpg
-    echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" >/etc/apt/sources.list.d/php.list
-    apt update
-    log_action "INFO" "Sury repository added."
-  fi
+add_sury_repo_if_needed() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS=$ID
+    else
+        echo "Cannot determine the operating system."
+        exit 1
+    fi
+
+    if [ "$OS" == "ubuntu" ]; then
+        if ! grep -q "^deb .*ondrej/php" /etc/apt/sources.list /etc/apt/sources.list.d/*; then
+            echo "Adding the Sury PPA for Ubuntu."
+            sudo apt update
+            sudo apt install -y software-properties-common
+            sudo add-apt-repository ppa:ondrej/php
+            sudo apt update
+        fi
+    elif [ "$OS" == "debian" ] || [ -n "$(grep -i 'debian' /etc/os-release)" ]; then
+        if ! grep -q "^deb .*packages.sury.org/php" /etc/apt/sources.list /etc/apt/sources.list.d/*; then
+            echo "Adding the Sury repository for Debian."
+            sudo apt update
+            sudo apt install -y apt-transport-https lsb-release ca-certificates curl
+            curl -fsSL https://packages.sury.org/php/apt.gpg | sudo tee /etc/apt/trusted.gpg.d/sury-php.gpg > /dev/null
+            echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/sury-php.list
+            sudo apt update
+        fi
+    else
+        echo "Unsupported OS for this script."
+        exit 1
+    fi
 }
 
 install_php_version() {
@@ -147,7 +168,7 @@ switch_php_version() {
   local version="$1"
   if ! command -v "/usr/bin/php$version" &>/dev/null; then
     echo -e "${YELLOW}PHP $version is not installed.${NC}"
-    check_and_add_sury_repo
+    add_sury_repo_if_needed
     install_php_version "$version"
   fi
 
