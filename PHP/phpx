@@ -5,8 +5,33 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-LOG_DIR="/var/log/phpx"
-LOG_FILE="$LOG_DIR/$(date +'%Y-%m-%d').log"
+setup_logging() {
+  local LOG_DIR="/var/log/phpx"
+  local USER_LOG_DIR="$HOME/.local/phpx_logs"
+  LOG_FILE=""
+
+  if [[ "$EUID" -eq 0 ]]; then
+    if [[ ! -d "$LOG_DIR" ]]; then
+      mkdir -p "$LOG_DIR"
+      chmod 755 "$LOG_DIR"
+      chown root:root "$LOG_DIR"
+    fi
+    LOG_FILE="$LOG_DIR/$(date +'%Y-%m-%d').log"
+  else
+    if [[ ! -d "$USER_LOG_DIR" ]]; then
+      mkdir -p "$USER_LOG_DIR"
+    fi
+    LOG_FILE="$USER_LOG_DIR/$(date +'%Y-%m-%d').log"
+    echo -e "${YELLOW}Sudoless logs will be stored in $USER_LOG_DIR.${NC}"
+  fi
+
+  # Ensure the log file can be created/written to
+  touch "$LOG_FILE" 2>/dev/null
+  if [[ $? -ne 0 ]]; then
+    echo -e "${RED}Permission denied: Unable to write to $LOG_FILE.${NC}"
+    exit 1
+  fi
+}
 
 require_sudo() {
   if [[ "$EUID" -ne 0 ]]; then
@@ -504,7 +529,6 @@ remove_php_extension() {
 }
 
 perform_system_checks() {
-  echo -e "${YELLOW}Performing system checks...${NC}"
   log_action "INFO" "Performing system checks."
   if ! ping -c 1 google.com &>/dev/null; then
     echo -e "${RED}No internet connection detected. Please check your network.${NC}"
@@ -527,20 +551,7 @@ perform_system_checks() {
 
 trap "echo -e '${RED}Process interrupted. Exiting.${NC}'; log_action 'ERROR' 'Process interrupted by user'; exit 6" SIGINT SIGTERM
 
-# Ensure the log directory exists
-if [[ "$EUID" -eq 0 ]]; then
-  if [[ ! -d "$LOG_DIR" ]]; then
-    mkdir -p "$LOG_DIR"
-    chmod 755 "$LOG_DIR"
-  fi
-else
-  if [[ ! -d "$LOG_DIR" ]]; then
-    echo -e "${RED}Log directory $LOG_DIR does not exist. Please run the script with sudo to create it.${NC}"
-    log_action "ERROR" "Log directory $LOG_DIR does not exist. Exiting."
-    exit 1
-  fi
-fi
-
+setup_logging
 perform_system_checks
 
 case "$1" in
