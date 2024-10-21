@@ -110,6 +110,30 @@ configure_web_server() {
       a2enmod "php$version"
       systemctl restart apache2
     fi
+
+    local apache_needs_restart=false
+    if apache2ctl -M | grep -q "proxy_fcgi"; then
+      echo -e "${YELLOW}Apache is configured to use PHP-FPM (Update SetHandler afterwards, if necessary)${NC}"
+      local current_fpm_conf=$(ls /etc/apache2/conf-enabled/php*-fpm.conf 2>/dev/null | awk -F'/' '{print $5}' | sed 's/.conf//')
+      if [ -n "$current_fpm_conf" ]; then
+        a2disconf "$current_fpm_conf"
+        apache_needs_restart=true
+      fi
+      if [ -f "/etc/apache2/conf-available/php$version-fpm.conf" ]; then
+        a2enconf "php$version-fpm"
+        apache_needs_restart=true
+      fi
+    else
+      echo -e "${YELLOW}Apache is not using PHP-FPM.${NC}"
+      local current_php_version=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+      a2dismod "php$current_php_version"
+      a2enmod "php$version"
+      apache_needs_restart=true
+    fi
+    if [ "$apache_needs_restart" = true ]; then
+      echo -e "${YELLOW}Restarting Apache...${NC}"
+      systemctl restart apache2
+    fi
     ;;
   nginx | lighttpd)
     echo -e "${YELLOW}Configure $selected_server to use PHP-FPM:${NC}"
@@ -153,8 +177,8 @@ install_php_extensions() {
   else
     echo -e "${GREEN}Installed PHP extensions for PHP $version:${NC}"
     for i in "${!installed_extensions[@]}"; do
-      printf "%2d. %-20s" $((i+1)) "${installed_extensions[$i]}"
-      if (( (i+1) % 5 == 0 )); then
+      printf "%2d. %-20s" $((i + 1)) "${installed_extensions[$i]}"
+      if (((i + 1) % 5 == 0)); then
         echo ""
       fi
     done
@@ -166,8 +190,8 @@ install_php_extensions() {
 
   echo "Installable PHP extensions for PHP $version:"
   for i in "${!available_extensions[@]}"; do
-    printf "%2d. %-20s" $((i+1)) "${available_extensions[$i]}"
-    if (( (i+1) % 5 == 0 )); then
+    printf "%2d. %-20s" $((i + 1)) "${available_extensions[$i]}"
+    if (((i + 1) % 5 == 0)); then
       echo ""
     fi
   done
@@ -275,7 +299,7 @@ serve() {
       shift
       router_file="$1"
       ;;
-    --verbose|-v)
+    --verbose | -v)
       verbose=true
       ;;
     *)
@@ -299,7 +323,7 @@ serve() {
     return 1
   fi
 
-  if lsof -i:"$port" > /dev/null; then
+  if lsof -i:"$port" >/dev/null; then
     echo -e "${RED}Port $1 is already in use.${NC}"
     return 1
   fi
