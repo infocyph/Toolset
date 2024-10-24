@@ -201,14 +201,14 @@ switch_php_version() {
   if ! command -v "/usr/bin/php$version" &>/dev/null; then
     echo -e "${YELLOW}PHP $version is not installed.${NC}"
     log_action "INFO" "PHP $version is not installed."
-    add_sury_repo_if_needed
+#    add_sury_repo_if_needed
     install_php_version "$version"
   fi
 
   # Set PHP version using update-alternatives
-  update-alternatives --set php "/usr/bin/php$version"
-  update-alternatives --set phar "/usr/bin/phar$version"
-  update-alternatives --set phar.phar "/usr/bin/phar.phar$version"
+  update-alternatives --set php "/usr/bin/php$version" > /dev/null
+  update-alternatives --set phar "/usr/bin/phar$version" > /dev/null
+  update-alternatives --set phar.phar "/usr/bin/phar.phar$version" > /dev/null
   echo -e "${GREEN}Switched PHP to version $version.${NC}"
   log_action "INFO" "Switched to PHP version $version."
   configure_web_server "$version"
@@ -263,12 +263,12 @@ install_php_extensions() {
   for selection in "${selection_array[@]}"; do
     # Check if the selection is a number
     if [[ "$selection" =~ ^[0-9]+$ && "$selection" -ge 1 && "$selection" -le ${#available_extensions[@]} ]]; then
-      extensions_to_install+="${available_extensions[$((selection - 1))]} "
+      extensions_to_install+="php$version-${available_extensions[$((selection - 1))]} "
     else
       # Loop through available_extensions to find a match by name
       for ext in "${available_extensions[@]}"; do
         if [[ "$ext" == "$selection" ]]; then
-          extensions_to_install+="$ext "
+          extensions_to_install+="php$version-$ext "
           break
         fi
       done
@@ -276,9 +276,12 @@ install_php_extensions() {
   done
 
   if [[ -n "$extensions_to_install" ]]; then
-    echo -e "${YELLOW}Installing selected extensions in parallel...${NC}"
+    echo -e "${YELLOW}Installing selected extensions...${NC}"
     log_action "INFO" "Installing extensions: $extensions_to_install."
-    echo "$extensions_to_install" | xargs -n1 -P4 -I{} apt install -y "php$version-{}"
+
+    # Install all extensions in one command
+    sudo apt install -y "$extensions_to_install"
+
     log_action "INFO" "Installed extensions: $extensions_to_install for PHP $version."
     echo -e "${GREEN}Extensions installed for PHP $version: $extensions_to_install${NC}"
   fi
