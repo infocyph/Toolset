@@ -55,7 +55,7 @@ sudo curl -fsSL "https://raw.githubusercontent.com/abmmhasan/Toolset/main/Docker
 ### dockex Commands
 
 ```bash
-dockex <container_name> <command> [options]
+dockex <command> [container_name] [options]
 ```
 
 #### Available Commands:

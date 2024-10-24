@@ -2,7 +2,7 @@
 
 # Show usage information
 show_usage() {
-  echo "Usage: dockex <container_name> <command> [options]"
+  echo "Usage: dockex <command> <container_name> [options]"
   echo
   echo "Available commands:"
   echo "  info | stats | inspect - Show detailed information about the container including:"
