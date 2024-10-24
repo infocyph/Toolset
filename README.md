@@ -92,8 +92,8 @@ phpx {switch|ext|install|serve|run|remove} <php_version|composer|pecl_package|sc
 #### Available Commands:
 - **switch** | **s** `<php_version>`: Switch to a specified PHP version, installing it if not found. Also installs PHP-FPM if needed for Nginx or Lighttpd.
 - **ext** | **extensions** | **x** `[php_version]`: Show installed PHP extensions for a given version and allow new ones to be installed. Defaults to the current PHP version if none is provided.
-- **install composer**: Install Composer globally if not already installed.
-- **install** `<pecl_package>`: Install a PECL package (or multiple packages separated by commas).
+- **install** | **i** **composer**: Install Composer globally if not already installed.
+- **install** | **i** `<pecl_package>`: Install a PECL package (or multiple packages separated by commas).
 - **serve**: Start a PHP built-in web server from the current or specified root directory.
 - **run** `<script_path>` `[php_version]`: Run a PHP script using the specified or currently active PHP version.
 - **remove** `<php_version>`: Remove the specified PHP version (CLI and FPM).

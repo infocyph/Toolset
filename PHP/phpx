@@ -482,9 +482,9 @@ display_usage() {
   echo -e "  ${GREEN}ext|extensions|x [php_version]${NC}       Show installed PHP extensions for a given version and allow the user to install new ones."
   echo -e "                           If no version is provided, the currently active PHP version is used."
   echo
-  echo -e "  ${GREEN}install composer${NC}        Installs Composer globally if not already installed."
+  echo -e "  ${GREEN}install|i composer${NC}        Installs Composer globally if not already installed."
   echo
-  echo -e "  ${GREEN}install <pecl_package>${NC}  Installs a PECL package (or multiple PECL packages separated by commas or spaces)."
+  echo -e "  ${GREEN}install|i <pecl_package>${NC}  Installs a PECL package (or multiple PECL packages separated by commas or spaces)."
   echo
   echo -e "  ${GREEN}serve${NC}                   Starts a PHP built-in web server from the current directory or specified root."
   echo -e "                           Options: --host=<host> --port=<port> --root=<root_dir>"
