@@ -2,7 +2,7 @@
 
 # Show usage information
 show_usage() {
-  echo "Usage: dockex <command> <container_name> [options]"
+  echo "Usage: dockex <command> [container_name] [options]"
   echo
   echo "Available commands:"
   echo "  info | stats | inspect - Show detailed information about the container including:"
@@ -47,7 +47,7 @@ show_usage() {
   echo "  create       - Interactively create a new Docker container from an image."
   echo "                Usage: dockex create <image_name> [container_name]"
   echo
-  echo "  interactive  - Interactive mode for Docker commands."
+  echo "  cleanup  - Clean up Docker containers, images, volumes, and networks."
   echo
   echo "Examples:"
   echo "  dockex my_container info         # Show detailed container info and resource usage"
@@ -254,83 +254,6 @@ restore_container_data() {
   echo "Restore completed. Data restored from $backup_zip_file"
 }
 
-# Interactive mode for Docker commands
-interactive_mode() {
-  echo "Interactive Docker Command Menu"
-  echo "Please select an option:"
-  select command in "Info" "Logs" "Start" "Stop" "Restart" "Stats" "Benchmark" "Update Resources" "Backup" "Restore" "Exit"; do
-    case $command in
-    Info)
-      echo "Enter the container name:"
-      read container_name
-      view_container_info "$container_name"
-      ;;
-    Logs)
-      echo "Enter the container name:"
-      read container_name
-      echo "How many lines of logs do you want to see?"
-      read lines
-      view_logs "$container_name" "$lines"
-      ;;
-    Start)
-      echo "Enter the container name:"
-      read container_name
-      start_container "$container_name"
-      ;;
-    Stop)
-      echo "Enter the container name:"
-      read container_name
-      stop_container "$container_name"
-      ;;
-    Restart)
-      echo "Enter the container name:"
-      read container_name
-      restart_container "$container_name"
-      ;;
-    Stats)
-      echo "Enter the container name:"
-      read container_name
-      view_container_info "$container_name"
-      ;;
-    Benchmark)
-      echo "Enter the container name:"
-      read container_name
-      echo "Enter number of instances (default 3):"
-      read instances
-      echo "Enter number of requests (default 100):"
-      read requests
-      echo "Enter concurrency level (default 10):"
-      read concurrency
-      benchmark "$container_name" "$instances" "$requests" "$concurrency"
-      ;;
-    "Update Resources")
-      echo "Enter the container name:"
-      read container_name
-      update_container_resources "$container_name"
-      ;;
-    Backup)
-      echo "Enter the container name:"
-      read container_name
-      backup_container_data "$container_name"
-      ;;
-    Restore)
-      echo "Enter the container name:"
-      read container_name
-      echo "Enter backup zip file path:"
-      read backup_zip_file
-      restore_container_data "$container_name" "$backup_zip_file"
-      ;;
-    Exit)
-      echo "Exiting..."
-      break
-      ;;
-    *)
-      echo "Invalid option"
-      ;;
-    esac
-  done
-}
-
 show_docker_listings() {
   echo "=== Locally Available Images ==="
   docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}"
@@ -353,8 +276,8 @@ show_docker_listings() {
 }
 
 create_new_container() {
-  local image_name=$1
-  local container_name=$2
+  local image_name=$2
+  local container_name=$1
 
   echo "=== Starting Docker Container Creation ==="
 
@@ -486,6 +409,15 @@ benchmark() {
   echo "  Multi-node benchmark: $instances instances, each performing $requests requests with concurrency of $concurrency."
 }
 
+cleanup() {
+  echo "Cleaning up..."
+  docker container prune -f
+  docker image prune -f
+  docker volume prune -f
+  docker network prune -f
+  echo "Cleanup complete."
+}
+
 # Parse command-line arguments and call appropriate function
 if [ "$#" -lt 1 ]; then
   echo "Error: Missing arguments."
@@ -588,8 +520,8 @@ restore)
   fi
   restore_container_data "$container_name" "$3"
   ;;
-interactive)
-  interactive_mode
+cleanup)
+  cleanup
   ;;
 *)
   echo "Error: Unknown command '$command'."

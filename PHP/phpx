@@ -201,7 +201,6 @@ switch_php_version() {
   if ! command -v "/usr/bin/php$version" &>/dev/null; then
     echo -e "${YELLOW}PHP $version is not installed.${NC}"
     log_action "INFO" "PHP $version is not installed."
-#    add_sury_repo_if_needed
     install_php_version "$version"
   fi
 
@@ -494,6 +493,8 @@ display_usage() {
   echo -e "  ${GREEN}remove <php_version>${NC}  Removes the specified PHP version, including PHP-CLI and PHP-FPM."
   echo -e "  ${GREEN}remove <php_version> <extension>${NC}  Removes a specified PHP extension for a given version."
   echo
+  echo -e "  ${GREEN}sury${NC} Adds the Sury PPA for the currently installed operating system."
+  echo
   echo -e "${YELLOW}Examples:${NC}"
   echo -e "  ${GREEN}phpx switch 8.2${NC}         Switches to PHP 8.2, installs it if needed, and configures the web server."
   echo -e "  ${GREEN}phpx ext${NC}                Lists installed extensions for the currently active PHP version."
@@ -590,6 +591,9 @@ remove)
     display_usage
     exit 1
   fi
+  ;;
+sury)
+  add_sury_repo_if_needed
   ;;
 *)
   display_usage

@@ -37,7 +37,7 @@ sudo curl -fsSL "https://raw.githubusercontent.com/abmmhasan/Toolset/main/Docker
 - Benchmark containers using Apache Benchmark (ab)
 - Backup and restore container data
 - Dynamically update container resources (CPU, memory)
-- Interactive mode for container creation
+- Cleanup images, containers, networks and volumes
 
 ### phpx
 
@@ -71,7 +71,7 @@ dockex <command> [container_name] [options]
 - **restore**: Restore container data from a backup.
 - **list**: List all Docker images, containers, networks, and volumes.
 - **create**: Interactively create a new Docker container.
-- **interactive**: Interactive mode for Docker commands.
+- **cleanup**: Remove all Docker images, containers, networks and volumes. 
 
 #### Examples:
 ```bash
@@ -98,6 +98,7 @@ phpx {switch|ext|install|serve|run|remove} <php_version|composer|pecl_package|sc
 - **run** `<script_path>` `[php_version]`: Run a PHP script using the specified or currently active PHP version.
 - **remove** `<php_version>`: Remove the specified PHP version (CLI and FPM).
 - **remove** `<php_version> <extension>`: Remove a specified PHP extension for a given version.
+- **sury**: Add the Sury PPA for the current operating system. 
 
 #### Examples:
 ```bash
