@@ -17,12 +17,12 @@ Welcome to **Toolset**, a versatile set of scripts designed to streamline your L
 
 phpx: 
 ```bash
-sudo curl -fsSL "https://raw.githubusercontent.com/abmmhasan/Toolset/main/PHP/phpx" -o /usr/local/bin/phpx && sudo chmod +x /usr/local/bin/phpx
+sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/PHP/phpx" -o /usr/local/bin/phpx && sudo chmod +x /usr/local/bin/phpx
 ```
 
 dockex:
 ```bash
-sudo curl -fsSL "https://raw.githubusercontent.com/abmmhasan/Toolset/main/Docker/dockex" -o /usr/local/bin/dockex && sudo chmod +x /usr/local/bin/dockex
+sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Docker/dockex" -o /usr/local/bin/dockex && sudo chmod +x /usr/local/bin/dockex
 ```
 
 ## Scripts Overview
