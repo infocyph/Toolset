@@ -47,7 +47,11 @@ show_usage() {
   echo "  create       - Interactively create a new Docker container from an image."
   echo "                Usage: dockex create <image_name> [container_name]"
   echo
-  echo "  cleanup  - Clean up Docker containers, images, volumes, and networks."
+  echo "  cleanup      - Clean up Docker containers, images, volumes, and networks."
+  echo "                Usage: dockex cleanup [unused|aggressive|all]"
+  echo "                - unused: Safe cleanup of unused resources (default)."
+  echo "                - aggressive: Removes all unused resources, including unreferenced images."
+  echo "                - all: Removes all Docker resources (containers, images, volumes, networks)."
   echo
   echo "Examples:"
   echo "  dockex my_container info         # Show detailed container info and resource usage"
@@ -410,11 +414,108 @@ benchmark() {
 }
 
 cleanup() {
-  echo "Cleaning up..."
-  docker container prune -f
-  docker image prune -f
-  docker volume prune -f
-  docker network prune -f
+  echo "Starting cleanup..."
+  local cleanup_type=${1:-"unused"}  # Default to "unused" cleanup
+
+  case $cleanup_type in
+    unused)
+      echo "Warning: This will perform a safe cleanup of unused resources."
+      echo "The following resources will be removed if unused:"
+
+      echo "Containers:"
+      docker container ls -f "status=exited" --format "  - {{.ID}}: {{.Names}}"
+
+      echo "Dangling Images:"
+      docker images -f "dangling=true" --format "  - {{.ID}}: {{.Repository}}:{{.Tag}}"
+
+      echo "Volumes:"
+      docker volume ls -f "dangling=true" --format "  - {{.Name}}"
+
+      echo "Networks:"
+      docker network ls -f "type=custom" -f "dangling=true" --format "  - {{.Name}}"
+
+      read -r -p "Proceed with safe cleanup? (y/N): " confirm
+      if [[ "$confirm" != [yY] ]]; then
+        echo "Cleanup aborted."
+        return
+      fi
+
+      docker container prune -f
+      docker image prune -f
+      docker volume prune -f
+      docker network prune -f
+      docker system prune -f
+      ;;
+
+    aggressive)
+      echo "Warning: This will perform an aggressive cleanup, removing all unused resources."
+      echo "The following resources will be removed if unused:"
+
+      echo "Containers:"
+      docker container ls -a --format "  - {{.ID}}: {{.Names}}"
+
+      echo "Images:"
+      docker images --format "  - {{.ID}}: {{.Repository}}:{{.Tag}}"
+
+      echo "Volumes:"
+      docker volume ls --format "  - {{.Name}}"
+
+      echo "Networks:"
+      docker network ls -f "type=custom" --format "  - {{.Name}}"
+
+      read -r -p "Proceed with aggressive cleanup? (y/N): " confirm
+      if [[ "$confirm" != [yY] ]]; then
+        echo "Cleanup aborted."
+        return
+      fi
+
+      docker container prune -f
+      docker image prune -a -f
+      docker volume prune -f
+      docker network prune -f
+      docker system prune -f
+      ;;
+
+    all)
+      echo "Warning: This will remove all Docker resources, including the following:"
+
+      echo "Running Containers:"
+      docker ps --format "  - {{.ID}}: {{.Names}}"
+
+      echo "All Containers:"
+      docker container ls -a --format "  - {{.ID}}: {{.Names}}"
+
+      echo "All Images:"
+      docker images --format "  - {{.ID}}: {{.Repository}}:{{.Tag}}"
+
+      echo "All Volumes:"
+      docker volume ls --format "  - {{.Name}}"
+
+      echo "User-Defined Networks:"
+      docker network ls -f "type=custom" --format "  - {{.Name}}"
+
+      read -r -p "Proceed with complete removal of all Docker resources? (y/N): " confirm
+      if [[ "$confirm" != [yY] ]]; then
+        echo "Cleanup aborted."
+        return
+      fi
+
+      echo "Stopping all running containers..."
+      docker stop "$(docker ps -q)" 2>/dev/null
+
+      echo "Removing all containers, images, volumes, and user-defined networks..."
+      docker container rm -f "$(docker ps -aq)" 2>/dev/null
+      docker rmi -f "$(docker images -q)" 2>/dev/null
+      docker volume rm -f "$(docker volume ls -q)" 2>/dev/null
+      docker network rm "$(docker network ls -q | grep -vE 'bridge|host|none')" 2>/dev/null
+      ;;
+
+    *)
+      echo "Invalid option. Usage: cleanup [unused|aggressive|all]"
+      return 1
+      ;;
+  esac
+
   echo "Cleanup complete."
 }
 
@@ -521,7 +622,7 @@ restore)
   restore_container_data "$container_name" "$3"
   ;;
 cleanup)
-  cleanup
+  cleanup "${2:-unused}"
   ;;
 *)
   echo "Error: Unknown command '$command'."
