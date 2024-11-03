@@ -257,34 +257,37 @@ install_php_extensions() {
 
   read -rp "Enter the numbers or names of the extensions you want to install (comma-separated or range): " extension_selection
   IFS=',' read -ra selection_array <<<"$extension_selection"
-  local extensions_to_install=""
+  local extensions_to_install=()
 
   for selection in "${selection_array[@]}"; do
     # Check if the selection is a number
     if [[ "$selection" =~ ^[0-9]+$ && "$selection" -ge 1 && "$selection" -le ${#available_extensions[@]} ]]; then
-      extensions_to_install+="php$version-${available_extensions[$((selection - 1))]} "
+      extensions_to_install+=("php$version-${available_extensions[$((selection - 1))]}")
     else
       # Loop through available_extensions to find a match by name
       for ext in "${available_extensions[@]}"; do
         if [[ "$ext" == "$selection" ]]; then
-          extensions_to_install+="php$version-$ext "
+          extensions_to_install+=("php$version-$ext")
           break
         fi
       done
     fi
   done
 
-  if [[ -n "$extensions_to_install" ]]; then
+  if [[ ${#extensions_to_install[@]} -gt 0 ]]; then
     echo -e "${YELLOW}Installing selected extensions...${NC}"
-    log_action "INFO" "Installing extensions: $extensions_to_install."
+    log_action "INFO" "Installing extensions: ${extensions_to_install[*]}."
 
     # Install all extensions in one command
-    apt install -y "$extensions_to_install"
+    apt install -y "${extensions_to_install[@]}"
 
-    log_action "INFO" "Installed extensions: $extensions_to_install for PHP $version."
-    echo -e "${GREEN}Extensions installed for PHP $version: $extensions_to_install${NC}"
+    log_action "INFO" "Installed extensions: ${extensions_to_install[*]} for PHP $version."
+    echo -e "${GREEN}Extensions installed for PHP $version: ${extensions_to_install[*]}${NC}"
+  else
+    echo -e "${YELLOW}No valid extensions selected for installation.${NC}"
   fi
 }
+
 
 install_composer() {
   require_sudo
