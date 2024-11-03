@@ -279,7 +279,7 @@ install_php_extensions() {
     log_action "INFO" "Installing extensions: $extensions_to_install."
 
     # Install all extensions in one command
-    sudo apt install -y "$extensions_to_install"
+    apt install -y "$extensions_to_install"
 
     log_action "INFO" "Installed extensions: $extensions_to_install for PHP $version."
     echo -e "${GREEN}Extensions installed for PHP $version: $extensions_to_install${NC}"
