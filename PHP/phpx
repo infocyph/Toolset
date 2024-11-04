@@ -796,12 +796,9 @@ run)
   ;;
 remove)
   if [[ "$2" =~ ^[0-9]+\.[0-9]+$ ]]; then
-    # Case 1: Numeric version provided as the second argument
     if [[ "$3" == "ext" || "$3" == "extension" ]]; then
-      # Call remove_php_extension with only the PHP version (no specific extension)
       remove_php_extension "$2"
     else
-      # Call remove_php_version with the specified PHP version
       remove_php_version "$2"
     fi
   else
