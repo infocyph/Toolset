@@ -136,7 +136,7 @@ install_php_version() {
   if [[ ${#packages_to_install[@]} -gt 0 ]]; then
     echo -e "${YELLOW}Installing missing PHP $version packages: ${packages_to_install[*]}...${NC}"
     log_action "INFO" "Installing PHP $version packages: ${packages_to_install[*]}."
-    apt install -y "${packages_to_install[@]}" | show_last_lines
+    apt install -y "${packages_to_install[@]}" 2>&1 | show_last_lines
     log_action "INFO" "Installed PHP $version packages: ${packages_to_install[*]}."
   fi
 }
@@ -304,7 +304,7 @@ install_php_extensions() {
   if [[ ${#extensions_to_install[@]} -gt 0 ]]; then
     echo -e "${YELLOW}Installing selected extensions...${NC}"
     log_action "INFO" "Installing extensions: ${extensions_to_install[*]}."
-    apt install -y "${extensions_to_install[@]}" | show_last_lines
+    apt install -y "${extensions_to_install[@]}" 2>&1 | show_last_lines
     log_action "INFO" "Installed extensions: ${extensions_to_install[*]} for PHP $version."
     echo -e "${GREEN}Extensions installed for PHP $version: ${extensions_to_install[*]}${NC}"
   else
@@ -561,7 +561,7 @@ remove_php_version() {
   # Remove all packages starting with "php$version-"
   local php_packages=($(dpkg -l | grep "^ii" | awk '{print $2}' | grep "^php$version-"))
   if [[ ${#php_packages[@]} -gt 0 ]]; then
-    apt purge -y "${php_packages[@]}" | show_last_lines
+    apt purge -y "${php_packages[@]}" 2>&1 | show_last_lines
     log_action "INFO" "Removed PHP $version packages: ${php_packages[*]}."
   else
     echo -e "${RED}No packages found for PHP $version.${NC}"
@@ -628,7 +628,7 @@ remove_php_extension() {
     echo -e "${YELLOW}Removing selected extensions...${NC}"
     log_action "INFO" "Removing extensions: ${extensions_to_remove[*]} for PHP $version."
 
-    apt purge -y "${extensions_to_remove[@]}" | show_last_lines
+    apt purge -y "${extensions_to_remove[@]}" 2>&1 | show_last_lines
 
     log_action "INFO" "Removed extensions: ${extensions_to_remove[*]} for PHP $version."
     echo -e "${GREEN}Extensions removed for PHP $version: ${extensions_to_remove[*]}${NC}"
