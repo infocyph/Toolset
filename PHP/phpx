@@ -321,10 +321,21 @@ toggle_php_extension() {
     log_action "INFO" "Detected PHP version: $version."
   fi
 
-  # Fetch enabled and disabled extensions
-  local enabled_extensions=($(phpquery -v "$version" -s cli -m | grep "enabled" | awk '{print $1}' | sort))
-  local disabled_extensions=($(phpquery -v "$version" -s cli -m | grep "disabled" | awk '{print $1}' | sort))
+  # Get the list of all installed extensions for the specified PHP version
+  local all_extensions=($(dpkg -l | grep "^ii" | grep "php$version-" | awk '{print $2}' | sed "s/php$version-//g" | sort))
 
+  # Get the list of currently enabled extensions by using php -m
+  local enabled_extensions=($(php -d "extension_dir=/usr/lib/php/$version/modules" -m | sort))
+
+  # Calculate disabled extensions as those present in all_extensions but not in enabled_extensions
+  local disabled_extensions=()
+  for ext in "${all_extensions[@]}"; do
+    if [[ ! " ${enabled_extensions[*]} " =~ " $ext " ]]; then
+      disabled_extensions+=("$ext")
+    fi
+  done
+
+  # Display enabled and disabled extensions for the user to toggle
   echo -e "${GREEN}Enabled PHP extensions for PHP $version:${NC}"
   for i in "${!enabled_extensions[@]}"; do
     printf "%2d. %-20s" $((i + 1)) "${enabled_extensions[$i]}"
@@ -336,14 +347,14 @@ toggle_php_extension() {
 
   echo -e "${YELLOW}Disabled PHP extensions for PHP $version:${NC}"
   for i in "${!disabled_extensions[@]}"; do
-    printf "%2d. %-20s" $((i + 1)) "${disabled_extensions[$i]}"
+    printf "%2d. %-20s" $((i + 1 + ${#enabled_extensions[@]})) "${disabled_extensions[$i]}"
     if (((i + 1) % 5 == 0)); then
       echo ""
     fi
   done
   echo ""
 
-  # Prompt for selection
+  # Prompt user to select extensions to toggle
   read -rp "Enter the numbers of the extensions you want to toggle (comma-separated): " selection
   IFS=',' read -ra selection_array <<<"$selection"
   local extensions_to_toggle=()
@@ -351,10 +362,8 @@ toggle_php_extension() {
   # Process selection to create list of extensions to toggle
   for index in "${selection_array[@]}"; do
     if [[ "$index" =~ ^[0-9]+$ ]]; then
-      # Toggle from enabled list if in range
       if [[ "$index" -ge 1 && "$index" -le ${#enabled_extensions[@]} ]]; then
         extensions_to_toggle+=("${enabled_extensions[$((index - 1))]}")
-      # Toggle from disabled list if in range
       elif [[ "$index" -gt ${#enabled_extensions[@]} && "$index" -le $(( ${#enabled_extensions[@]} + ${#disabled_extensions[@]} )) ]]; then
         extensions_to_toggle+=("${disabled_extensions[$((index - ${#enabled_extensions[@]} - 1))]}")
       else
@@ -378,6 +387,7 @@ toggle_php_extension() {
 
   echo -e "${GREEN}Toggled extensions for PHP $version: ${extensions_to_toggle[*]}${NC}"
 }
+
 
 install_composer() {
   require_sudo
