@@ -736,16 +736,36 @@ perform_system_checks() {
 self_update() {
   require_sudo
   local script_url="https://raw.githubusercontent.com/infocyph/Toolset/main/PHP/phpx"
-  echo -e "${YELLOW}Updating phpx...${NC}"
-  if curl -fsSL "$script_url" -o /usr/local/bin/phpx; then
-    chmod +x /usr/local/bin/phpx
-    echo -e "${GREEN}phpx has been updated successfully.${NC}"
-    log_action "INFO" "phpx updated successfully."
+  local temp_file="/tmp/phpx_latest"
+  local local_file="/usr/local/bin/phpx"
+
+  echo -e "${YELLOW}Checking for updates...${NC}"
+
+  # Download the latest version of the script to a temporary location
+  if curl -fsSL "$script_url" -o "$temp_file"; then
+    # Calculate hashes for both the local and downloaded scripts
+    local local_hash remote_hash
+    local_hash=$(sha256sum "$local_file" | awk '{print $1}')
+    remote_hash=$(sha256sum "$temp_file" | awk '{print $1}')
+
+    # Compare hashes to check if an update is necessary
+    if [[ "$local_hash" == "$remote_hash" ]]; then
+      echo -e "${GREEN}phpx is already up-to-date.${NC}"
+      log_action "INFO" "No updates found. phpx is up-to-date."
+      rm "$temp_file" # Clean up the temporary file
+    else
+      echo -e "${YELLOW}Updating phpx...${NC}"
+      mv "$temp_file" "$local_file"
+      chmod +x "$local_file"
+      echo -e "${GREEN}phpx has been updated successfully.${NC}"
+      log_action "INFO" "phpx updated successfully."
+    fi
   else
-    echo -e "${RED}Failed to update phpx.${NC}"
-    log_action "ERROR" "Failed to update phpx."
+    echo -e "${RED}Failed to check for updates.${NC}"
+    log_action "ERROR" "Failed to download the latest phpx script."
   fi
 }
+
 
 trap "echo -e '${RED}Process interrupted. Exiting.${NC}'; log_action 'ERROR' 'Process interrupted by user'; exit 6" SIGINT SIGTERM
 setup_logging
