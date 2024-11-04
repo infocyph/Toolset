@@ -37,7 +37,7 @@ require_sudo() {
   if [[ "$EUID" -ne 0 ]]; then
     echo -e "${RED}Please run the script with sudo.${NC}"
     log_action "ERROR" "Script not run with sudo."
-    exit 1  # Exit code 1: General error
+    exit 1 # Exit code 1: General error
   fi
 }
 
@@ -56,6 +56,33 @@ validate_php_version() {
     log_action "ERROR" "Invalid PHP version format: $version"
     exit 2
   fi
+}
+
+show_last_lines() {
+  local line_buffer=()
+  local max_lines=5 # Number of lines to display
+
+  while IFS= read -r line; do
+    # Add the new line to the buffer
+    line_buffer+=("$line")
+
+    # Keep only the last 5 lines in the buffer
+    if [[ ${#line_buffer[@]} -gt $max_lines ]]; then
+      line_buffer=("${line_buffer[@]:1}")
+    fi
+
+    # Print the last 5 lines, overwriting in place
+    printf "\033[2K\r" # Clear the current line
+    for buffered_line in "${line_buffer[@]}"; do
+      echo -e "$buffered_line"
+    done
+
+    # Move the cursor back up to overwrite previous lines
+    printf "\033[%sA" "${#line_buffer[@]}"
+  done
+
+  # Ensure the cursor moves to the next line after the loop completes
+  printf "\033[%sB" "$max_lines"
 }
 
 add_sury_repo_if_needed() {
@@ -109,7 +136,7 @@ install_php_version() {
   if [[ ${#packages_to_install[@]} -gt 0 ]]; then
     echo -e "${YELLOW}Installing missing PHP $version packages: ${packages_to_install[*]}...${NC}"
     log_action "INFO" "Installing PHP $version packages: ${packages_to_install[*]}."
-    apt install -y "${packages_to_install[@]}"
+    apt install -y "${packages_to_install[@]}" | show_last_lines
     log_action "INFO" "Installed PHP $version packages: ${packages_to_install[*]}."
   fi
 }
@@ -205,9 +232,9 @@ switch_php_version() {
   fi
 
   # Set PHP version using update-alternatives
-  update-alternatives --set php "/usr/bin/php$version" > /dev/null
-  update-alternatives --set phar "/usr/bin/phar$version" > /dev/null
-  update-alternatives --set phar.phar "/usr/bin/phar.phar$version" > /dev/null
+  update-alternatives --set php "/usr/bin/php$version" >/dev/null
+  update-alternatives --set phar "/usr/bin/phar$version" >/dev/null
+  update-alternatives --set phar.phar "/usr/bin/phar.phar$version" >/dev/null
   echo -e "${GREEN}Switched PHP to version $version.${NC}"
   log_action "INFO" "Switched to PHP version $version."
   configure_web_server "$version"
@@ -277,17 +304,13 @@ install_php_extensions() {
   if [[ ${#extensions_to_install[@]} -gt 0 ]]; then
     echo -e "${YELLOW}Installing selected extensions...${NC}"
     log_action "INFO" "Installing extensions: ${extensions_to_install[*]}."
-
-    # Install all extensions in one command
-    apt install -y "${extensions_to_install[@]}"
-
+    apt install -y "${extensions_to_install[@]}" | show_last_lines
     log_action "INFO" "Installed extensions: ${extensions_to_install[*]} for PHP $version."
     echo -e "${GREEN}Extensions installed for PHP $version: ${extensions_to_install[*]}${NC}"
   else
     echo -e "${YELLOW}No valid extensions selected for installation.${NC}"
   fi
 }
-
 
 install_composer() {
   require_sudo
@@ -475,64 +498,143 @@ run_php_script() {
 }
 
 display_usage() {
-  echo -e "${GREEN}Usage: phpx {switch|ext|install|serve|run|remove} <php_version|composer|pecl_package|script_path>${NC}"
+  echo -e "${GREEN}Usage: phpx {switch|ext|install|serve|run|remove|sury} <php_version|composer|pecl_package|script_path>${NC}"
   echo
   echo -e "${YELLOW}Commands:${NC}"
-  echo -e "  ${GREEN}switch|s <php_version>${NC}    Switch to a specified PHP version, installing it if not found."
-  echo -e "                           Also installs PHP-FPM if required for Nginx or Lighttpd."
+  echo -e "  ${GREEN}switch|s <php_version>${NC}        Switch to a specified PHP version, installing it if not found."
+  echo -e "                               Also installs PHP-FPM if required for Nginx or Lighttpd."
   echo
-  echo -e "  ${GREEN}ext|extensions|x [php_version]${NC}       Show installed PHP extensions for a given version and allow the user to install new ones."
-  echo -e "                           If no version is provided, the currently active PHP version is used."
+  echo -e "  ${GREEN}ext|extensions|x [php_version]${NC}   Lists installed PHP extensions for the specified PHP version."
+  echo -e "                               Allows the user to install new extensions interactively."
+  echo -e "                               If no version is provided, the currently active PHP version is used."
   echo
-  echo -e "  ${GREEN}install|i composer${NC}        Installs Composer globally if not already installed."
+  echo -e "  ${GREEN}install|i composer${NC}           Installs Composer globally if not already installed."
   echo
-  echo -e "  ${GREEN}install|i <pecl_package>${NC}  Installs a PECL package (or multiple PECL packages separated by commas or spaces)."
+  echo -e "  ${GREEN}install|i <pecl_package>${NC}     Installs a specified PECL package (or multiple PECL packages separated by commas or spaces)."
   echo
-  echo -e "  ${GREEN}serve${NC}                   Starts a PHP built-in web server from the current directory or specified root."
-  echo -e "                           Options: --host=<host> --port=<port> --root=<root_dir>"
+  echo -e "  ${GREEN}serve${NC}                        Starts a PHP built-in web server from the current directory or a specified root directory."
+  echo -e "                               Options: --host=<host> --port=<port> --root=<root_dir>"
   echo
-  echo -e "  ${GREEN}run <script_path> [php_version]${NC}  Runs a PHP script using the specified or currently active PHP version."
+  echo -e "  ${GREEN}run <script_path> [php_version]${NC} Runs a PHP script using the specified or currently active PHP version."
   echo
-  echo -e "  ${GREEN}remove <php_version>${NC}  Removes the specified PHP version, including PHP-CLI and PHP-FPM."
-  echo -e "  ${GREEN}remove <php_version> <extension>${NC}  Removes a specified PHP extension for a given version."
+  echo -e "  ${GREEN}remove <php_version>${NC}         Removes the specified PHP version, along with the related extensions."
+  echo -e "  ${GREEN}remove [php_version] [ext|extension]${NC} Interactively removes PHP extensions for the given version (default: current version)."
   echo
-  echo -e "  ${GREEN}sury${NC} Adds the Sury PPA for the currently installed operating system."
+  echo -e "  ${GREEN}sury${NC}                         Adds the Sury PPA repository if needed for the current operating system."
   echo
   echo -e "${YELLOW}Examples:${NC}"
-  echo -e "  ${GREEN}phpx switch 8.2${NC}         Switches to PHP 8.2, installs it if needed, and configures the web server."
-  echo -e "  ${GREEN}phpx ext${NC}                Lists installed extensions for the currently active PHP version."
-  echo -e "  ${GREEN}phpx install composer${NC}   Installs Composer globally and updates it."
-  echo -e "  ${GREEN}phpx install xdebug,redis${NC}  Installs multiple PECL packages (xdebug and redis)."
+  echo -e "  ${GREEN}phpx switch 8.2${NC}                Switches to PHP 8.2, installs it if necessary, and configures the web server."
+  echo -e "  ${GREEN}phpx ext${NC}                       Lists installed extensions for the currently active PHP version."
+  echo -e "  ${GREEN}phpx install composer${NC}          Installs Composer globally and updates it."
+  echo -e "  ${GREEN}phpx install xdebug,redis${NC}      Installs multiple PECL packages (xdebug and redis)."
   echo -e "  ${GREEN}phpx serve --host=192.168.0.1 --port=8080${NC}  Serves from the current directory at the specified host and port."
-  echo -e "  ${GREEN}phpx run 8.2 my_script.php${NC}  Runs the specified PHP script using PHP version 8.2."
+  echo -e "  ${GREEN}phpx run my_script.php 8.2${NC}     Runs the specified PHP script using PHP version 8.2."
+  echo -e "  ${GREEN}phpx remove 8.1${NC}                Removes PHP 8.1, including components & extensions."
+  echo -e "  ${GREEN}phpx remove 8.1 ext${NC}            Removes extensions for PHP 8.1."
+  echo -e "  ${GREEN}phpx remove ext${NC}                Removes extensions for PHP currently active php version."
+  echo -e "  ${GREEN}phpx sury${NC}                      Adds the Sury PPA repository if it’s not already configured."
 }
+
 
 remove_php_version() {
   require_sudo
   local version="$1"
   validate_php_version "$version"
 
-  echo -e "${YELLOW}Removing PHP $version...${NC}"
-  log_action "INFO" "Removing PHP $version."
-  apt purge -y "php$version" "php$version-cli" "php$version-fpm"
-  log_action "INFO" "Removed PHP $version, PHP-CLI, and PHP-FPM."
+  # Check if PHP version exists before attempting to remove
+  if ! dpkg -l | grep -q "^ii  php$version"; then
+    echo -e "${RED}PHP version $version is not installed.${NC}"
+    log_action "WARN" "PHP version $version not found for removal."
+    return 1
+  fi
+
+  # Stop PHP-FPM service if running
+  if systemctl is-active --quiet "php$version-fpm"; then
+    echo -e "${YELLOW}Stopping PHP-FPM service for PHP $version...${NC}"
+    systemctl stop "php$version-fpm"
+    log_action "INFO" "Stopped PHP-FPM service for PHP $version."
+  fi
+
+  echo -e "${YELLOW}Removing PHP $version and related packages...${NC}"
+  log_action "INFO" "Removing PHP $version and related packages."
+
+  # Remove all packages starting with "php$version-"
+  local php_packages=($(dpkg -l | grep "^ii" | awk '{print $2}' | grep "^php$version-"))
+  if [[ ${#php_packages[@]} -gt 0 ]]; then
+    apt purge -y "${php_packages[@]}" | show_last_lines
+    log_action "INFO" "Removed PHP $version packages: ${php_packages[*]}."
+  else
+    echo -e "${RED}No packages found for PHP $version.${NC}"
+    log_action "WARN" "No packages found for PHP $version."
+  fi
+
+  echo -e "${GREEN}PHP $version and related packages have been removed.${NC}"
 }
 
 remove_php_extension() {
   require_sudo
   local version="$1"
-  local extension="$2"
 
-  if [[ -z "$version" || -z "$extension" ]]; then
-    echo -e "${RED}Please provide both PHP version and extension to remove.${NC}"
-    log_action "ERROR" "Missing PHP version or extension for removal."
-    exit 1
+  # Auto-detect the currently active PHP version if no version is provided
+  if [[ -z "$version" ]]; then
+    version=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+    echo -e "${YELLOW}No PHP version provided. Using detected PHP version: $version${NC}"
+    log_action "INFO" "Detected PHP version: $version."
   fi
 
-  echo -e "${YELLOW}Removing PHP extension $extension for PHP $version...${NC}"
-  log_action "INFO" "Removing PHP extension $extension for PHP $version."
-  apt purge -y "php$version-$extension"
-  log_action "INFO" "Removed PHP extension $extension for PHP $version."
+  echo -e "${YELLOW}Fetching installed PHP extensions for PHP $version...${NC}"
+  log_action "INFO" "Fetching installed PHP extensions for PHP $version."
+  local installed_extensions=($(dpkg -l | grep "^ii" | grep "php$version-" | awk '{print $2}' | sed "s/php$version-//g" | sort))
+
+  if [[ ${#installed_extensions[@]} -eq 0 ]]; then
+    echo -e "${RED}No PHP extensions are installed for PHP $version.${NC}"
+    log_action "WARN" "No PHP extensions installed for PHP $version."
+    return
+  fi
+
+  # Display installed extensions for user selection
+  echo -e "${GREEN}Installed PHP extensions for PHP $version:${NC}"
+  for i in "${!installed_extensions[@]}"; do
+    printf "%2d. %-20s" $((i + 1)) "${installed_extensions[$i]}"
+    if (((i + 1) % 5 == 0)); then
+      echo ""
+    fi
+  done
+  echo ""
+
+  # Prompt user to select extensions to remove
+  read -rp "Enter the numbers or names of the extensions you want to remove (comma-separated or range): " extension_selection
+  IFS=',' read -ra selection_array <<<"$extension_selection"
+  local extensions_to_remove=()
+
+  # Process user selection
+  for selection in "${selection_array[@]}"; do
+    # Check if selection is a number
+    if [[ "$selection" =~ ^[0-9]+$ && "$selection" -ge 1 && "$selection" -le ${#installed_extensions[@]} ]]; then
+      extensions_to_remove+=("php$version-${installed_extensions[$((selection - 1))]}")
+    else
+      # Find extension by name
+      for ext in "${installed_extensions[@]}"; do
+        if [[ "$ext" == "$selection" ]]; then
+          extensions_to_remove+=("php$version-$ext")
+          break
+        fi
+      done
+    fi
+  done
+
+  # Remove selected extensions if any
+  if [[ ${#extensions_to_remove[@]} -gt 0 ]]; then
+    echo -e "${YELLOW}Removing selected extensions...${NC}"
+    log_action "INFO" "Removing extensions: ${extensions_to_remove[*]} for PHP $version."
+
+    apt purge -y "${extensions_to_remove[@]}" | show_last_lines
+
+    log_action "INFO" "Removed extensions: ${extensions_to_remove[*]} for PHP $version."
+    echo -e "${GREEN}Extensions removed for PHP $version: ${extensions_to_remove[*]}${NC}"
+  else
+    echo -e "${YELLOW}No valid extensions selected for removal.${NC}"
+  fi
 }
 
 perform_system_checks() {
@@ -585,16 +687,20 @@ run)
   run_php_script "$2" "$3"
   ;;
 remove)
-  if [[ -n "$2" && -n "$3" ]]; then
-    remove_php_extension "$2" "$3"
-  elif [[ -n "$2" ]]; then
-    remove_php_version "$2"
+  if [[ "$2" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    # Case 1: Numeric version provided as the second argument
+    if [[ "$3" == "ext" || "$3" == "extension" ]]; then
+      # Call remove_php_extension with only the PHP version (no specific extension)
+      remove_php_extension "$2"
+    else
+      # Call remove_php_version with the specified PHP version
+      remove_php_version "$2"
+    fi
   else
-    echo -e "${RED}Invalid usage. See help for details.${NC}"
-    display_usage
-    exit 1
+    remove_php_extension
   fi
   ;;
+
 sury)
   add_sury_repo_if_needed
   ;;

@@ -86,7 +86,7 @@ dockex create nginx my_container # Create a new container using the nginx image
 ### phpx Commands
 
 ```bash
-phpx {switch|ext|install|serve|run|remove} <php_version|composer|pecl_package|script_path>
+phpx {switch|ext|install|serve|run|remove|sury} <php_version|composer|pecl_package|script_path>
 ```
 
 #### Available Commands:
@@ -96,8 +96,9 @@ phpx {switch|ext|install|serve|run|remove} <php_version|composer|pecl_package|sc
 - **install** | **i** `<pecl_package>`: Install a PECL package (or multiple packages separated by commas).
 - **serve**: Start a PHP built-in web server from the current or specified root directory.
 - **run** `<script_path>` `[php_version]`: Run a PHP script using the specified or currently active PHP version.
-- **remove** `<php_version>`: Remove the specified PHP version (CLI and FPM).
-- **remove** `<php_version> <extension>`: Remove a specified PHP extension for a given version.
+- **remove** `<php_version>`: Remove the specified PHP version.
+- **remove** `[php_version] [extension | ext]`: Remove a specified PHP extension for a given version (Interactive).
+- **remove** : Remove a specified PHP extension for a current version (Interactive).
 - **sury**: Add the Sury PPA for the current operating system. 
 
 #### Examples:
@@ -109,7 +110,8 @@ phpx install xdebug,redis             # Install multiple PECL packages (xdebug a
 phpx serve --host=192.168.0.1 --port=8080  # Serve the current directory at the specified host and port
 phpx run 8.2 my_script.php            # Run a PHP script using PHP version 8.2
 phpx remove 8.1                       # Remove PHP version 8.1
-phpx remove 8.2 xdebug                # Remove xdebug extension from PHP version 8.2
+phpx remove 8.2 ext                  # Remove extensions for given version interactively
+phpx remove                           # Remove extensions for current version interactively
 ```
 
 ## Contributing
