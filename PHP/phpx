@@ -251,7 +251,6 @@ install_php_extensions() {
     log_action "INFO" "Detected PHP version: $version."
   fi
 
-  echo -e "${YELLOW}Fetching installed PHP extensions for PHP $version...${NC}"
   log_action "INFO" "Fetching installed PHP extensions for PHP $version."
   local installed_extensions=($(dpkg -l | grep "^ii" | grep "php$version-" | awk '{print $2}' | sed "s/php$version-//g" | sort))
 
@@ -269,7 +268,6 @@ install_php_extensions() {
     echo ""
   fi
 
-  echo -e "${YELLOW}Fetching installable PHP extensions for PHP $version...${NC}"
   log_action "INFO" "Fetching installable PHP extensions for PHP $version."
   local available_extensions=($(apt-cache pkgnames | grep "^php$version-" | sed "s/php$version-//g" | sort))
 
@@ -310,6 +308,75 @@ install_php_extensions() {
   else
     echo -e "${YELLOW}No valid extensions selected for installation.${NC}"
   fi
+}
+
+toggle_php_extension() {
+  require_sudo
+  local version="$1"
+
+  # Auto-detect the currently active PHP version if no version is provided
+  if [[ -z "$version" ]]; then
+    version=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+    echo -e "${YELLOW}No PHP version provided. Using detected PHP version: $version${NC}"
+    log_action "INFO" "Detected PHP version: $version."
+  fi
+
+  # Fetch enabled and disabled extensions
+  local enabled_extensions=($(phpquery -v "$version" -s cli -m | grep "enabled" | awk '{print $1}' | sort))
+  local disabled_extensions=($(phpquery -v "$version" -s cli -m | grep "disabled" | awk '{print $1}' | sort))
+
+  echo -e "${GREEN}Enabled PHP extensions for PHP $version:${NC}"
+  for i in "${!enabled_extensions[@]}"; do
+    printf "%2d. %-20s" $((i + 1)) "${enabled_extensions[$i]}"
+    if (((i + 1) % 5 == 0)); then
+      echo ""
+    fi
+  done
+  echo ""
+
+  echo -e "${YELLOW}Disabled PHP extensions for PHP $version:${NC}"
+  for i in "${!disabled_extensions[@]}"; do
+    printf "%2d. %-20s" $((i + 1)) "${disabled_extensions[$i]}"
+    if (((i + 1) % 5 == 0)); then
+      echo ""
+    fi
+  done
+  echo ""
+
+  # Prompt for selection
+  read -rp "Enter the numbers of the extensions you want to toggle (comma-separated): " selection
+  IFS=',' read -ra selection_array <<<"$selection"
+  local extensions_to_toggle=()
+
+  # Process selection to create list of extensions to toggle
+  for index in "${selection_array[@]}"; do
+    if [[ "$index" =~ ^[0-9]+$ ]]; then
+      # Toggle from enabled list if in range
+      if [[ "$index" -ge 1 && "$index" -le ${#enabled_extensions[@]} ]]; then
+        extensions_to_toggle+=("${enabled_extensions[$((index - 1))]}")
+      # Toggle from disabled list if in range
+      elif [[ "$index" -gt ${#enabled_extensions[@]} && "$index" -le $(( ${#enabled_extensions[@]} + ${#disabled_extensions[@]} )) ]]; then
+        extensions_to_toggle+=("${disabled_extensions[$((index - ${#enabled_extensions[@]} - 1))]}")
+      else
+        echo -e "${RED}Invalid selection: $index${NC}"
+      fi
+    fi
+  done
+
+  # Toggle each selected extension
+  for ext in "${extensions_to_toggle[@]}"; do
+    if [[ " ${enabled_extensions[*]} " == *" $ext "* ]]; then
+      echo -e "${YELLOW}Disabling $ext for PHP $version...${NC}"
+      phpdismod -v "$version" "$ext"
+      log_action "INFO" "Disabled $ext for PHP $version."
+    else
+      echo -e "${YELLOW}Enabling $ext for PHP $version...${NC}"
+      phpenmod -v "$version" "$ext"
+      log_action "INFO" "Enabled $ext for PHP $version."
+    fi
+  done
+
+  echo -e "${GREEN}Toggled extensions for PHP $version: ${extensions_to_toggle[*]}${NC}"
 }
 
 install_composer() {
@@ -498,43 +565,51 @@ run_php_script() {
 }
 
 display_usage() {
-  echo -e "${GREEN}Usage: phpx {switch|ext|install|serve|run|remove|sury} <php_version|composer|pecl_package|script_path>${NC}"
+  echo -e "${GREEN}Usage: phpx {switch|ext|install|serve|run|remove|sury|toggle|self-update} <arguments>${NC}"
   echo
   echo -e "${YELLOW}Commands:${NC}"
-  echo -e "  ${GREEN}switch|s <php_version>${NC}        Switch to a specified PHP version, installing it if not found."
-  echo -e "                               Also installs PHP-FPM if required for Nginx or Lighttpd."
+  echo -e "  ${GREEN}switch|s <php_version>${NC}            Switch to the specified PHP version, installing it if not found."
+  echo -e "                                       Also installs PHP-FPM if required for Nginx or Lighttpd."
   echo
-  echo -e "  ${GREEN}ext|extensions|x [php_version]${NC}   Lists installed PHP extensions for the specified PHP version."
-  echo -e "                               Allows the user to install new extensions interactively."
-  echo -e "                               If no version is provided, the currently active PHP version is used."
+  echo -e "  ${GREEN}ext|extensions|x [php_version]${NC}     Lists installed PHP extensions for the specified PHP version."
+  echo -e "                                       Allows the user to install new extensions interactively."
+  echo -e "                                       If no version is provided, uses the currently active PHP version."
   echo
-  echo -e "  ${GREEN}install|i composer${NC}           Installs Composer globally if not already installed."
+  echo -e "  ${GREEN}install|i composer${NC}                 Installs Composer globally if not already installed."
   echo
-  echo -e "  ${GREEN}install|i <pecl_package>${NC}     Installs a specified PECL package (or multiple PECL packages separated by commas or spaces)."
+  echo -e "  ${GREEN}install|i <pecl_package>${NC}           Installs a specified PECL package or multiple packages"
+  echo -e "                                       (comma-separated or space-separated)."
   echo
-  echo -e "  ${GREEN}serve${NC}                        Starts a PHP built-in web server from the current directory or a specified root directory."
-  echo -e "                               Options: --host=<host> --port=<port> --root=<root_dir>"
+  echo -e "  ${GREEN}serve${NC}                              Starts a PHP built-in web server from the current directory"
+  echo -e "                                       or a specified root directory."
+  echo -e "                                       Options: --host=<host> --port=<port> --root=<root_dir> [--router <router_file>]"
   echo
-  echo -e "  ${GREEN}run <script_path> [php_version]${NC} Runs a PHP script using the specified or currently active PHP version."
+  echo -e "  ${GREEN}run <script_path> [php_version]${NC}     Runs a PHP script using the specified or currently active PHP version."
   echo
-  echo -e "  ${GREEN}remove <php_version>${NC}         Removes the specified PHP version, along with the related extensions."
-  echo -e "  ${GREEN}remove [php_version] [ext|extension]${NC} Interactively removes PHP extensions for the given version (default: current version)."
+  echo -e "  ${GREEN}remove <php_version>${NC}               Removes the specified PHP version and all related packages."
+  echo -e "  ${GREEN}remove <php_version> <ext|extension>${NC} Removes specified PHP extensions for the provided version."
   echo
-  echo -e "  ${GREEN}sury${NC}                         Adds the Sury PPA repository if needed for the current operating system."
+  echo -e "  ${GREEN}sury${NC}                              Adds the Sury PPA repository if needed for the current OS."
+  echo
+  echo -e "  ${GREEN}toggle [php_version]${NC}               Interactively enables or disables PHP extensions for the specified"
+  echo -e "                                       PHP version (or current version if none specified)."
+  echo
+  echo -e "  ${GREEN}self-update${NC}                        Updates the phpx script to the latest version from GitHub."
   echo
   echo -e "${YELLOW}Examples:${NC}"
-  echo -e "  ${GREEN}phpx switch 8.2${NC}                Switches to PHP 8.2, installs it if necessary, and configures the web server."
-  echo -e "  ${GREEN}phpx ext${NC}                       Lists installed extensions for the currently active PHP version."
-  echo -e "  ${GREEN}phpx install composer${NC}          Installs Composer globally and updates it."
-  echo -e "  ${GREEN}phpx install xdebug,redis${NC}      Installs multiple PECL packages (xdebug and redis)."
+  echo -e "  ${GREEN}phpx switch 8.2${NC}                    Switches to PHP 8.2, installs it if needed, and configures the web server."
+  echo -e "  ${GREEN}phpx ext${NC}                           Lists installed extensions for the active PHP version and"
+  echo -e "                                       allows installation of additional extensions."
+  echo -e "  ${GREEN}phpx install composer${NC}              Installs Composer globally and updates it."
+  echo -e "  ${GREEN}phpx install xdebug,redis${NC}          Installs multiple PECL packages (e.g., xdebug and redis)."
   echo -e "  ${GREEN}phpx serve --host=192.168.0.1 --port=8080${NC}  Serves from the current directory at the specified host and port."
-  echo -e "  ${GREEN}phpx run my_script.php 8.2${NC}     Runs the specified PHP script using PHP version 8.2."
-  echo -e "  ${GREEN}phpx remove 8.1${NC}                Removes PHP 8.1, including components & extensions."
-  echo -e "  ${GREEN}phpx remove 8.1 ext${NC}            Removes extensions for PHP 8.1."
-  echo -e "  ${GREEN}phpx remove ext${NC}                Removes extensions for PHP currently active php version."
-  echo -e "  ${GREEN}phpx sury${NC}                      Adds the Sury PPA repository if it’s not already configured."
+  echo -e "  ${GREEN}phpx run my_script.php 8.2${NC}         Runs the specified PHP script using PHP version 8.2."
+  echo -e "  ${GREEN}phpx remove 8.1${NC}                    Removes PHP 8.1 and all associated components."
+  echo -e "  ${GREEN}phpx remove 8.1 ext${NC}                Removes extensions interactively for PHP 8.1."
+  echo -e "  ${GREEN}phpx toggle${NC}                        Lists enabled and disabled extensions for the current PHP version"
+  echo -e "                                       and allows interactive toggling."
+  echo -e "  ${GREEN}phpx self-update${NC}                   Updates the phpx script to the latest version from GitHub."
 }
-
 
 remove_php_version() {
   require_sudo
@@ -658,8 +733,21 @@ perform_system_checks() {
   fi
 }
 
-trap "echo -e '${RED}Process interrupted. Exiting.${NC}'; log_action 'ERROR' 'Process interrupted by user'; exit 6" SIGINT SIGTERM
+self_update() {
+  require_sudo
+  local script_url="https://raw.githubusercontent.com/infocyph/Toolset/main/PHP/phpx"
+  echo -e "${YELLOW}Updating phpx...${NC}"
+  if curl -fsSL "$script_url" -o /usr/local/bin/phpx; then
+    chmod +x /usr/local/bin/phpx
+    echo -e "${GREEN}phpx has been updated successfully.${NC}"
+    log_action "INFO" "phpx updated successfully."
+  else
+    echo -e "${RED}Failed to update phpx.${NC}"
+    log_action "ERROR" "Failed to update phpx."
+  fi
+}
 
+trap "echo -e '${RED}Process interrupted. Exiting.${NC}'; log_action 'ERROR' 'Process interrupted by user'; exit 6" SIGINT SIGTERM
 setup_logging
 perform_system_checks
 
@@ -700,9 +788,14 @@ remove)
     remove_php_extension
   fi
   ;;
-
+self-update)
+  self_update
+  ;;
 sury)
   add_sury_repo_if_needed
+  ;;
+toggle)
+  toggle_php_extension "$2"
   ;;
 *)
   display_usage
