@@ -367,7 +367,7 @@ toggle_php_extension() {
   local all_extensions=($(dpkg -l | grep "^ii" | grep "php$version-" | awk '{print $2}' | sed "s/php$version-//g" | sort))
 
   # Get the list of currently enabled extensions using the specific PHP version binary
-  local enabled_extensions=($("$php_bin" -m | grep -Ev '^\[.*\]$' | sort))
+  local enabled_extensions=($("$php_bin" -m | grep -Ev '^\[(PHP|Zend) Modules\]$' | sort))
 
   # Calculate disabled extensions as those present in all_extensions but not in enabled_extensions
   local disabled_extensions=()
@@ -429,7 +429,6 @@ toggle_php_extension() {
 
   echo -e "${GREEN}Toggled extensions for PHP $version: ${extensions_to_toggle[*]}${NC}"
 }
-
 
 install_composer() {
   require_sudo
