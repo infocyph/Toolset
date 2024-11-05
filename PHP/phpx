@@ -566,7 +566,6 @@ display_usage() {
   echo -e "  ${GREEN}phpx run my_script.php 8.2${NC}         Runs the specified PHP script using PHP version 8.2."
   echo -e "  ${GREEN}phpx remove 8.1${NC}                    Removes PHP 8.1 and all associated components."
   echo -e "  ${GREEN}phpx remove 8.1 ext${NC}                Removes extensions interactively for PHP 8.1."
-  echo -e "  ${GREEN}phpx toggle${NC}                        Lists enabled and disabled extensions for the current PHP version"
   echo -e "                                       and allows interactive toggling."
   echo -e "  ${GREEN}phpx self-update${NC}                   Updates the phpx script to the latest version from GitHub."
 }
