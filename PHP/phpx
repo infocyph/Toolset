@@ -353,10 +353,8 @@ toggle_php_extension() {
   # Clean up missing extensions before toggling
   check_and_clean_php_extensions "$version"
 
-  # Get the path to the specific PHP binary for the given version
+  # Path to the specific PHP binary for the given version
   local php_bin="/usr/bin/php$version"
-
-  # Verify if the PHP binary exists
   if [[ ! -x "$php_bin" ]]; then
     echo -e "${RED}PHP version $version is not installed.${NC}"
     log_action "ERROR" "PHP binary for version $version not found."
@@ -366,10 +364,18 @@ toggle_php_extension() {
   # Get the list of all installed extensions for the specified PHP version
   local all_extensions=($(dpkg -l | grep "^ii" | grep "php$version-" | awk '{print $2}' | sed "s/php$version-//g" | sort))
 
-  # Get the list of currently enabled extensions using the specific PHP version binary
-  local enabled_extensions=($("$php_bin" -m | grep -Ev '^\[(PHP|Zend) Modules\]$' | sort))
+  # Get the list of enabled extensions by using `php -m` and filtering out `[PHP Modules]` and `[Zend Modules]`
+  local enabled_extensions=()
+  while IFS= read -r line; do
+    if [[ "$line" != "["*"]" ]]; then
+      enabled_extensions+=("$line")
+    fi
+  done < <("$php_bin" -m)
 
-  # Calculate disabled extensions as those present in all_extensions but not in enabled_extensions
+  # Remove duplicate entries in `enabled_extensions` if any, like "Zend OPcache"
+  enabled_extensions=($(echo "${enabled_extensions[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+
+  # Calculate disabled extensions as those in `all_extensions` but not in `enabled_extensions`
   local disabled_extensions=()
   for ext in "${all_extensions[@]}"; do
     if [[ ! " ${enabled_extensions[*]} " =~ " $ext " ]]; then
@@ -377,7 +383,7 @@ toggle_php_extension() {
     fi
   done
 
-  # Display enabled and disabled extensions for the user to toggle
+  # Display enabled extensions
   echo -e "${GREEN}Enabled PHP extensions for PHP $version:${NC}"
   for i in "${!enabled_extensions[@]}"; do
     printf "%2d. %-20s" $((i + 1)) "${enabled_extensions[$i]}"
@@ -387,6 +393,7 @@ toggle_php_extension() {
   done
   echo ""
 
+  # Display disabled extensions
   echo -e "${YELLOW}Disabled PHP extensions for PHP $version:${NC}"
   for i in "${!disabled_extensions[@]}"; do
     printf "%2d. %-20s" $((i + 1 + ${#enabled_extensions[@]})) "${disabled_extensions[$i]}"
@@ -396,12 +403,12 @@ toggle_php_extension() {
   done
   echo ""
 
-  # Prompt user to select extensions to toggle
+  # Prompt for selection
   read -rp "Enter the numbers of the extensions you want to toggle (comma-separated): " selection
   IFS=',' read -ra selection_array <<<"$selection"
   local extensions_to_toggle=()
 
-  # Process selection to create list of extensions to toggle
+  # Process selection to toggle extensions
   for index in "${selection_array[@]}"; do
     if [[ "$index" =~ ^[0-9]+$ ]]; then
       if [[ "$index" -ge 1 && "$index" -le ${#enabled_extensions[@]} ]]; then
@@ -414,7 +421,7 @@ toggle_php_extension() {
     fi
   done
 
-  # Toggle each selected extension
+  # Toggle selected extensions
   for ext in "${extensions_to_toggle[@]}"; do
     if [[ " ${enabled_extensions[*]} " == *" $ext "* ]]; then
       echo -e "${YELLOW}Disabling $ext for PHP $version...${NC}"
