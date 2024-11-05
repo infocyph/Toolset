@@ -121,7 +121,7 @@ add_sury_repo_if_needed() {
 }
 
 check_and_clean_php_extensions() {
-  return 0
+  require_sudo
   local version="$1"
 
   # Ensure the specified PHP version binary exists
