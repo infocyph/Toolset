@@ -120,6 +120,29 @@ add_sury_repo_if_needed() {
   fi
 }
 
+check_and_clean_php_extensions() {
+  return 0
+  local version="$1"
+
+  # Ensure the specified PHP version binary exists
+  if ! command -v "/usr/bin/php$version" &>/dev/null; then
+    echo -e "${RED}PHP version $version is not installed.${NC}"
+    log_action "WARN" "PHP version $version not found for extension cleanup."
+    return 1
+  fi
+
+  # Run the PHP binary for the specific version to check for missing extensions
+  local missing_extensions=($("/usr/bin/php$version" -m 2>&1 | grep "Unable to load dynamic library" | awk -F"'" '{print $2}'))
+
+  for ext in "${missing_extensions[@]}"; do
+    echo -e "${YELLOW}Cleaning up configuration for missing extension: $ext${NC}"
+    sudo find /etc/php/"$version"/ -name "$(basename "$ext" .so).ini" -delete
+  done
+
+  echo -e "${GREEN}Cleaned up missing extensions for PHP $version.${NC}"
+  log_action "INFO" "Cleaned up missing extensions for PHP $version."
+}
+
 install_php_version() {
   local version="$1"
   validate_php_version "$version"
@@ -231,6 +254,9 @@ switch_php_version() {
     install_php_version "$version"
   fi
 
+  # Clean up missing extensions before switching
+  check_and_clean_php_extensions "$version"
+
   # Set PHP version using update-alternatives
   update-alternatives --set php "/usr/bin/php$version" >/dev/null
   update-alternatives --set phar "/usr/bin/phar$version" >/dev/null
@@ -250,6 +276,9 @@ install_php_extensions() {
     echo -e "${YELLOW}No PHP version provided. Using detected PHP version: $version${NC}"
     log_action "INFO" "Detected PHP version: $version."
   fi
+
+  # Clean up missing extensions before installing new ones
+  check_and_clean_php_extensions "$version"
 
   log_action "INFO" "Fetching installed PHP extensions for PHP $version."
   local installed_extensions=($(dpkg -l | grep "^ii" | grep "php$version-" | awk '{print $2}' | sed "s/php$version-//g" | sort))
@@ -321,11 +350,14 @@ toggle_php_extension() {
     log_action "INFO" "Detected PHP version: $version."
   fi
 
+  # Clean up missing extensions before toggling
+  check_and_clean_php_extensions "$version"
+
   # Get the list of all installed extensions for the specified PHP version
   local all_extensions=($(dpkg -l | grep "^ii" | grep "php$version-" | awk '{print $2}' | sed "s/php$version-//g" | sort))
 
   # Get the list of currently enabled extensions by using php -m
-  local enabled_extensions=($(php -d "extension_dir=/usr/lib/php/$version/modules" -m | sort))
+  local enabled_extensions=($("/usr/bin/php$version" -d "extension_dir=/usr/lib/php/$version/modules" -m | sort))
 
   # Calculate disabled extensions as those present in all_extensions but not in enabled_extensions
   local disabled_extensions=()
@@ -364,7 +396,7 @@ toggle_php_extension() {
     if [[ "$index" =~ ^[0-9]+$ ]]; then
       if [[ "$index" -ge 1 && "$index" -le ${#enabled_extensions[@]} ]]; then
         extensions_to_toggle+=("${enabled_extensions[$((index - 1))]}")
-      elif [[ "$index" -gt ${#enabled_extensions[@]} && "$index" -le $(( ${#enabled_extensions[@]} + ${#disabled_extensions[@]} )) ]]; then
+      elif [[ "$index" -gt ${#enabled_extensions[@]} && "$index" -le $((${#enabled_extensions[@]} + ${#disabled_extensions[@]})) ]]; then
         extensions_to_toggle+=("${disabled_extensions[$((index - ${#enabled_extensions[@]} - 1))]}")
       else
         echo -e "${RED}Invalid selection: $index${NC}"
@@ -387,7 +419,6 @@ toggle_php_extension() {
 
   echo -e "${GREEN}Toggled extensions for PHP $version: ${extensions_to_toggle[*]}${NC}"
 }
-
 
 install_composer() {
   require_sudo
@@ -776,7 +807,6 @@ self_update() {
   fi
 }
 
-
 trap "echo -e '${RED}Process interrupted. Exiting.${NC}'; log_action 'ERROR' 'Process interrupted by user'; exit 6" SIGINT SIGTERM
 setup_logging
 perform_system_checks
@@ -823,6 +853,9 @@ sury)
   ;;
 toggle)
   toggle_php_extension "$2"
+  ;;
+clean)
+  check_and_clean_php_extensions "$2"
   ;;
 *)
   display_usage
