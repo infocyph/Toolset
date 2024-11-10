@@ -120,6 +120,34 @@ add_sury_repo_if_needed() {
   fi
 }
 
+get_php_version() {
+  local version="$1"
+
+  # Check if version is provided; if not, attempt to get the active PHP version
+  if [[ -z "$version" ]]; then
+    version=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null)
+    if [[ -z "$version" ]]; then
+      echo -e "${RED}No PHP version provided and no active PHP version detected.${NC}"
+      log_action "ERROR" "No PHP version provided and no active PHP version detected."
+      exit 1
+    fi
+    echo -e "${YELLOW}No PHP version provided. Using detected PHP version: $version${NC}"
+    log_action "INFO" "Detected PHP version: $version."
+  fi
+
+  # Check if the specified PHP version binary exists
+  if ! command -v "/usr/bin/php$version" &>/dev/null; then
+    echo -e "${RED}PHP version $version is not installed.${NC}"
+    log_action "ERROR" "PHP version $version not found."
+    exit 1
+  fi
+
+  # Return the confirmed PHP version
+  echo "$version"
+}
+
+
+
 check_and_clean_php_extensions() {
   require_sudo
   local version="$1"
@@ -550,9 +578,6 @@ display_usage() {
   echo -e "  ${GREEN}remove <php_version> <ext|extension>${NC} Removes specified PHP extensions for the provided version."
   echo
   echo -e "  ${GREEN}sury${NC}                              Adds the Sury PPA repository if needed for the current OS."
-  echo
-  echo -e "  ${GREEN}toggle [php_version]${NC}               Interactively enables or disables PHP extensions for the specified"
-  echo -e "                                       PHP version (or current version if none specified)."
   echo
   echo -e "  ${GREEN}self-update${NC}                        Updates the phpx script to the latest version from GitHub."
   echo
