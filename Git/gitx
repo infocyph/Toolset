@@ -1,0 +1,265 @@
+#!/bin/bash
+
+# Helper function for displaying usage
+usage() {
+  echo "Usage: gitx <command> [options]"
+  echo "Commands:"
+  echo "  report <range> [output_file]    Generate PR and commit report"
+  echo "  diff [output_file]              Track changes in staged files"
+  echo "  stash                           Manage stash operations"
+  echo "  compare                         Compare two branches"
+  echo "  config                          Edit Git configuration"
+  echo "  create <branch_type> <name>     Create a new branch"
+  echo "  sync                            Sync alpha and develop with master/main"
+  echo "  merge <source_branch> <target_branch> Merge branches"
+  echo "  tag <version>                   Tag the current branch with a version"
+  echo "  cleanup                         Delete merged branches"
+  echo "  summarize                       Summarize repository details"
+  echo "  cleanup-stash                   Delete unused stashes"
+  exit 1
+}
+
+# Ensure Git repository
+ensure_git_repo() {
+  if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    echo "Error: Not inside a Git repository."
+    exit 1
+  fi
+}
+
+# Detect master/main branch
+detect_main_branch() {
+  if git branch -r | grep -q "origin/main"; then
+    echo "main"
+  else
+    echo "master"
+  fi
+}
+
+# Create a new branch from master/main
+create_branch() {
+  local branch_type=$1
+  local name=$2
+  ensure_git_repo
+  local main_branch
+  main_branch=$(detect_main_branch)
+  git checkout "$main_branch" || exit
+  git pull origin "$main_branch" || exit
+  local branch_name="${branch_type}/${name}"
+  git checkout -b "$branch_name" || exit
+  git push origin "$branch_name"
+  echo "Branch created: $branch_name"
+}
+
+# Sync alpha and develop with master/main
+sync_branches() {
+  ensure_git_repo
+  local main_branch
+  main_branch=$(detect_main_branch)
+  git checkout "$main_branch" || exit
+  git pull origin "$main_branch" || exit
+
+  for branch in alpha develop; do
+    git checkout "$branch" || git checkout -b "$branch" || exit
+    git merge "$main_branch" || exit
+    git push origin "$branch" || exit
+    echo "Synced $branch with $main_branch."
+  done
+}
+
+# Merge branches
+merge_branch() {
+  local source=$1
+  local target=$2
+  ensure_git_repo
+  git checkout "$target" || exit
+  git pull origin "$target" || exit
+  git merge --no-ff "$source" || exit
+  git push origin "$target" || exit
+  echo "Merged $source into $target."
+}
+
+# Tag a release
+tag_release() {
+  local version=$1
+  ensure_git_repo
+  git tag -a "$version" -m "Release $version" || exit
+  git push origin "$version" || exit
+  echo "Tagged release: $version"
+}
+
+# Cleanup merged branches
+cleanup_branches() {
+  ensure_git_repo
+  git branch --merged | grep -vE "(^\*|master|main|develop|alpha)" | while read branch; do
+    git branch -d "$branch" || exit
+    git push origin --delete "$branch" || exit
+    echo "Deleted branch: $branch"
+  done
+}
+
+# Fetch PRs, Non-PR Merges, and Standalone Commits
+fetch_prs_and_commits() {
+  local start_commit="$1"
+  local end_commit="${2:-HEAD}" # Default to HEAD if not provided
+  local output_file="${3:-pr_and_commits_report.txt}"
+
+  if [[ -z "$start_commit" ]]; then
+    echo "Error: Start commit is required."
+    return 1
+  fi
+
+  local commit_range="${start_commit}..${end_commit}"
+
+  echo "Generating report for commits in range: $commit_range"
+  echo "Saving output to: $output_file"
+
+  echo "PRs, Non-PR Merges, and Standalone Commits Report" >"$output_file"
+  echo "" >>"$output_file"
+
+  # PRs
+  echo "1. PRs:" >>"$output_file"
+  echo "" >>"$output_file"
+  git log --merges --pretty=format:"%h|%s|%b|%an|%ae|%ad" "$commit_range" | grep "Merge pull request" | while IFS= read -r merge_commit; do
+    local merge_hash=$(echo "$merge_commit" | cut -d'|' -f1)
+    local pr_details=$(echo "$merge_commit" | cut -d'|' -f2-)
+    echo "Merge Commit: $merge_hash | $pr_details" >>"$output_file"
+    echo "  Commits in this PR:" >>"$output_file"
+    git log "${merge_hash}^1..${merge_hash}" --no-merges --pretty=format:"    %h|%s|%b|%an|%ae|%ad" >>"$output_file"
+    echo "" >>"$output_file"
+  done
+
+  # Non-PR Merges
+  echo "2. Non-PR Merges:" >>"$output_file"
+  echo "" >>"$output_file"
+  git log --merges --pretty=format:"%h|%s|%b|%an|%ae|%ad" "$commit_range" | grep -v "Merge pull request" | while IFS= read -r merge_commit; do
+    local merge_hash=$(echo "$merge_commit" | cut -d'|' -f1)
+    local merge_details=$(echo "$merge_commit" | cut -d'|' -f2-)
+    echo "Merge Commit: $merge_hash | $merge_details" >>"$output_file"
+    echo "  Commits in this Merge:" >>"$output_file"
+    git log "${merge_hash}^1..${merge_hash}" --no-merges --pretty=format:"    %h|%s|%b|%an|%ae|%ad" >>"$output_file"
+    echo "" >>"$output_file"
+  done
+
+  # Standalone Commits
+  echo "3. Standalone Commits:" >>"$output_file"
+  echo "" >>"$output_file"
+  local all_commits=$(git log --no-merges --pretty=format:"%h" "$commit_range")
+  local merge_commits=$(git log --merges --pretty=format:"%h" "$commit_range" | while IFS= read -r merge_commit; do
+    git log "${merge_commit}^1..${merge_commit}" --no-merges --pretty=format:"%h"
+  done)
+  local standalone_commits=$(comm -23 <(echo "$all_commits" | sort) <(echo "$merge_commits" | sort))
+  for commit in $standalone_commits; do
+    local commit_details=$(git log -n 1 --pretty=format:"%h|%s|%b|%an|%ae|%ad" "$commit")
+    echo "$commit_details" >>"$output_file"
+  done
+
+  echo "" >>"$output_file"
+  echo "Report generated in $output_file"
+}
+
+# Unified stash operations
+stash_operations() {
+  echo "Choose an operation:"
+  echo "1. Save current changes to stash"
+  echo "2. List existing stashes"
+  echo "3. Apply a stash"
+  echo "4. Drop a stash"
+  read -rp "Enter your choice: " choice
+
+  case $choice in
+  1)
+    local branch_name=$(git rev-parse --abbrev-ref HEAD)
+    local timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
+    local stash_name="Stash on $branch_name @ $timestamp"
+    git stash save "$stash_name"
+    echo "Changes stashed as: $stash_name"
+    ;;
+  2)
+    echo "Available Stashes:"
+    git stash list | nl -w2 -s". "
+    ;;
+  3)
+    git stash list | nl -w2 -s". "
+    read -rp "Enter the stash number to apply: " stash_number
+    local stash_ref=$(git stash list | sed -n "${stash_number}p" | awk '{print $1}')
+    [[ -n "$stash_ref" ]] && git stash apply "$stash_ref" && echo "Applied stash: $stash_ref"
+    ;;
+  4)
+    git stash list | nl -w2 -s". "
+    read -rp "Enter the stash number to drop: " stash_number
+    local stash_ref=$(git stash list | sed -n "${stash_number}p" | awk '{print $1}')
+    [[ -n "$stash_ref" ]] && git stash drop "$stash_ref" && echo "Dropped stash: $stash_ref"
+    ;;
+  *)
+    echo "Invalid choice."
+    ;;
+  esac
+}
+
+# Compare branches
+compare_branches() {
+  read -rp "Enter the first branch to compare: " branch1
+  read -rp "Enter the second branch to compare: " branch2
+  echo "Commits in $branch2 but not in $branch1:"
+  git log "$branch1".."$branch2" --oneline
+  echo ""
+  echo "Commits in $branch1 but not in $branch2:"
+  git log "$branch2".."$branch1" --oneline
+}
+
+# Git configuration editor
+edit_git_config() {
+  echo "Current Git Configuration:"
+  git config --list
+  read -rp "Enter the key you want to edit (or press Enter to exit): " key
+  if [[ -n "$key" ]]; then
+    read -rp "Enter the new value for $key: " value
+    git config --global "$key" "$value"
+    echo "Updated $key to $value globally."
+  else
+    echo "No changes made."
+  fi
+}
+summarize_repo() {
+  ensure_git_repo
+  echo "Repository Summary:"
+  echo "===================="
+  echo "Current Branch: $(git rev-parse --abbrev-ref HEAD)"
+  echo "Latest Commit: $(git log -1 --pretty=format:'%h - %s (%an, %ad)' --date=short)"
+  echo "Total Commits: $(git rev-list --count HEAD)"
+  echo "Remotes:"
+  git remote -v | awk '{print "  - " $1 " -> " $2}' | sort | uniq
+  echo "Branches:"
+  git branch -a
+  echo ""
+}
+track_staged_changes() {
+  local diff_file="${1:-diffs.txt}"
+
+  ensure_git_repo
+  echo "Tracking changes in staged files..."
+  git --no-pager diff --cached >"$diff_file"
+
+  if [[ -s "$diff_file" ]]; then
+    echo "Staged changes saved to $diff_file"
+  else
+    echo "No changes are currently staged."
+  fi
+}
+
+# Main script logic
+case $1 in
+report) fetch_prs_and_commits "$2" "$3" "$4" ;;
+diff) track_staged_changes "$2" ;;
+stash) stash_operations ;;
+create) create_branch "$2" "$3" ;;
+sync) sync_branches ;;
+merge) merge_branch "$2" "$3" ;;
+tag) tag_release "$2" ;;
+cleanup) cleanup_branches ;;
+compare) compare_branches ;;
+config) edit_git_config ;;
+summarize) summarize_repo ;;
+*) usage ;;
+esac
