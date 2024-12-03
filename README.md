@@ -1,7 +1,3 @@
-Here’s the updated README with the addition of `gitx`:
-
----
-
 # Toolset
 
 Welcome to **Toolset**, a versatile set of scripts designed to streamline your Linux-based development environment management tasks. This repository provides three key utilities: `dockex` for Docker container management, `phpx` for PHP version and extension management, and `gitx` for Git workflow and repository management.
