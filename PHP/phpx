@@ -246,33 +246,65 @@ configure_web_server() {
       return 1
     fi
 
-    # Check if PHP-FPM for the specified version is running
-    if systemctl is-active --quiet "php$version-fpm"; then
-      echo -e "${YELLOW}Apache is configured to use PHP-FPM for PHP $version.${NC}"
-      log_action "INFO" "Apache is configured to use PHP-FPM for PHP $version."
+    apache_needs_restart=false
 
-      # Disable mod_php to prevent conflicts
-      if apache2ctl -M | grep -q "php$version_module"; then
-        a2dismod "php$version"
+    # Function to disable conflicting modules
+    disable_conflicting_modules() {
+      local module="$1"
+      if apache2ctl -M | grep -q "$module"; then
+        sudo a2dismod "$module"
         apache_needs_restart=true
       fi
+    }
+
+    apache_needs_restart=false
+
+    # Function to enable required modules
+    enable_required_modules() {
+      local modules=("proxy" "proxy_fcgi" "setenvif" "rewrite" "ssl" "socache_shmcb" "headers")
+      for module in "${modules[@]}"; do
+        if ! apache2ctl -M | grep -q "${module}_module"; then
+          sudo a2enmod "$module"
+          apache_needs_restart=true
+        fi
+      done
+    }
+
+    # Check if PHP-FPM for the specified version is running
+    if systemctl is-active --quiet "php$version-fpm"; then
+      echo -e "${YELLOW}Configuring Apache to use PHP-FPM for PHP $version...${NC}"
+      log_action "INFO" "Configuring Apache to use PHP-FPM for PHP $version."
+
+      # Disable mod_php to prevent conflicts
+      disable_conflicting_modules "php$version"
 
       # Enable necessary modules and configuration for PHP-FPM
-      a2enmod proxy_fcgi setenvif
-      a2enconf "php$version-fpm"
+      enable_required_modules
+      sudo a2enconf "php$version-fpm"
+
+      # Switch to mpm_event for better performance with PHP-FPM
+      sudo a2dismod mpm_prefork
+      sudo a2enmod mpm_event
       apache_needs_restart=true
     else
-      echo -e "${YELLOW}Apache is configured to use mod_php for PHP $version.${NC}"
-      log_action "INFO" "Apache is configured to use mod_php for PHP $version."
+      echo -e "${YELLOW}Configuring Apache to use mod_php for PHP $version...${NC}"
+      log_action "INFO" "Configuring Apache to use mod_php for PHP $version."
 
       # Disable PHP-FPM configuration to prevent conflicts
       if [ -f "/etc/apache2/conf-enabled/php$version-fpm.conf" ]; then
-        a2disconf "php$version-fpm"
+        sudo a2disconf "php$version-fpm"
         apache_needs_restart=true
       fi
 
       # Enable mod_php
-      a2enmod "php$version"
+      sudo a2enmod "php$version"
+
+      # Enable necessary modules
+      enable_required_modules
+
+      # Switch to mpm_prefork as mod_php requires it
+      sudo a2dismod mpm_event
+      sudo a2enmod mpm_prefork
       apache_needs_restart=true
     fi
 
@@ -280,7 +312,7 @@ configure_web_server() {
     if [ "$apache_needs_restart" = true ]; then
       echo -e "${YELLOW}Restarting Apache...${NC}"
       log_action "INFO" "Restarting Apache."
-      systemctl restart apache2
+      sudo systemctl restart apache2
     fi
     ;;
   nginx | lighttpd)
@@ -300,6 +332,7 @@ configure_web_server() {
     ;;
   esac
 }
+
 
 switch_php_version() {
   require_sudo
