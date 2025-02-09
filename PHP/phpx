@@ -198,8 +198,9 @@ configure_web_server() {
   local available_servers=()
   local service
 
+  # Check for installed web servers
   for service in "${!servers[@]}"; do
-    if systemctl status "$service" &>/dev/null; then
+    if systemctl is-active --quiet "$service"; then
       available_servers+=("$service")
     fi
   done
@@ -210,10 +211,17 @@ configure_web_server() {
     return 0
   fi
 
+  # Add the exit option to the menu
+  available_servers+=("exit")
+
   echo -e "${YELLOW}Detected web servers:${NC}"
   local i
   for i in "${!available_servers[@]}"; do
-    echo "$((i + 1)). ${servers[${available_servers[$i]}]}"
+    if [[ "${available_servers[$i]}" == "exit" ]]; then
+      echo "$((i + 1)). Exit without configuring"
+    else
+      echo "$((i + 1)). ${servers[${available_servers[$i]}]}"
+    fi
   done
 
   read -rp "Select a web server to configure with PHP $version (enter number): " server_selection
@@ -223,42 +231,52 @@ configure_web_server() {
   done
   local selected_server="${available_servers[$((server_selection - 1))]}"
 
+  if [[ "$selected_server" == "exit" ]]; then
+    echo -e "${YELLOW}Exiting without configuring any server.${NC}"
+    log_action "INFO" "User chose to exit without configuring any server."
+    return 0
+  fi
+
   case "$selected_server" in
   apache2)
-    if systemctl status php$version-fpm &>/dev/null; then
-      echo -e "${YELLOW}Apache is using PHP-FPM...${NC}"
-      log_action "INFO" "Apache is using PHP-FPM for PHP $version."
-      a2enconf "php$version-fpm"
-      systemctl restart apache2
-    else
-      echo -e "${YELLOW}Apache is not using PHP-FPM.${NC}"
-      log_action "INFO" "Apache is not using PHP-FPM for PHP $version."
-      a2dismod "php$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
-      a2enmod "php$version"
-      systemctl restart apache2
+    # Ensure the specified PHP version is installed
+    if ! dpkg -l | grep -q "php$version"; then
+      echo -e "${RED}PHP $version is not installed. Please install it before proceeding.${NC}"
+      log_action "ERROR" "PHP $version is not installed."
+      return 1
     fi
 
-    local apache_needs_restart=false
-    if apache2ctl -M | grep -q "proxy_fcgi"; then
-      echo -e "${YELLOW}Apache is configured to use PHP-FPM (Update SetHandler afterwards, if necessary)${NC}"
-      log_action "INFO" "Apache is configured to use PHP-FPM."
-      local current_fpm_conf=$(ls /etc/apache2/conf-enabled/php*-fpm.conf 2>/dev/null | awk -F'/' '{print $5}' | sed 's/.conf//')
-      if [ -n "$current_fpm_conf" ]; then
-        a2disconf "$current_fpm_conf"
+    # Check if PHP-FPM for the specified version is running
+    if systemctl is-active --quiet "php$version-fpm"; then
+      echo -e "${YELLOW}Apache is configured to use PHP-FPM for PHP $version.${NC}"
+      log_action "INFO" "Apache is configured to use PHP-FPM for PHP $version."
+
+      # Disable mod_php to prevent conflicts
+      if apache2ctl -M | grep -q "php$version_module"; then
+        a2dismod "php$version"
         apache_needs_restart=true
       fi
-      if [ -f "/etc/apache2/conf-available/php$version-fpm.conf" ]; then
-        a2enconf "php$version-fpm"
-        apache_needs_restart=true
-      fi
+
+      # Enable necessary modules and configuration for PHP-FPM
+      a2enmod proxy_fcgi setenvif
+      a2enconf "php$version-fpm"
+      apache_needs_restart=true
     else
-      echo -e "${YELLOW}Apache is not using PHP-FPM.${NC}"
-      log_action "INFO" "Apache is not using PHP-FPM for PHP $version."
-      local current_php_version=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
-      a2dismod "php$current_php_version"
+      echo -e "${YELLOW}Apache is configured to use mod_php for PHP $version.${NC}"
+      log_action "INFO" "Apache is configured to use mod_php for PHP $version."
+
+      # Disable PHP-FPM configuration to prevent conflicts
+      if [ -f "/etc/apache2/conf-enabled/php$version-fpm.conf" ]; then
+        a2disconf "php$version-fpm"
+        apache_needs_restart=true
+      fi
+
+      # Enable mod_php
       a2enmod "php$version"
       apache_needs_restart=true
     fi
+
+    # Restart Apache if needed
     if [ "$apache_needs_restart" = true ]; then
       echo -e "${YELLOW}Restarting Apache...${NC}"
       log_action "INFO" "Restarting Apache."
@@ -266,9 +284,19 @@ configure_web_server() {
     fi
     ;;
   nginx | lighttpd)
-    echo -e "${YELLOW}Configure $selected_server to use PHP-FPM:${NC}"
-    echo -e "Update your config to point to: /run/php/php$version-fpm.sock"
-    log_action "INFO" "Configured $selected_server to use PHP-FPM for PHP $version."
+    echo -e "${YELLOW}Configuring $selected_server to use PHP-FPM for PHP $version...${NC}"
+    log_action "INFO" "Configuring $selected_server to use PHP-FPM for PHP $version."
+
+    # Ensure PHP-FPM is installed and running
+    if ! systemctl is-active --quiet "php$version-fpm"; then
+      echo -e "${RED}PHP-FPM for PHP $version is not running. Please install and start it before proceeding.${NC}"
+      log_action "ERROR" "PHP-FPM for PHP $version is not running."
+      return 1
+    fi
+
+    # Provide instructions for manual configuration
+    echo -e "${YELLOW}Please update your $selected_server configuration to use the PHP-FPM socket at /run/php/php$version-fpm.sock.${NC}"
+    echo -e "${YELLOW}For Nginx, update the 'fastcgi_pass' directive; for Lighttpd, update the 'fastcgi.server' directive accordingly.${NC}"
     ;;
   esac
 }
