@@ -48,14 +48,16 @@ sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Git/git
 
 ### phpx
 
-`phpx` is a PHP management script that allows you to switch between PHP versions, manage extensions, and handle PHP-FPM and CLI configurations. It also offers built-in web server capabilities.
+`phpx` is a lightweight PHP management script allowing you to switch between PHP versions, manage extensions, configure PHP-FPM or mod_php for different web servers, and even run a quick built-in server. It also lets you install Composer, PECL packages, remove unwanted versions/extensions, and more.
 
 #### Key Features:
-- Switch between multiple PHP versions
-- Install and manage PHP extensions
-- Serve a PHP application with a built-in PHP web server
-- Install Composer and PECL packages easily
-- Remove PHP versions and extensions when no longer needed
+- **Switch** between multiple PHP versions (with automatic installation if missing).
+- **Install & Manage** PHP extensions (interactive selection or by name).
+- **Clean** orphaned/missing extension references to prevent startup errors.
+- **Serve** a PHP application quickly using the built-in PHP web server.
+- **Install Composer** or **PECL** packages with minimal hassle.
+- **Remove** entire PHP versions (including dependencies) or just selected extensions.
+- **Self-Update** the phpx script to get the latest features and fixes.
 
 ### gitx
 
@@ -105,32 +107,77 @@ dockex create nginx my_container # Create a new container using the nginx image
 ### phpx Commands
 
 ```bash
-phpx {switch|ext|install|serve|run|remove|sury} <php_version|composer|pecl_package|script_path>
+phpx {switch|ext|install|serve|run|remove|sury|clean|self-update} <arguments>
 ```
 
 #### Available Commands:
-- **switch** | **s** `<php_version>`: Switch to a specified PHP version, installing it if not found. Also installs PHP-FPM if needed for Nginx or Lighttpd.
-- **ext** | **extensions** | **x** `[php_version]`: Show installed PHP extensions for a given version and allow new ones to be installed. Defaults to the current PHP version if none is provided.
-- **install** | **i** **composer**: Install Composer globally if not already installed.
-- **install** | **i** `<pecl_package>`: Install a PECL package (or multiple packages separated by commas).
-- **serve**: Start a PHP built-in web server from the current or specified root directory.
-- **run** `<script_path>` `[php_version]`: Run a PHP script using the specified or currently active PHP version.
-- **remove** `<php_version>`: Remove the specified PHP version.
-- **remove** `[php_version] [extension | ext]`: Remove a specified PHP extension for a given version (Interactive).
-- **remove** : Remove a specified PHP extension for a current version (Interactive).
-- **sury**: Add the Sury PPA for the current operating system.
+- **`switch|s <php_version>`**  
+  Switch to the specified PHP version (e.g., 8.2), installing it if not found. Also sets up PHP-FPM or mod_php for your current web server (Apache, Nginx, Lighttpd).
+
+- **`ext|extensions|x [php_version]`**  
+  Lists currently installed extensions for the given PHP version and allows interactive installation of additional extensions. If no version is provided, it defaults to the active PHP version.
+
+- **`install|i composer`**  
+  Installs Composer globally if not already installed, then updates it to the latest version.
+
+- **`install|i <pecl_package>(,...)`**  
+  Installs one or more PECL packages (e.g., `xdebug,redis`). Automatically sets up PECL if it’s missing.
+
+- **`serve [--host <host>] [--port <port>] [--root <dir>] [--router <file>] [-v]`**  
+  Spins up the built-in PHP development server from the specified (or current) directory.
+  - `--host`: Defaults to `127.0.0.1`
+  - `--port`: Defaults to `8000`
+  - `--root`: Defaults to your current directory
+  - `--router`: If provided, uses a custom router file
+  - `-v|--verbose`: Increases output for debugging
+
+- **`run <script_path> [php_version]`**  
+  Runs a PHP script using the specified or currently active PHP version. If the specified version is missing, it attempts to install it first.
+
+- **`remove <php_version>`**  
+  Removes the specified PHP version and all associated packages/services (e.g., PHP-FPM).
+  - **`remove <php_version> ext|extension`**: Interactively remove selected extensions for that version.
+
+- **`sury`**  
+  Adds the Sury (or Ondrej) repository for Debian/Ubuntu systems if needed, providing the latest PHP packages.
+
+- **`clean [php_version]`**  
+  Checks for and removes references to missing/broken PHP extensions (e.g., stale `.ini` files) in the specified or current PHP version. Helps eliminate “Unable to load dynamic library” errors.
+
+- **`self-update`**  
+  Updates the **phpx** script itself by fetching the latest version from GitHub. Backs up the old file for safety.
 
 #### Examples:
 ```bash
-phpx switch 8.2                       # Switch to PHP 8.2 and install if necessary
-phpx ext                              # Show installed extensions for the current PHP version
-phpx install composer                 # Install Composer globally
-phpx install xdebug,redis             # Install multiple PECL packages (xdebug and redis)
-phpx serve --host=192.168.0.1 --port=8080  # Serve the current directory at the specified host and port
-phpx run 8.2 my_script.php            # Run a PHP script using PHP version 8.2
-phpx remove 8.1                       # Remove PHP version 8.1
-phpx remove 8.2 ext                  # Remove extensions for given version interactively
-phpx remove                           # Remove extensions for current version interactively
+# Switch to PHP 8.2 (installing if needed) and configure Apache or Nginx:
+phpx switch 8.2
+
+# List installed extensions for the current PHP version and install new ones interactively:
+phpx ext
+
+# Install Composer globally if missing:
+phpx install composer
+
+# Install multiple PECL packages (e.g., xdebug and redis):
+phpx install xdebug,redis
+
+# Serve the current directory on 192.168.0.1:8080, optionally specifying a custom router:
+phpx serve --host=192.168.0.1 --port=8080 --root=/var/www --router=router.php
+
+# Run a specific script with PHP 8.2:
+phpx run /path/to/my_script.php 8.2
+
+# Clean orphaned extensions (.ini references to missing .so files) for the current PHP version:
+phpx clean
+
+# Remove an entire PHP version (and optional FPM service):
+phpx remove 8.1
+
+# Remove extensions for PHP 8.2 interactively:
+phpx remove 8.2 ext
+
+# Update phpx itself to the latest version:
+phpx self-update
 ```
 
 ### gitx Commands
