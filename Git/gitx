@@ -3,88 +3,191 @@
 # Helper function for displaying usage
 usage() {
   echo "Usage: gitx <command> [options]"
-  echo "Commands:"
-  echo "  unstage                                          Unstage all files"
-  echo "  amend                                            Amend the last commit message"
-  echo "  add-remote                                       Add a new remote repository"
-  echo "  push-remote                                      Push to a specific remote branch"
-  echo "  pull-remote                                      Pull from a specific remote branch"
-  echo "  stage-deleted                                    Stage all deleted files"
-  echo "  stage-deleted-dir                                Stage deleted files in a directory"
-  echo "  initial-commit                                   Get the initial commit hash"
-  echo "  latest-tag                                       Get the latest tag in the repository"
-  echo "  changelog                                        Generate a changelog between commits or tags"
-  echo "  count-changes                                    Count changes between two commits"
-  echo "  list-changes                                     List files changed between branches"
-  echo "  set-lf                                           Set Git to use LF line endings"
-  echo "  prune                                            Prune remote branches and delete local branches tracking them"
-  echo "  reset-branch                                     Reset current branch to remote state"
-  echo "  report <start_commit> [end_commit] [output_file] Generate PR and commit report"
-  echo "  diff [output_file]                               Track changes in staged files"
-  echo "  stash                                            Manage stash operations"
-  echo "  compare                                          Compare two branches"
-  echo "  config                                           Edit Git configuration"
-  echo "  create <branch_type> <name>                      Create a new branch"
+  echo ""
+  echo "📂 Repository & Branch Management:"
+  echo "  status                                           Show repository status, branch tracking, and remote info"
+  echo "  fetch                                            Fetch remote branches and prune stale references"
   echo "  sync                                             Sync alpha and develop with master/main"
-  echo "  merge <source_branch> <target_branch>           Merge branches"
-  echo "  tag <version>                                    Tag the current branch with a version"
+  echo "  create <branch_type> <name>                      Create a new branch from master/main"
+  echo "      - branch_type: feature, bugfix, hotfix, release, docs, ci, experiment"
+  echo "      - name: A short descriptive name for the branch"
+  echo "  merge <source_branch> <target_branch>           Merge one branch into another"
+  echo "      - source_branch: The branch to merge from"
+  echo "      - target_branch: The branch to merge into"
+  echo "  reset-branch                                     Reset current branch to remote state"
+  echo "      - Interactive mode with soft/hard reset options"
+  echo "  prune                                            Prune remote branches and delete local tracking branches"
   echo "  cleanup                                          Delete merged branches"
-  echo "  summarize                                        Summarize repository details"
-  echo "  clean                                            Clean untracked files and directories"
-  echo "  status                                           Show the current repository status"
+  echo "      - Prompts to confirm deletion"
+  echo "  compare <branch1> <branch2>                      Compare two branches"
+  echo "      - branch1: The first branch to compare"
+  echo "      - branch2: The second branch to compare"
+  echo ""
+  echo "📦 Commit & Change Management:"
   echo "  commit                                           Interactive commit helper"
-  echo "  cherry-pick                                      Cherry-pick a specific commit"
+  echo "      - Allows selecting files and entering a commit message"
+  echo "  amend                                            Amend the last commit message"
+  echo "      - Optionally enter a new commit message or edit interactively"
+  echo "  cherry-pick <commit_hash>                        Cherry-pick specific commits"
+  echo "      - commit_hash: The commit hash to cherry-pick"
+  echo "  revert                                           Revert specific commits with options"
+  echo "      - Interactive mode to select commits"
+  echo "  unstage                                          Unstage all files"
+  echo "      - Requires confirmation before unstaging"
+  echo "  stage-deleted                                    Stage all deleted files"
+  echo "  stage-deleted-dir <directory>                    Stage deleted files in a specific directory"
+  echo "      - directory: Path to the directory"
+  echo "  diff [output_file]                               View or save staged changes"
+  echo "      - output_file: Save diff to a file (optional)"
+  echo ""
+  echo "🔍 Tracking & Reporting:"
+  echo "  log-file <file_path>                             View commit history and diffs for a specific file"
+  echo "      - file_path: Path to the file to inspect"
+  echo "  summary [commit_range] [include-all]            Summarize commits, files, insertions, deletions, surviving code"
+  echo "      - commit_range: Optional, e.g., HEAD~50"
+  echo "      - include-all: Optional, include all text-based files"
+  echo "  report <start_commit> [end_commit] [file]       Generate PR and commit report"
+  echo "      - start_commit: The starting commit hash or tag"
+  echo "      - end_commit: The ending commit hash or tag (default: HEAD)"
+  echo "      - file: Output file for the report (optional)"
+  echo "  count-changes                                    Count changes (insertions, deletions) between two commits"
+  echo "  list-changes <branch1> <branch2>                 List files changed between two branches"
+  echo "      - branch1: The first branch"
+  echo "      - branch2: The second branch"
+  echo "  changelog <start_commit> <end_commit>           Generate a changelog between commits or tags"
+  echo "      - start_commit: The starting commit hash or tag"
+  echo "      - end_commit: The ending commit hash or tag"
+  echo ""
+  echo "🔖 Tags & Releases:"
+  echo "  tag <version>                                    Tag the current branch with a version (e.g., v1.0.0)"
+  echo "      - version: Must follow semantic versioning (vX.Y.Z)"
+  echo "  latest-tag                                       Get the latest tag in the repository"
+  echo "  initial-commit                                   Get the initial commit hash"
+  echo ""
+  echo "🗄️ Stashing & Cleanup:"
+  echo "  stash                                            Manage stash operations (save, list, apply, drop, rename, clear)"
+  echo "  clean                                            Clean untracked files and directories"
+  echo "      - Interactive mode with preview option"
   echo "  large-files                                      Show the largest files in the repository"
+  echo "      - Prompts for the number of files to display"
+  echo ""
+  echo "⚙️ Configuration & Utilities:"
+  echo "  add-remote <name> <url>                         Add a new remote repository"
+  echo "      - name: Remote name (e.g., origin)"
+  echo "      - url: Remote URL"
+  echo "  push-remote <remote> <branch>                   Push to a specific remote branch"
+  echo "      - remote: Remote name (e.g., origin)"
+  echo "      - branch: Branch to push"
+  echo "  pull-remote <remote> <branch>                   Pull from a specific remote branch"
+  echo "      - remote: Remote name (e.g., origin)"
+  echo "      - branch: Branch to pull"
+  echo "  config                                           Edit Git configuration (add/edit/remove keys)"
+  echo "  set-lf                                           Set Git to use LF line endings"
+  echo "  self-update                                      Update gitx to the latest version"
+  echo ""
+  echo "🔹 Example Usages:"
+  echo "  gitx commit                                      # Interactive commit helper"
+  echo "  gitx report v1.0.0 v2.0.0                        # Generate PR and commit report"
+  echo "  gitx reset-branch                                # Reset current branch to match remote"
+  echo "  gitx compare develop main                        # Compare two branches"
+  echo "  gitx summary HEAD~50 include-all                # Summarize commits with surviving code percentage"
+  echo ""
   exit 1
+}
+
+
+# Ensure Git repository
+ensure_git_repo() {
+  if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    echo "Error: Not inside a Git repository."
+    exit 1
+  fi
 }
 
 # Unstage all files
 unstage_all() {
   ensure_git_repo
-  echo "Unstaging all files..."
-  git reset
+  echo "WARNING: This will unstage all files!"
+  read -rp "Are you sure? (y/n): " confirm
+  [[ "$confirm" != "y" ]] && { echo "Operation cancelled."; return; }
+  git reset --staged .
   echo "All files have been unstaged."
 }
+
 
 # Amend the last commit message
 amend_commit_message() {
   ensure_git_repo
-  read -rp "Enter the new commit message: " new_message
-  git commit --amend -m "$new_message"
-  echo "Commit message amended to: $new_message"
+  read -rp "Enter the new commit message (leave blank to edit interactively): " new_message
+  if [[ -z "$new_message" ]]; then
+    git commit --amend
+  else
+    git commit --amend -m "$new_message"
+  fi
+  echo "Commit message amended."
 }
+
 
 # Add a new remote repository
 add_remote() {
   ensure_git_repo
   read -rp "Enter the remote name (e.g., origin): " remote_name
   read -rp "Enter the remote URL: " remote_url
-  git remote add "$remote_name" "$remote_url"
-  echo "Remote '$remote_name' added with URL '$remote_url'."
+
+  if [[ -z "$remote_name" || -z "$remote_url" ]]; then
+    echo "Error: Remote name and URL are required."
+    return 1
+  fi
+
+  git remote add "$remote_name" "$remote_url" && echo "Remote '$remote_name' added."
 }
 
 # Push to a specific remote branch
 push_to_remote() {
   ensure_git_repo
-  read -rp "Enter the remote name (e.g., origin): " remote_name
+  read -rp "Enter the remote name (default: origin): " remote_name
   read -rp "Enter the branch name to push: " branch_name
+
+  remote_name=${remote_name:-origin}
+
+  if ! git rev-parse --verify "$branch_name" >/dev/null 2>&1; then
+    echo "Error: Branch '$branch_name' does not exist."
+    return 1
+  fi
+
   git push "$remote_name" "$branch_name"
   echo "Pushed branch '$branch_name' to remote '$remote_name'."
 }
 
+
 # Pull from a specific remote branch
 pull_from_remote() {
   ensure_git_repo
-  read -rp "Enter the remote name (e.g., origin): " remote_name
+  read -rp "Enter the remote name (default: origin): " remote_name
   read -rp "Enter the branch name to pull: " branch_name
+
+  remote_name=${remote_name:-origin}
+
+  if ! git remote | grep -qw "$remote_name"; then
+    echo "Error: Remote '$remote_name' does not exist."
+    return 1
+  fi
+
   git pull "$remote_name" "$branch_name"
   echo "Pulled branch '$branch_name' from remote '$remote_name'."
 }
 
+
 # Stage all deleted files
 stage_deleted_files() {
   ensure_git_repo
-  echo "Staging deleted files..."
+  deleted_files=$(git ls-files --deleted)
+
+  if [[ -z "$deleted_files" ]]; then
+    echo "No deleted files to stage."
+    return 0
+  fi
+
   git ls-files --deleted | xargs git add
   echo "Deleted files have been staged."
 }
@@ -93,26 +196,47 @@ stage_deleted_files() {
 stage_deleted_in_directory() {
   ensure_git_repo
   read -rp "Enter the directory path: " dir_path
-  if [[ -d "$dir_path" ]]; then
-    echo "Staging deleted files in $dir_path..."
-    git ls-files --deleted "$dir_path" | xargs git add
-    echo "Deleted files in $dir_path have been staged."
-  else
-    echo "Directory '$dir_path' does not exist."
+
+  if [[ ! -d "$dir_path" ]]; then
+    echo "Error: Directory '$dir_path' does not exist."
+    return 1
   fi
+
+  deleted_files=$(git ls-files --deleted "$dir_path")
+
+  if [[ -z "$deleted_files" ]]; then
+    echo "No deleted files to stage in '$dir_path'."
+    return 0
+  fi
+
+  git add $deleted_files
+  echo "Deleted files in '$dir_path' have been staged."
 }
+
 
 # Get the initial commit hash
 get_initial_commit() {
   ensure_git_repo
-  initial_commit=$(git rev-list --max-parents=0 HEAD)
+  initial_commit=$(git rev-list --max-parents=0 HEAD 2>/dev/null)
+  
+  if [[ -z "$initial_commit" ]]; then
+    echo "Error: No commits found in this repository."
+    return 1
+  fi
+
   echo "Initial Commit: $initial_commit"
 }
 
 # Get the latest tag in the repository
 get_latest_tag() {
   ensure_git_repo
-  latest_tag=$(git describe --tags --abbrev=0)
+  latest_tag=$(git describe --tags --abbrev=0 2>/dev/null)
+
+  if [[ -z "$latest_tag" ]]; then
+    echo "No tags found in this repository."
+    return 1
+  fi
+
   echo "Latest Tag: $latest_tag"
 }
 
@@ -153,14 +277,6 @@ set_line_endings_to_lf() {
   echo "Configured Git to use LF line endings."
 }
 
-# Ensure Git repository
-ensure_git_repo() {
-  if ! git rev-parse --is-inside-work-tree &>/dev/null; then
-    echo "Error: Not inside a Git repository."
-    exit 1
-  fi
-}
-
 # Detect master/main branch
 detect_main_branch() {
   if git symbolic-ref refs/remotes/origin/HEAD &>/dev/null; then
@@ -179,43 +295,64 @@ create_branch() {
   local branch_type=$1
   local name=$2
   ensure_git_repo
-  local main_branch
-  main_branch=$(detect_main_branch)
-  git checkout "$main_branch" || exit
-  git pull origin "$main_branch" || exit
+
+  # Validate input
+  if [[ -z "$branch_type" || -z "$name" ]]; then
+    echo "Error: Branch type and name are required."
+    return 1
+  fi
+
   local branch_name="${branch_type}/${name}"
+
+  # Check if branch already exists
+  if git show-ref --verify --quiet "refs/heads/$branch_name"; then
+    echo "Error: Branch '$branch_name' already exists."
+    return 1
+  fi
+
+  # Detect main branch (optimized)
+  local main_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "master")
+
+  if [[ $(git rev-parse --abbrev-ref HEAD) != "$main_branch" ]]; then
+    echo "Switching to main branch ($main_branch) and pulling latest changes..."
+    git checkout "$main_branch" && git pull origin "$main_branch"
+  fi
+
   git checkout -b "$branch_name" || exit
   git push origin "$branch_name"
   echo "Branch created: $branch_name"
 }
 
+
 # Sync alpha and develop with master/main
 sync_branches() {
   ensure_git_repo
-  local main_branch
-  main_branch=$(detect_main_branch)
-  git checkout "$main_branch" || exit
-  git pull origin "$main_branch" || exit
+  local main_branch=$(detect_main_branch)
+
+  echo "Syncing branches with $main_branch..."
 
   local branches=("alpha" "develop")
   read -rp "Do you want to sync additional branches? (y/n): " sync_more
   if [[ "$sync_more" == "y" ]]; then
-    read -rp "Enter the branches to sync (comma-separated): " additional_branches
+    read -rp "Enter branches to sync (comma-separated): " additional_branches
     IFS=',' read -r -a user_branches <<<"$additional_branches"
     branches+=("${user_branches[@]}")
   fi
 
+  # Fetch main branch once to avoid repeated fetches
+  git checkout "$main_branch" && git pull origin "$main_branch"
+
   for branch in "${branches[@]}"; do
     if git show-ref --verify --quiet "refs/heads/$branch"; then
-      git checkout "$branch" || exit
+      echo "Merging $main_branch into $branch..."
+      git checkout "$branch" && git merge --no-ff "$main_branch" && git push origin "$branch"
+      echo "Synced $branch with $main_branch."
     else
-      git checkout -b "$branch" || exit
+      echo "Branch '$branch' does not exist. Skipping..."
     fi
-    git merge "$main_branch" || exit
-    git push origin "$branch" || exit
-    echo "Synced $branch with $main_branch."
   done
 }
+
 
 # Merge branches
 merge_branch() {
@@ -223,20 +360,33 @@ merge_branch() {
   local target=$2
   ensure_git_repo
 
-  echo "Switching to branch $target..."
-  git checkout "$target" || exit
-  git pull origin "$target" || exit
+  if [[ -z "$source" || -z "$target" ]]; then
+    echo "Error: Source and target branches are required."
+    return 1
+  fi
+
+  if ! git show-ref --verify --quiet "refs/heads/$source" || ! git show-ref --verify --quiet "refs/heads/$target"; then
+    echo "Error: One or both branches do not exist."
+    return 1
+  fi
+
+  echo "About to merge '$source' into '$target'."
+  read -rp "Are you sure? (y/n): " confirm
+  [[ "$confirm" != "y" ]] && { echo "Merge cancelled."; return; }
+
+  git checkout "$target" && git pull origin "$target"
 
   echo "Merging $source into $target..."
-  git merge --no-ff "$source" || {
-    echo "Merge conflicts detected. Resolve conflicts and continue or abort the merge."
+  if ! git merge --no-ff "$source"; then
+    echo "Merge conflicts detected. Resolve them and commit manually."
     echo "Run 'git merge --abort' to cancel the merge."
-    exit 1
-  }
+    return 1
+  fi
 
-  git push origin "$target" || exit
+  git push origin "$target"
   echo "Successfully merged $source into $target."
 }
+
 
 # Tag a release
 tag_release() {
@@ -245,181 +395,192 @@ tag_release() {
 
   if [[ -z "$version" ]]; then
     echo "Error: Version is required for tagging."
-    exit 1
+    return 1
+  fi
+
+  if ! [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Error: Version format must be 'vX.Y.Z' (e.g., v1.0.0)."
+    return 1
   fi
 
   if git rev-parse "refs/tags/$version" >/dev/null 2>&1; then
     echo "Error: Tag '$version' already exists."
-    exit 1
+    return 1
   fi
 
-  git tag -a "$version" -m "Release $version" || exit
-  git push origin "$version" || exit
-  echo "Tagged release: $version"
+  echo "Creating tag '$version'..."
+  git tag -a "$version" -m "Release $version" && git push origin "$version"
+  echo "Tag '$version' created successfully."
 }
+
 
 # Cleanup merged branches
 cleanup_branches() {
   ensure_git_repo
-  echo "Branches merged into the main branch:"
-  git branch --merged | grep -vE "(^\*|master|main|develop|alpha)"
+  echo "Merged branches (excluding main branches):"
+  merged_branches=$(git branch --merged | grep -vE "(^\*|master|main|develop|alpha)")
 
-  read -rp "Do you want to preview only (dry-run)? (y/n): " dry_run
-  if [[ "$dry_run" == "y" ]]; then
-    echo "Dry run complete. No branches were deleted."
-    return
+  if [[ -z "$merged_branches" ]]; then
+    echo "No merged branches found."
+    return 0
   fi
 
-  git branch --merged | grep -vE "(^\*|master|main|develop|alpha)" | while read branch; do
-    read -rp "Do you want to delete branch '$branch'? (y/n): " confirm
-    if [[ "$confirm" == "y" ]]; then
-      git branch -d "$branch" || exit
-      git push origin --delete "$branch" || exit
-      echo "Deleted branch: $branch"
-    else
-      echo "Skipped branch: $branch"
-    fi
-  done
+  echo "$merged_branches"
+  read -rp "Do you want to delete all merged branches? (y/n): " delete_all
+
+  if [[ "$delete_all" == "y" ]]; then
+    echo "$merged_branches" | xargs git branch -d
+    echo "Deleted all merged branches."
+  else
+    echo "$merged_branches" | while read branch; do
+      read -rp "Delete branch '$branch'? (y/n): " confirm
+      [[ "$confirm" == "y" ]] && git branch -d "$branch"
+    done
+  fi
 }
 
 # Fetch PRs, Non-PR Merges, and Standalone Commits
 fetch_prs_and_commits() {
   local start_commit="$1"
-  local end_commit="${2:-HEAD}" # Default to HEAD if not provided
+  local end_commit="${2:-HEAD}"  # Default to HEAD if not provided
   local output_file="${3:-pr_report_${start_commit}_to_${end_commit}.txt}"
 
+  ensure_git_repo
+
   if [[ -z "$start_commit" ]]; then
-    echo "Start commit is required."
+    echo "❌ Error: Start commit is required."
     read -rp "Enter the start commit hash: " start_commit
   fi
 
   local commit_range="${start_commit}..${end_commit}"
+  echo "🚀 Generating PR and commit report for range: $commit_range"
+  echo "📁 Saving output to: $output_file"
 
-  echo "Generating report for commits in range: $commit_range"
-  echo "Saving output to: $output_file"
+  {
+    echo "PRs, Non-PR Merges, and Standalone Commits Report"
+    echo ""
 
-  echo "PRs, Non-PR Merges, and Standalone Commits Report" >"$output_file"
-  echo "" >>"$output_file"
+    # 🔹 PRs (Merged Pull Requests)
+    echo "1️⃣ PRs:"
+    echo ""
+    git log --merges --pretty=format:"%h|%s|%b|%an|%ae|%ad" "$commit_range" | grep "Merge pull request" | while IFS= read -r merge_commit; do
+      local merge_hash=$(echo "$merge_commit" | cut -d'|' -f1)
+      local pr_details=$(echo "$merge_commit" | cut -d'|' -f2-)
+      echo "🔹 Merge Commit: $merge_hash | $pr_details"
+      echo "   PR Contains the following commits:"
+      git log "${merge_hash}^1..${merge_hash}" --no-merges --pretty=format:"   - %h | %s | %an (%ad)"
+      echo ""
+    done
 
-  # PRs
-  echo "1. PRs:" >>"$output_file"
-  echo "" >>"$output_file"
-  git log --merges --pretty=format:"%h|%s|%b|%an|%ae|%ad" "$commit_range" | grep "Merge pull request" | while IFS= read -r merge_commit; do
-    local merge_hash=$(echo "$merge_commit" | cut -d'|' -f1)
-    local pr_details=$(echo "$merge_commit" | cut -d'|' -f2-)
-    echo "Merge Commit: $merge_hash | $pr_details" >>"$output_file"
-    echo "  Commits in this PR:" >>"$output_file"
-    git log "${merge_hash}^1..${merge_hash}" --no-merges --pretty=format:"    %h|%s|%b|%an|%ae|%ad" >>"$output_file"
-    echo "" >>"$output_file"
-  done
+    # 🔹 Non-PR Merges
+    echo "2️⃣ Non-PR Merges:"
+    echo ""
+    git log --merges --pretty=format:"%h|%s|%b|%an|%ae|%ad" "$commit_range" | grep -v "Merge pull request" | while IFS= read -r merge_commit; do
+      local merge_hash=$(echo "$merge_commit" | cut -d'|' -f1)
+      local merge_details=$(echo "$merge_commit" | cut -d'|' -f2-)
+      echo "🔹 Merge Commit: $merge_hash | $merge_details"
+      echo "   Contains the following commits:"
+      git log "${merge_hash}^1..${merge_hash}" --no-merges --pretty=format:"   - %h | %s | %an (%ad)"
+      echo ""
+    done
 
-  # Non-PR Merges
-  echo "2. Non-PR Merges:" >>"$output_file"
-  echo "" >>"$output_file"
-  git log --merges --pretty=format:"%h|%s|%b|%an|%ae|%ad" "$commit_range" | grep -v "Merge pull request" | while IFS= read -r merge_commit; do
-    local merge_hash=$(echo "$merge_commit" | cut -d'|' -f1)
-    local merge_details=$(echo "$merge_commit" | cut -d'|' -f2-)
-    echo "Merge Commit: $merge_hash | $merge_details" >>"$output_file"
-    echo "  Commits in this Merge:" >>"$output_file"
-    git log "${merge_hash}^1..${merge_hash}" --no-merges --pretty=format:"    %h|%s|%b|%an|%ae|%ad" >>"$output_file"
-    echo "" >>"$output_file"
-  done
+    # 🔹 Standalone Commits
+    echo "3️⃣ Standalone Commits:"
+    echo ""
+    
+    # Get all commits
+    local all_commits=$(git log --no-merges --pretty=format:"%h" "$commit_range")
 
-  # Standalone Commits
-  echo "3. Standalone Commits:" >>"$output_file"
-  echo "" >>"$output_file"
-  local all_commits=$(git log --no-merges --pretty=format:"%h" "$commit_range")
-  local merge_commits=$(git log --merges --pretty=format:"%h" "$commit_range" | while IFS= read -r merge_commit; do
-    git log "${merge_commit}^1..${merge_commit}" --no-merges --pretty=format:"%h"
-  done)
-  local standalone_commits=$(comm -23 <(echo "$all_commits" | sort) <(echo "$merge_commits" | sort))
-  for commit in $standalone_commits; do
-    local commit_details=$(git log -n 1 --pretty=format:"%h|%s|%b|%an|%ae|%ad" "$commit")
-    echo "$commit_details" >>"$output_file"
-  done
+    # Get all merge commits (PRs + non-PR merges)
+    local merge_commits=$(git log --merges --pretty=format:"%h" "$commit_range" | while IFS= read -r merge_commit; do
+      git log "${merge_commit}^1..${merge_commit}" --no-merges --pretty=format:"%h"
+    done)
 
-  echo "" >>"$output_file"
-  echo "Report generated in $output_file"
+    # Filter out commits that are part of PRs or merges
+    local standalone_commits=$(comm -23 <(echo "$all_commits" | sort) <(echo "$merge_commits" | sort))
+
+    for commit in $standalone_commits; do
+      git log -n 1 --pretty=format:"🔸 %h | %s | %an (%ad)" "$commit"
+    done
+
+    echo ""
+  } | tee "$output_file"
+
+  echo "✅ Report generated in $output_file"
 }
+
 
 # Unified stash operations
 stash_operations() {
-  echo "Choose an operation:"
-  echo "1. Save current changes to stash"
-  echo "2. List existing stashes"
+  ensure_git_repo
+  echo "🚀 Stash Manager:"
+  echo "1. Save changes to stash"
+  echo "2. List stashes"
   echo "3. Apply a stash"
-  echo "4. Pop (apply and drop) a stash"
+  echo "4. Pop (apply & delete) a stash"
   echo "5. Drop a stash"
+  echo "6. Rename a stash"
+  echo "7. Delete all stashes"
   read -rp "Enter your choice: " choice
 
   case $choice in
-  1)
-    local branch_name=$(git rev-parse --abbrev-ref HEAD)
-    local timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
-    local stash_name="Stash on $branch_name @ $timestamp"
-    git stash save "$stash_name"
-    echo "Changes stashed as: $stash_name"
-    ;;
-  2)
-    echo "Available Stashes:"
-    git stash list | nl -w2 -s". "
-    ;;
-  3)
-    git stash list | nl -w2 -s". "
-    read -rp "Enter the stash number to apply: " stash_number
-    local stash_ref=$(git stash list | sed -n "${stash_number}p" | awk '{print $1}')
-    [[ -n "$stash_ref" ]] && git stash apply "$stash_ref" && echo "Applied stash: $stash_ref"
-    ;;
-  4)
-    git stash list | nl -w2 -s". "
-    read -rp "Enter the stash number to pop: " stash_number
-    local stash_ref=$(git stash list | sed -n "${stash_number}p" | awk '{print $1}')
-    [[ -n "$stash_ref" ]] && git stash pop "$stash_ref" && echo "Popped stash: $stash_ref"
-    ;;
-  5)
-    git stash list | nl -w2 -s". "
-    read -rp "Enter the stash number to drop: " stash_number
-    local stash_ref=$(git stash list | sed -n "${stash_number}p" | awk '{print $1}')
-    [[ -n "$stash_ref" ]] && git stash drop "$stash_ref" && echo "Dropped stash: $stash_ref"
-    ;;
-  *)
-    echo "Invalid choice."
-    ;;
+    1) 
+      local timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
+      local branch_name=$(git rev-parse --abbrev-ref HEAD)
+      local stash_name="Stash on $branch_name @ $timestamp"
+      git stash push -m "$stash_name"
+      echo "✅ Changes stashed as: $stash_name"
+      ;;
+    2) git stash list ;;
+    3) 
+      git stash list
+      read -rp "Enter stash number to apply: " stash_number
+      git stash apply "stash@{$stash_number}"
+      ;;
+    4) 
+      git stash list
+      read -rp "Enter stash number to pop: " stash_number
+      git stash pop "stash@{$stash_number}"
+      ;;
+    5) 
+      git stash list
+      read -rp "Enter stash number to drop: " stash_number
+      git stash drop "stash@{$stash_number}"
+      ;;
+    6) 
+      git stash list
+      read -rp "Enter stash number to rename: " stash_number
+      read -rp "Enter new stash name: " new_name
+      git stash store -m "$new_name" "stash@{$stash_number}"
+      ;;
+    7) 
+      read -rp "Are you sure you want to delete all stashes? (y/n): " confirm
+      [[ "$confirm" == "y" ]] && git stash clear && echo "✅ All stashes deleted."
+      ;;
+    *) echo "❌ Invalid choice." ;;
   esac
 }
+
 
 # Compare branches
 compare_branches() {
-  read -rp "Enter the first branch to compare: " branch1
-  read -rp "Enter the second branch to compare: " branch2
+  read -rp "Enter the first branch to compare (default: current branch): " branch1
+  read -rp "Enter the second branch to compare (default: main): " branch2
 
-  echo "Choose comparison type:"
-  echo "1. Commits unique to each branch"
-  echo "2. List files changed between branches"
-  echo "3. Show detailed diffs"
-  read -rp "Enter your choice: " choice
+  branch1=${branch1:-$(git rev-parse --abbrev-ref HEAD)}
+  branch2=${branch2:-$(detect_main_branch)}
 
-  case $choice in
-  1)
-    echo "Commits in $branch2 but not in $branch1:"
-    git log "$branch1".."$branch2" --oneline
-    echo ""
-    echo "Commits in $branch1 but not in $branch2:"
-    git log "$branch2".."$branch1" --oneline
-    ;;
-  2)
-    echo "Files changed between $branch1 and $branch2:"
-    git diff --name-only "$branch1".."$branch2"
-    ;;
-  3)
-    echo "Detailed diffs between $branch1 and $branch2:"
-    git diff "$branch1".."$branch2"
-    ;;
-  *)
-    echo "Invalid choice."
-    ;;
-  esac
+  if ! git show-ref --verify --quiet "refs/heads/$branch1" || ! git show-ref --verify --quiet "refs/heads/$branch2"; then
+    echo "Error: One or both branches do not exist."
+    return 1
+  fi
+
+  echo "Commits unique to each branch:"
+  git log --oneline "$branch1".."$branch2"
+  echo "Files changed between branches:"
+  git diff --name-only "$branch1".."$branch2"
 }
+
 
 # Git configuration editor
 edit_git_config() {
@@ -608,190 +769,311 @@ file_log() {
   ensure_git_repo
   read -rp "Enter the file path to view its history: " file_path
 
-  if [[ -f "$file_path" ]]; then
-    echo "Choose an action:"
-    echo "1. View commit history of the file"
-    echo "2. View diffs for commits affecting the file"
-    read -rp "Enter your choice: " choice
+  if [[ ! -f "$file_path" ]]; then
+    echo "❌ Error: File '$file_path' does not exist."
+    return 1
+  fi
 
-    case $choice in
-    1)
-      echo "Commit history for $file_path:"
-      git log --follow -- "$file_path"
+  echo "📌 Choose an action:"
+  echo "1. View commit history of the file"
+  echo "2. View diffs for commits affecting the file"
+  read -rp "Enter your choice: " choice
+
+  case $choice in
+    1) 
+      echo "📌 Commit history for $file_path:"
+      git log --follow --pretty=format:"%h - %s (%an, %ad)" --date=short -- "$file_path"
       ;;
-    2)
-      echo "Diffs for commits affecting $file_path:"
+    2) 
+      echo "📌 Diffs for commits affecting $file_path:"
       git log --follow -p -- "$file_path"
       ;;
-    *)
-      echo "Invalid choice."
-      ;;
-    esac
-
-    total_commits=$(git log --follow -- "$file_path" | grep -c '^commit')
-    echo "Total commits affecting $file_path: $total_commits"
-  else
-    echo "File does not exist in the repository."
-  fi
+    *) echo "❌ Invalid choice." ;;
+  esac
 }
 
 revert_commit() {
   ensure_git_repo
-  echo "Recent Commit History:"
+  echo "📌 Recent Commit History:"
   git log --oneline | nl -w2 -s". " | tee /tmp/git_log.txt
 
   read -rp "Enter the numbers of the commits to revert (comma-separated): " commit_numbers
+
   commit_hashes=$(echo "$commit_numbers" | tr ',' '\n' | while read -r num; do
     sed -n "${num}p" /tmp/git_log.txt | awk '{print $2}'
   done)
 
   if [[ -z "$commit_hashes" ]]; then
-    echo "No valid commits selected. Exiting."
-    return
+    echo "❌ No valid commits selected."
+    return 1
   fi
 
-  echo "Choose an action:"
+  echo "📌 Choose an action:"
   echo "1. Create revert commits for each selected commit"
   echo "2. Revert and amend the last commit"
   read -rp "Enter your choice: " choice
 
   case $choice in
-  1)
-    for commit in $commit_hashes; do
-      git revert "$commit" || {
-        echo "Conflict detected while reverting $commit. Resolve conflicts manually or abort the revert."
-        exit 1
-      }
-      echo "Reverted commit: $commit"
-    done
-    ;;
-  2)
-    for commit in $commit_hashes; do
-      git revert --no-commit "$commit"
-    done
-    git commit --amend -m "Amended revert: $(git log -1 --pretty=%B)"
-    echo "Reverted commits and amended the last commit."
-    ;;
-  *)
-    echo "Invalid choice."
-    ;;
+    1) 
+      for commit in $commit_hashes; do
+        git revert "$commit" || {
+          echo "⚠️ Conflict detected while reverting $commit. Resolve manually."
+          exit 1
+        }
+        echo "✅ Reverted commit: $commit"
+      done
+      ;;
+    2) 
+      for commit in $commit_hashes; do
+        git revert --no-commit "$commit"
+      done
+      git commit --amend -m "Amended revert: $(git log -1 --pretty=%B)"
+      echo "✅ Reverted commits and amended the last commit."
+      ;;
+    *) echo "❌ Invalid choice." ;;
   esac
 }
+
+
 reset_branch_to_remote() {
   ensure_git_repo
   local branch
   branch=$(git rev-parse --abbrev-ref HEAD)
 
   if ! git ls-remote --exit-code origin "$branch" &>/dev/null; then
-    echo "Error: Remote branch '$branch' does not exist."
+    echo "❌ Error: Remote branch '$branch' does not exist."
     return 1
   fi
 
-  echo "You are about to reset the local branch '$branch' to match the remote 'origin/$branch'."
-  echo "Choose reset type:"
-  echo "1. Soft (keeps changes in the working directory)"
-  echo "2. Hard (discards all local changes)"
+  echo "🚨 WARNING: This will reset '$branch' to match 'origin/$branch'."
+  echo "1. Soft reset (keep local changes)"
+  echo "2. Hard reset (discard all local changes)"
+  echo "3. Dry-run (preview only)"
   read -rp "Enter your choice: " reset_type
 
   case $reset_type in
-  1)
-    git fetch origin
-    git reset --soft "origin/$branch"
-    echo "Branch '$branch' has been soft-reset to match the remote."
-    ;;
-  2)
-    git fetch origin
-    git reset --hard "origin/$branch"
-    echo "Branch '$branch' has been hard-reset to match the remote."
-    ;;
-  *)
-    echo "Invalid choice. Reset aborted."
-    ;;
+    1) git fetch origin && git reset --soft "origin/$branch" && echo "✅ Soft reset completed." ;;
+    2) 
+      read -rp "Are you sure? This will discard ALL local changes. (y/n): " confirm
+      [[ "$confirm" == "y" ]] && git fetch origin && git reset --hard "origin/$branch" && echo "✅ Hard reset completed."
+      ;;
+    3) git fetch origin && git diff --stat "origin/$branch" ;;
+    *) echo "❌ Invalid choice." ;;
   esac
 }
+
+
 prune_remote_branches() {
   ensure_git_repo
-  echo "Fetching and pruning stale remote references..."
+  echo "🚀 Fetching and pruning stale remote branches..."
   git fetch --prune
-  echo "Remote references pruned."
 
-  echo "Do you want to delete local branches that are tracking deleted remote branches? (y/n):"
-  read -rp "Enter your choice: " delete_local
+  echo "🗑️ Checking for deleted remote branches..."
+  local deleted_branches
+  deleted_branches=$(git branch -vv | awk '/: gone]/{print $1}')
 
-  if [[ "$delete_local" == "y" ]]; then
-    for branch in $(git branch -vv | awk '/: gone]/{print $1}'); do
-      echo "Deleting local branch: $branch"
-      git branch -D "$branch"
-    done
-    echo "Deleted all local branches tracking removed remote branches."
+  if [[ -z "$deleted_branches" ]]; then
+    echo "✅ No local branches need pruning."
+    return 0
+  fi
+
+  echo "$deleted_branches"
+  read -rp "Do you want to delete all these branches? (y/n): " delete_all
+
+  if [[ "$delete_all" == "y" ]]; then
+    echo "$deleted_branches" | xargs git branch -D
+    echo "✅ Deleted all local branches tracking removed remote branches."
   else
-    echo "Skipped local branch deletion."
+    echo "$deleted_branches" | while read branch; do
+      read -rp "Delete branch '$branch'? (y/n): " confirm
+      [[ "$confirm" == "y" ]] && git branch -D "$branch"
+    done
   fi
 }
+
 
 interactive_commit() {
   ensure_git_repo
-  echo "Select files to stage (use numbers):"
-  git status -s | nl -w2 -s". " | tee /tmp/git_status.txt
 
-  read -rp "Enter file numbers to stage (comma-separated): " file_numbers
-
-  if [[ -z "$file_numbers" ]]; then
-    echo "No files selected. Exiting."
-    return
+  # Check if there are any changes to commit
+  if [[ -z $(git status --porcelain) ]]; then
+    echo "✅ No changes to commit."
+    return 0
   fi
 
-  selected_files=$(echo "$file_numbers" | tr ',' '\n' | while read -r num; do
-    sed -n "${num}p" /tmp/git_status.txt | awk '{print $2}'
-  done)
+  echo "📌 Select files to stage (use numbers):"
+  git status -s | nl -w2 -s". " | tee /tmp/git_status.txt
 
-  git add $selected_files
-  echo "Staged files: $selected_files"
+  read -rp "Enter file numbers to stage (comma-separated, 'a' for all): " file_numbers
+
+  if [[ "$file_numbers" == "a" ]]; then
+    git add .
+  else
+    selected_files=$(echo "$file_numbers" | tr ',' '\n' | while read -r num; do
+      sed -n "${num}p" /tmp/git_status.txt | awk '{print $2}'
+    done)
+    git add $selected_files
+  fi
+
+  echo "📌 Staged files:"
+  git diff --cached --name-only
+
   read -rp "Enter your commit message: " commit_message
   git commit -m "$commit_message"
-  echo "Committed changes with message: $commit_message"
+  echo "✅ Committed changes with message: $commit_message"
 }
+
+
 show_status() {
   ensure_git_repo
-  echo "Repository Status:"
-  git status -s
+  echo "🚀 Repository Status:"
+  git status -sb --untracked-files=all
   echo ""
-  echo "Branch Information:"
-  git branch
+  echo "📌 Branch Tracking Info:"
+  git rev-list --left-right --count @{upstream}...HEAD 2>/dev/null || echo "No upstream branch set."
   echo ""
+  echo "🌍 Remote Status:"
+  git remote -v | awk '{print "  - " $1 " -> " $2}' | sort | uniq
+}
+
+
+generate_git_summary() {
+    # Determine the git log range (if provided)
+    log_range=""
+    if [[ -n "$1" && "$1" != "include-all" ]]; then
+        log_range="$1..HEAD"
+    fi
+
+    # Check if we include all text-based files
+    include_all=false
+    if [[ "$1" == "include-all" || "$2" == "include-all" ]]; then
+        include_all=true
+    fi
+
+    # Define the git log command
+    git_log_cmd="git --no-pager log --no-merges $log_range --pretty='>>%h|%ce|%ct|%s|%aN' --shortstat"
+
+    # Temporary files for storing commit stats and blame results
+    temp_file=$(mktemp)
+    blame_file=$(mktemp)
+
+    # Process commits one by one to avoid storing all logs in memory
+    eval "$git_log_cmd" | while read -r line; do
+        if [[ $line == ">>"* ]]; then
+            # Extract author email and name
+            email=$(echo "$line" | awk -F'|' '{print $2}')
+            name=$(echo "$line" | awk -F'|' '{print $5}')
+            echo "$email|$name|commit" >> "$temp_file"
+
+        elif [[ $line == *"files changed"* ]]; then
+            # Extract file changes, insertions, and deletions using awk
+            files=$(echo "$line" | awk '{for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+$/) { if ($(i+1) ~ /^files?/) print $i }}' | head -n1)
+            ins=$(echo "$line" | awk '{for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+$/) { if ($(i+1) ~ /^insertion/) print $i }}' | head -n1)
+            del=$(echo "$line" | awk '{for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+$/) { if ($(i+1) ~ /^deletion/) print $i }}' | head -n1)
+
+            # Default to 0 if values are empty
+            files=${files:-0}
+            ins=${ins:-0}
+            del=${del:-0}
+
+            # Write data to temp file
+            echo "$email|$name|$files|$ins|$del" >> "$temp_file"
+        fi
+    done
+
+    # Detect Code Files (Includes Extensionless Files if Flag is Set)
+    git ls-files | while read -r file; do
+        # Get MIME type (file type detection)
+        filetype=$(file --mime-type -b "$file")
+
+        # Allow text-based code files based on user flag
+        if [[ "$include_all" == true && "$filetype" =~ ^text/ ]]; then
+            echo "$file"
+        elif [[ "$file" =~ \.(sh|py|js|ts|go|java|c|cpp|php|rb|html|css|scss|sql|xml|json|yaml|yml|md|toml|ini|cfg|conf|properties|gradle|makefile|Dockerfile|env|gitignore)$ ]]; then
+            echo "$file"
+        fi
+    done | xargs -P$(nproc) -I{} git blame --line-porcelain "{}" 2>/dev/null | grep -E "author-mail" >> "$blame_file"
+
+    # Print Markdown Table Header
+    echo "| Author Name | Author Email | Commits | Files Changed | Insertions | Deletions | Surviving Code % |"
+    echo "|------------|--------------|---------|--------------|-----------|----------|----------------|"
+
+    # Memory-efficient aggregation using awk
+    awk -F'|' -v blame_file="$blame_file" '
+    BEGIN {
+        total_surviving = 0
+        total_insertions = 0
+        while ((getline < blame_file) > 0) {
+            split($0, arr, " ")
+            author_email = arr[2]
+            gsub(/[<>]/, "", author_email)
+            surviving_lines[author_email]++
+            total_surviving++
+        }
+        close(blame_file)
+    }
+    {
+        if ($3 == "commit") {
+            commits[$1]++
+            authors[$1] = $2
+        } else {
+            files_changed[$1] += $3
+            insertions[$1] += $4
+            deletions[$1] += $5
+            total_insertions += $4
+        }
+    }
+    END {
+        for (email in commits) {
+            total_ins = insertions[email] + 0
+            survival = (total_surviving > 0 && total_ins > 0) ? int((surviving_lines[email] / total_surviving) * 100) : 0
+            print "| " authors[email] " | " email " | " commits[email] " | " files_changed[email] " | " insertions[email] " | " deletions[email] " | " survival "% |"
+        }
+    }' "$temp_file"
+
+    # Clean up temp files
+    rm "$temp_file" "$blame_file"
 }
 self_update() {
   require_sudo
-  local script_url="https://raw.githubusercontent.com/infocyph/Toolset/main/PHP/phpx"
-  local temp_file="/tmp/phpx_latest"
-  local local_file="/usr/local/bin/phpx"
+  local script_url="https://raw.githubusercontent.com/infocyph/Toolset/main/Git/gitx"
+  local temp_file="/tmp/gitx_latest"
+  local local_file="/usr/local/bin/gitx"
 
-  echo -e "${YELLOW}Checking for updates...${NC}"
+  echo "🔄 Checking for updates..."
 
-  # Download the latest version of the script to a temporary location
-  if curl -fsSL "$script_url" -o "$temp_file"; then
-    # Calculate hashes for both the local and downloaded scripts
-    local local_hash remote_hash
-    local_hash=$(sha256sum "$local_file" | awk '{print $1}')
-    remote_hash=$(sha256sum "$temp_file" | awk '{print $1}')
-
-    # Compare hashes to check if an update is necessary
-    if [[ "$local_hash" == "$remote_hash" ]]; then
-      echo -e "${GREEN}phpx is already up-to-date.${NC}"
-      log_action "INFO" "No updates found. phpx is up-to-date."
-      rm "$temp_file" # Clean up the temporary file
-    else
-      echo -e "${YELLOW}Updating phpx...${NC}"
-      mv "$temp_file" "$local_file"
-      chmod +x "$local_file"
-      echo -e "${GREEN}phpx has been updated successfully.${NC}"
-      log_action "INFO" "phpx updated successfully."
-    fi
-  else
-    echo -e "${RED}Failed to check for updates.${NC}"
-    log_action "ERROR" "Failed to download the latest phpx script."
+  # Download the latest version to a temporary file
+  if ! curl -fsSL "$script_url" -o "$temp_file"; then
+    echo "❌ Failed to download the latest script."
+    return 1
   fi
+
+  # Check if local file exists
+  if [[ ! -f "$local_file" ]]; then
+    echo "⚠️ Local script not found. Installing new version..."
+    mv "$temp_file" "$local_file"
+    chmod +x "$local_file"
+    echo "✅ gitx installed successfully."
+    return 0
+  fi
+
+  # Validate script before replacing
+  local local_hash remote_hash
+  local_hash=$(sha256sum "$local_file" | awk '{print $1}')
+  remote_hash=$(sha256sum "$temp_file" | awk '{print $1}')
+
+  if [[ "$local_hash" == "$remote_hash" ]]; then
+    echo "✅ gitx is already up-to-date."
+    rm "$temp_file"
+    return 0
+  fi
+
+  echo "⚡ Updating gitx..."
+  mv "$temp_file" "$local_file"
+  chmod +x "$local_file"
+  echo "✅ gitx updated successfully."
 }
+
 # Main script logic
 case $1 in
 status) show_status ;;
@@ -829,5 +1111,6 @@ count-changes) count_changes_between_commits ;;
 list-changes) list_changed_files_between_branches ;;
 set-lf) set_line_endings_to_lf ;;
 self-update) self_update ;;
+summary) generate_git_summary "$2" "$3" ;;
 *) usage ;;
 esac
