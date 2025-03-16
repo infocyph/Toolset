@@ -1196,7 +1196,7 @@ cleanup) cleanup_branches ;;
 compare) compare_branches ;;
 config) edit_git_config ;;
 summarize) summarize_repo ;;
-commit-report) generate_commit_report ;;
+commit-report) generate_commit_report "$2" "$3";;
 unstage) unstage_all ;;
 amend) amend_commit_message ;;
 add-remote) add_remote ;;
