@@ -660,7 +660,10 @@ install_php_extensions() {
   else
     echo -e "${GREEN}Installed PHP extensions for PHP $version:${NC}"
     for i in "${!installed_extensions[@]}"; do
-      printf "%2d. %s\n" $((i + 1)) "${installed_extensions[$i]}"
+      printf "%2d. %-20s" $((i + 1)) "${installed_extensions[$i]}"
+      if (((i + 1) % 5 == 0)); then
+        echo ""
+      fi
     done
     echo ""
   fi
@@ -683,7 +686,10 @@ install_php_extensions() {
 
   echo -e "${YELLOW}Installable PHP extensions for PHP $version:${NC}"
   for i in "${!available_extensions[@]}"; do
-    printf "%2d. %s\n" $((i + 1)) "${available_extensions[$i]}"
+    printf "%2d. %-20s" $((i + 1)) "${available_extensions[$i]}"
+    if (((i + 1) % 5 == 0)); then
+      echo ""
+    fi
   done
   echo ""
 
@@ -1198,7 +1204,10 @@ remove_php_extension() {
 
   echo -e "${GREEN}Installed PHP extensions for PHP $version:${NC}"
   for i in "${!installed_extensions[@]}"; do
-    printf "%2d. %s\n" $((i + 1)) "${installed_extensions[$i]}"
+      printf "%2d. %-20s" $((i + 1)) "${installed_extensions[$i]}"
+      if (((i + 1) % 5 == 0)); then
+        echo ""
+      fi
   done
   echo ""
 
@@ -1292,8 +1301,6 @@ perform_system_checks() {
       exit 3
     fi
   fi
-
-  echo -e "${GREEN}System checks passed. Internet access, disk space, and required tools are available.${NC}"
   log_action "INFO" "System checks completed successfully."
 }
 
