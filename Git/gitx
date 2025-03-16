@@ -1142,40 +1142,42 @@ self_update() {
   local temp_file="/tmp/gitx_latest"
   local local_file="/usr/local/bin/gitx"
 
-  echo "🔄 Checking for updates..."
+  echo -e "${YELLOW}Checking for updates to gitx...${NC}"
+  log_action "INFO" "Checking for gitx updates from $script_url."
 
-  # Download the latest version to a temporary file
   if ! curl -fsSL "$script_url" -o "$temp_file"; then
-    echo "❌ Failed to download the latest script."
+    echo -e "${RED}Failed to download the latest gitx script from GitHub.${NC}"
+    log_action "ERROR" "Failed to download the latest gitx from $script_url."
     return 1
   fi
 
-  # Check if local file exists
-  if [[ ! -f "$local_file" ]]; then
-    echo "⚠️ Local script not found. Installing new version..."
-    mv "$temp_file" "$local_file"
-    chmod +x "$local_file"
-    echo "✅ gitx installed successfully."
+  # Optional: Compare local vs remote with sha256sum if you want to check for changes
+  local remote_hash local_hash
+  remote_hash="$(sha256sum "$temp_file" | awk '{print $1}')"
+  local_hash="$(sha256sum "$local_file" 2>/dev/null | awk '{print $1}')"
+  if [[ "$remote_hash" == "$local_hash" ]]; then
+    echo -e "${GREEN}gitx is already up-to-date.${NC}"
+    log_action "INFO" "No updates found; gitx is already the latest."
+    rm -f "$temp_file"
     return 0
   fi
 
-  # Validate script before replacing
-  local local_hash remote_hash
-  local_hash=$(sha256sum "$local_file" | awk '{print $1}')
-  remote_hash=$(sha256sum "$temp_file" | awk '{print $1}')
-
-  if [[ "$local_hash" == "$remote_hash" ]]; then
-    echo "✅ gitx is already up-to-date."
-    rm "$temp_file"
-    return 0
+  if [[ -f "$local_file" ]]; then
+    mv "$local_file" "${local_file}.bak-$(date +'%Y%m%d%H%M%S')" 2>/dev/null || true
   fi
 
-  echo "⚡ Updating gitx..."
-  mv "$temp_file" "$local_file"
+  if ! mv "$temp_file" "$local_file"; then
+    echo -e "${RED}Failed to overwrite $local_file with the new gitx script.${NC}"
+    log_action "ERROR" "Failed to move updated script into place."
+    return 1
+  fi
+
   chmod +x "$local_file"
-  echo "✅ gitx updated successfully."
-}
 
+  echo -e "${GREEN}gitx has been updated successfully to the latest version.${NC}"
+  log_action "INFO" "gitx script updated successfully."
+}
+trap "echo -e '${RED}Process interrupted. Exiting.${NC}'; log_action 'ERROR' 'Process interrupted by user'; exit 6" SIGINT SIGTERM
 # Main script logic
 case $1 in
 status) show_status ;;
