@@ -1088,10 +1088,8 @@ generate_commit_report() {
     match(author, /^(.*) <(.*)>/, m)
     author_name = m[1]
     author_email = m[2]
-
     print "### " author_name
     print "- Email: " author_email
-
     count = 0
     details = ""
     next
@@ -1106,14 +1104,11 @@ generate_commit_report() {
     subject = parts[4]
     body = parts[5]
 
-    # Clean emoji if present
     clean_subject = subject
     gsub(/^:[^:]+: /, "", clean_subject)
-
     match(clean_subject, /^(feature|feat|fix|bugfix|hotfix|chore|docs|style|refactor|perf|test|ci|build|revert|BREAKING CHANGE)(\([^)]+\))?:/, type_match)
     type = (type_match[1] != "") ? type_match[1] : "misc"
 
-    # Clean up body formatting
     gsub(/\|/, "\\|", subject)
     gsub(/\|/, "\\|", body)
     gsub(/\r/, "", body)
@@ -1128,7 +1123,6 @@ generate_commit_report() {
     }
 
     gsub(/\|/, "\\|", subject_body)
-
     details = details "| " commit_id " | " type " | " subject_body " | " timestamp " |\n"
     count++
   }
@@ -1143,6 +1137,7 @@ generate_commit_report() {
     }
   }'
 }
+
 self_update() {
   require_sudo
   local script_url="https://raw.githubusercontent.com/infocyph/Toolset/main/Git/gitx"
