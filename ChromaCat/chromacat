@@ -154,76 +154,141 @@ colour_block() {
 box_draw() {
   local style=$box_style
   mapfile -t LINES
-  local max=0 line; for line in "${LINES[@]}"; do
+
+  # ── calculate longest visible line ──────────────────────────────
+  local max=0 line
+  for line in "${LINES[@]}"; do
     (( ${#line} > max )) && max=${#line}
   done
 
+  # ── helpers ─────────────────────────────────────────────────────
+  hr() { printf '%*s' "$1" | tr ' ' "$2"; }
+
   case $style in
-  # ───────────────────────────────────────────────────────── default
+  # ---------------------------------------------------------------- default  (+‑‑‑)
   default)
-    local tl='┌' tr='┐' bl='└' br='┘' h='─' v='│'
-    printf '%s' "$tl"; printf '%*s' $((max+2)) | tr ' ' "$h"; printf '%s\n' "$tr"
+    local tl='+' tr='+' bl='+' br='+' h='-' v='|'
+    printf '%s' "$tl"; hr $((max+2)) "$h"; printf '%s\n' "$tr"
     for line in "${LINES[@]}"; do printf '%s %-*s %s\n' "$v" "$max" "$line" "$v"; done
-    printf '%s' "$bl"; printf '%*s' $((max+2)) | tr ' ' "$h"; printf '%s\n' "$br"
+    printf '%s' "$bl"; hr $((max+2)) "$h"; printf '%s\n' "$br"
     ;;
-  # ──────────────────────────────────────────────────────── parchment
+
+  # ---------------------------------------------------------------- dashed  (- - -)
+  dashed)
+    local tl='+' tr='+' bl='+' br='+' v='|'
+    local dash_line=""
+    for ((i=0;i<max+2;i++)); do dash_line+=$([[ $((i%2)) == 0 ]] && echo '-' || echo ' '); done
+    printf '%s%s%s\n' "$tl" "$dash_line" "$tr"
+    for line in "${LINES[@]}"; do printf '%s %-*s %s\n' "$v" "$max" "$line" "$v"; done
+    printf '%s%s%s\n' "$bl" "$dash_line" "$br"
+    ;;
+
+  # ---------------------------------------------------------------- double  (+===)
+  double)
+    local tl='+' tr='+' bl='+' br='+' h='=' v='|'
+    printf '%s' "$tl"; hr $((max+2)) "$h"; printf '%s\n' "$tr"
+    for line in "${LINES[@]}"; do printf '%s %-*s %s\n' "$v" "$max" "$line" "$v"; done
+    printf '%s' "$bl"; hr $((max+2)) "$h"; printf '%s\n' "$br"
+    ;;
+
+  # ---------------------------------------------------------------- heavy  (#)
+  heavy)
+    local tl='#' tr='#' bl='#' br='#' h='#' v='#'
+    printf '%s' "$tl"; hr $((max+2)) "$h"; printf '%s\n' "$tr"
+    for line in "${LINES[@]}"; do printf '%s %-*s %s\n' "$v" "$max" "$line" "$v"; done
+    printf '%s' "$bl"; hr $((max+2)) "$h"; printf '%s\n' "$br"
+    ;;
+
+  # ---------------------------------------------------------------- round  (() )
+  round)
+    local tl='(' tr=')' bl='(' br=')' h='-' v='|'
+    printf '%s' "$tl"; hr $((max+2)) "$h"; printf '%s\n' "$tr"
+    for line in "${LINES[@]}"; do printf '%s %-*s %s\n' "$v" "$max" "$line" "$v"; done
+    printf '%s' "$bl"; hr $((max+2)) "$h"; printf '%s\n' "$br"
+    ;;
+
+  # ---------------------------------------------------------------- parchment (unchanged ASCII)
   parchment)
     local head_len=$((max + 4))
-    printf ' %s\n' "$(printf '%*s' "$head_len" | tr ' ' '_')"
+    printf ' %s\n' "$(hr "$head_len" '_')"
     printf '/\\ %*s\\\n' $((max + 2)) ""
     printf '\\_| %-*s |\n' "$max" "${LINES[0]:-}"
     for ((i = 1; i < ${#LINES[@]}; i++)); do
       printf '  | %-*s |\n' "$max" "${LINES[i]}"
     done
     local u1=$((max - 2)); ((u1<1)) && u1=1
-    printf '  |   %s_|_\n' "$(printf '%*s' "$u1" | tr ' ' '_')"
-    printf '   \\_/%s/\n' "$(printf '%*s' "$max" | tr ' ' '_')"
+    printf '  |   %s_|_\n' "$(hr "$u1" '_')"
+    printf '   \\_/%s/\n' "$(hr "$max" '_')"
     ;;
-  # ────────────────────────────────────────────────────────── simple
+
+  # ---------------------------------------------------------------- simple  (*)
   simple)
-    printf '%*s\n' $((max+4)) | tr ' ' '*'
+    hr $((max+4)) '*'; printf '\n'
     for line in "${LINES[@]}"; do printf '* %-*s *\n' "$max" "$line"; done
-    printf '%*s\n' $((max+4)) | tr ' ' '*'
+    hr $((max+4)) '*'; printf '\n'
     ;;
-  # ─────────────────────────────────────────────────────────── shell
+
+  # ---------------------------------------------------------------- shell (#)
   shell)
-    printf '%*s\n' $((max+4)) | tr ' ' '#'
+    hr $((max+4)) '#'; printf '\n'
     for line in "${LINES[@]}"; do printf '# %-*s #\n' "$max" "$line"; done
-    printf '%*s\n' $((max+4)) | tr ' ' '#'
+    hr $((max+4)) '#'; printf '\n'
     ;;
-  # ─────────────────────────────────────────────────────────── html
+
+  # ---------------------------------------------------------------- html
   html)
-    local border="<!-- $(printf '%*s' "$max" | tr ' ' '-') -->"
+    local border="<!-- $(hr "$max" '-') -->"
     printf '%s\n' "$border"
     for line in "${LINES[@]}"; do printf '<!-- %-*s -->\n' "$max" "$line"; done
     printf '%s\n' "$border"
     ;;
-  # ──────────────────────────────────────────────────────────── comment
+
+  # ---------------------------------------------------------------- comment /* */
   comment)
-    printf '/* %*s */\n' $((max)) | tr ' ' '*'
+    printf '/* %s */\n' "$(hr "$max" '*')"
     for line in "${LINES[@]}"; do printf ' * %-*s *\n' "$max" "$line"; done
-    printf '/* %*s */\n' $((max)) | tr ' ' '*'
+    printf '/* %s */\n' "$(hr "$max" '*')"
     ;;
-  # ────────────────────────────────────────────────────────  php
+
+  # ---------------------------------------------------------------- php  <? ---- ?>
   php)
-    printf '<?%*s?>\n' "$max" | tr ' ' '-'
-    for line in "${LINES[@]}"; do
-      printf '| %-*s |\n' "$max" "$line"
-    done
-    printf '<?%*s?>\n' "$max" | tr ' ' '-'
+    printf '<?%s?>\n' "$(hr "$max" '-')"
+    for line in "${LINES[@]}"; do printf '| %-*s |\n' "$max" "$line"; done
+    printf '<?%s?>\n' "$(hr "$max" '-')"
     ;;
-  # ─────────────────────────────────────────────────────────── plus
+
+  # ---------------------------------------------------------------- plus (legacy ASCII single‑line)
   plus)
     local tl='+' tr='+' bl='+' br='+' h='-' v='|'
-    printf '%s' "$tl"; printf '%*s' $((max+2)) | tr ' ' "$h"; printf '%s\n' "$tr"
+    printf '%s' "$tl"; hr $((max+2)) "$h"; printf '%s\n' "$tr"
     for line in "${LINES[@]}"; do printf '%s %-*s %s\n' "$v" "$max" "$line" "$v"; done
-    printf '%s' "$bl"; printf '%*s' $((max+2)) | tr ' ' "$h"; printf '%s\n' "$br"
+    printf '%s' "$bl"; hr $((max+2)) "$h"; printf '%s\n' "$br"
     ;;
-  # ───────────────────────────────────────────────────────── unknown
+
+  # ---------------------------------------------------------------- diamond  (/\/\/\ … \/)
+  chain)
+    local border=""
+    local target_len=$((max + 6))
+    while (( ${#border} < target_len )); do
+      border+='<>'
+    done
+    border=${border:0:target_len}
+    printf '%s\n' "${border}"
+    for line in "${LINES[@]}"; do
+      printf '<> %-*s <>\n' "$max" "${line}"
+    done
+    printf '%s\n' "${border}"
+    ;;
+
+  # ---------------------------------------------------------------- unknown
   *)
-    echo "Unknown box style: $style" >&2; exit 1;;
+    echo "Unknown box style: $style" >&2
+    exit 1
+    ;;
   esac
 }
+
+
 
 
 # ----------------------- animation helpers ------------------------
