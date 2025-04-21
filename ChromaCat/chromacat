@@ -1,18 +1,7 @@
 #!/usr/bin/env bash
-# ------------------------------------------------------------------
-#  lolcat‑ng – colourful, animated text printer
-#  version 3.1.0  (2025‑04‑20)
-#
-#  • classic “‑a” and line‑reveal “‑aa” animations
-#  • 6 ASCII‑box styles  (‑b / ‑B style)
-#  • rainbow / themed / custom‑palette gradients (h|v|d)
-#  • true‑/8‑bit colour, force & TTY detection
-#  • ASCII‑image import (img2txt)
-#  • fully portable AWK (no ternary “?:” at all)
-# ------------------------------------------------------------------
 
 set -euo pipefail
-VERSION="3.1.0"
+VERSION="1.0"
 
 # ---------------------------- defaults ----------------------------
 spread=3.0  freq=0.1  seed=0
@@ -29,7 +18,7 @@ require() { command -v "$1" >/dev/null 2>&1 || { printf 'Error: %s required\n' "
 
 usage() {
   cat <<EOF
-lolcat‑ng $VERSION – colourful text printer
+chromacat $VERSION – colourful text printer
 
 USAGE
   $(basename "$0") [OPTIONS] [FILE]...
@@ -60,8 +49,8 @@ MISC
   -h, --help               Show this help
 
 EXAMPLES
-  echo "hello" | lolcat‑ng -a -d 2
-  figlet "Docker" | lolcat‑ng -b -B parchment -aa -d 6 -O d
+  echo "hello" | chromacat -a -d 2
+  figlet "Docker" | chromacat -b -B parchment -aa -d 6 -O d
 EOF
 }
 
