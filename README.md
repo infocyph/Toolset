@@ -159,7 +159,7 @@ chromacat [OPTIONS] [FILE]...
 -d  | --duration <sec>      total animation time
 -s  | --speed <fps>         frames/second (classic) or lines/second (line)
 -b  | --box                 enable box; style picked with -B
--B  | --box-style <name>    default|parchment|simple|shell|html|plus|comment|php
+-B  | --box-style <name>    default|dashed|dash2|round|double|heavy|round|parchment|simple|shell|html|plus|comment|php|chain
 -O  | --orientation <o>     gradient flow: h (horizontal), v (vertical), d (diagonal)
 -P  | --palette <file>      custom HEX palette, one per line
 -T  | --theme <name>        fire|ice|sunset|ocean|rainbow
