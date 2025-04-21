@@ -38,7 +38,7 @@ APPEARANCE
   -t, --truecolor          Force 24‑bit colour
   -f, --force              Colour even if stdout not a TTY
   -b, --box                Draw ASCII box
-  -B, --box-style <name>   Box style: default|parchment|simple|html|shell|diamond
+  -B, --box-style <name>   Box style: default|dashed|dash2|round|double|heavy|round|parchment|simple|shell|html|plus|comment|php|chain
   -O, --orientation <o>    Gradient orientation: h|v|d
   -P, --palette <file>     Palette file (HEX per line)
   -T, --theme <name>       fire|ice|sunset|ocean|rainbow
@@ -183,6 +183,17 @@ box_draw() {
     printf '%s%s%s\n' "$bl" "$dash_line" "$br"
     ;;
 
+  # ---------------------------------------------------------------- dash2
+  dash2)
+    local border
+    border=$(hr $((max+6)) '-')
+    printf '%s\n' "$border"
+    for line in "${LINES[@]}"; do
+      printf -- "-- %-*s --\n" "$max" "$line"
+    done
+    printf '%s\n' "$border"
+    ;;
+
   # ---------------------------------------------------------------- double  (+===)
   double)
     local tl='+' tr='+' bl='+' br='+' h='=' v='|'
@@ -201,10 +212,10 @@ box_draw() {
 
   # ---------------------------------------------------------------- round  (() )
   round)
-    local tl='(' tr=')' bl='(' br=')' h='-' v='|'
-    printf '%s' "$tl"; hr $((max+2)) "$h"; printf '%s\n' "$tr"
-    for line in "${LINES[@]}"; do printf '%s %-*s %s\n' "$v" "$max" "$line" "$v"; done
-    printf '%s' "$bl"; hr $((max+2)) "$h"; printf '%s\n' "$br"
+    local tl='(' tr=')' bl='(' br=')'
+    printf '%s' "$tl"; hr $((max+2)) "-"; printf '%s\n' "$tr"
+    for line in "${LINES[@]}"; do printf '%s %-*s %s\n' "(" "$max" "$line" ")"; done
+    printf '%s' "$bl"; hr $((max+2)) "-"; printf '%s\n' "$br"
     ;;
 
   # ---------------------------------------------------------------- parchment (unchanged ASCII)
@@ -217,7 +228,7 @@ box_draw() {
       printf '  | %-*s |\n' "$max" "${LINES[i]}"
     done
     local u1=$((max - 2)); ((u1<1)) && u1=1
-    printf '  |   %s_|_\n' "$(hr "$u1" '_')"
+    printf '  |   %s_|_.\n' "$(hr "$u1" '_')"
     printf '   \\_/%s/\n' "$(hr "$max" '_')"
     ;;
 
@@ -265,7 +276,7 @@ box_draw() {
     printf '%s' "$bl"; hr $((max+2)) "$h"; printf '%s\n' "$br"
     ;;
 
-  # ---------------------------------------------------------------- diamond  (/\/\/\ … \/)
+  # ---------------------------------------------------------------- chain  (/\/\/\ … \/)
   chain)
     local border=""
     local target_len=$((max + 6))
