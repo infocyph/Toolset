@@ -127,7 +127,7 @@ esac
 
 # ---------------------- colouriser (portable AWK) -----------------
 colour_block() {
-  LC_ALL=C awk -v spread="$spread" -v freq="$freq" -v seed="$(get_seed)" \
+  awk -v spread="$spread" -v freq="$freq" -v seed="$(get_seed)" \
       -v tc="$truecolor" -v palette="$PALETTE" -v orient="$orientation" \
       -v invert="$invert" '
   BEGIN { pi=3.1415926536; if(palette!="") pc=split(palette,p,",") }
@@ -298,9 +298,6 @@ box_draw() {
     ;;
   esac
 }
-
-
-
 
 # ----------------------- animation helpers ------------------------
 frames()  { awk -v d="$duration" -v s="$speed" 'BEGIN{printf "%d", d*s}'; }
