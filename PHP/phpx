@@ -1070,6 +1070,9 @@ display_usage() {
   echo -e "  ${GREEN}remove <php_version> ext${NC}            
     Removes selected PHP extensions (interactively) for the given version."
 
+  echo -e "  ${GREEN}generate-config <environment> <php_version>${NC}
+    Generates a PHP-FPM configuration for the given version and environment."
+
   echo -e "  ${GREEN}sury${NC}                              
     Adds the Sury (or Ondrej) repository if needed (Debian/Ubuntu), enabling the latest PHP packages."
 
@@ -1350,6 +1353,111 @@ self_update() {
 }
 
 ################################################################################
+# Config Generator
+################################################################################
+generate_php_config() {
+  local ENVIRONMENT="${1,,}"  # lowercase
+  local PHP_VERSION="$2"
+
+  # ─── Validation ─────────────────────────────
+  if [[ "$ENVIRONMENT" != "production" && "$ENVIRONMENT" != "development" ]]; then
+    echo "❌ Invalid ENVIRONMENT: '$ENVIRONMENT'"
+    echo "   Allowed values: production | development"
+    return 1
+  fi
+
+  if [[ ! "$PHP_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    echo "❌ Invalid PHP_VERSION: '$PHP_VERSION'"
+    echo "   Expected format: x.y (e.g., 8.2, 8.3)"
+    return 1
+  fi
+
+  # ─── Defaults & Paths ──────────────────────
+  local AVG_PHP_PROCESS_MB=40
+  local TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}')
+  local MAX_CHILDREN=$(( TOTAL_MEM / AVG_PHP_PROCESS_MB ))
+  local FPM_POOL_PATH="./fpm.${ENVIRONMENT}.conf"
+  local PHP_INI_PATH="./php.${ENVIRONMENT}.ini"
+
+  # ─── PHP-FPM Pool Configuration ────────────
+  cat > "$FPM_POOL_PATH" <<EOF
+; Auto-generated PHP-FPM pool config for $ENVIRONMENT
+
+pm = dynamic
+pm.max_children = $MAX_CHILDREN
+pm.start_servers = $(( MAX_CHILDREN / 5 ))
+pm.min_spare_servers = $(( MAX_CHILDREN / 6 ))
+pm.max_spare_servers = $(( MAX_CHILDREN / 3 ))
+pm.max_requests = 500
+catch_workers_output = yes
+
+access.log = /var/log/php${PHP_VERSION}-fpm.${ENVIRONMENT}.access.log
+slowlog = /var/log/php${PHP_VERSION}-fpm.${ENVIRONMENT}.slow.log
+request_slowlog_timeout = $( [[ "$ENVIRONMENT" == "production" ]] && echo "3s" || echo "2s" )
+EOF
+
+  # ─── OPCache + JIT PHP INI ─────────────────
+  local OPCACHE_VALIDATE OPCACHE_REVALIDATE_FREQ JIT_MODE JIT_BUFFER OPCACHE_MEMORY ACCEL_FILES EXEC_TIME UPLOAD_SIZE
+
+  if [[ "$ENVIRONMENT" == "production" ]]; then
+    OPCACHE_VALIDATE=0
+    OPCACHE_REVALIDATE_FREQ=0
+    JIT_MODE="tracing"
+    JIT_BUFFER="256M"
+    OPCACHE_MEMORY="256"
+    ACCEL_FILES=20000
+    EXEC_TIME=30
+    UPLOAD_SIZE="100M"
+  else
+    OPCACHE_VALIDATE=1
+    OPCACHE_REVALIDATE_FREQ=1
+    JIT_MODE="function"
+    JIT_BUFFER="128M"
+    OPCACHE_MEMORY="128"
+    ACCEL_FILES=8000
+    EXEC_TIME=90
+    UPLOAD_SIZE="200M"
+  fi
+
+  cat > "$PHP_INI_PATH" <<EOF
+; Auto-generated php.ini for $ENVIRONMENT
+
+memory_limit = 512M
+max_execution_time = $EXEC_TIME
+max_input_time = $EXEC_TIME
+post_max_size = $UPLOAD_SIZE
+upload_max_filesize = $UPLOAD_SIZE
+
+error_reporting = E_ALL
+display_errors = $( [[ "$ENVIRONMENT" == "production" ]] && echo "Off" || echo "On" )
+log_errors = On
+error_log = /var/log/php_errors.${ENVIRONMENT}.log
+
+realpath_cache_size = 512K
+realpath_cache_ttl = 600
+
+[opcache]
+opcache.enable=1
+opcache.enable_cli=1
+opcache.memory_consumption=$OPCACHE_MEMORY
+opcache.interned_strings_buffer=16
+opcache.max_accelerated_files=$ACCEL_FILES
+opcache.validate_timestamps=$OPCACHE_VALIDATE
+opcache.revalidate_freq=$OPCACHE_REVALIDATE_FREQ
+opcache.fast_shutdown=1
+opcache.save_comments=1
+
+opcache.jit_buffer_size=$JIT_BUFFER
+opcache.jit=$JIT_MODE
+EOF
+
+  # ─── Success Output ────────────────────────
+  echo "✅ PHP config generated for $ENVIRONMENT ($PHP_VERSION):"
+  echo " - FPM: $FPM_POOL_PATH"
+  echo " - INI: $PHP_INI_PATH"
+}
+
+################################################################################
 # Trap for Interrupts
 ################################################################################
 trap "echo -e '${RED}Process interrupted. Exiting.${NC}'; log_action 'ERROR' 'Process interrupted by user'; exit 6" SIGINT SIGTERM
@@ -1393,6 +1501,9 @@ case "$1" in
     else
       remove_php_extension
     fi
+    ;;
+  generate-config)
+    generate_php_config "$2" "$3"
     ;;
   self-update)
     self_update
