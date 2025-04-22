@@ -11,8 +11,15 @@ invert=false want_truecolor=false force=false
 build_box=false   box_style="default"     # default|parchment|simple|html|shell|diamond
 orientation="h"                           # h|v|d
 palette_file=""   theme="rainbow"
-ascii_image="" blink=false
+ascii_image="" blink=false image_opacity=100
 THEMES=()
+
+# ---------------------------- terminal dimensions ----------------------------
+TERM_WIDTH=$(tput cols 2>/dev/null || echo 80)
+TERM_HEIGHT=$(tput lines 2>/dev/null || echo 24)
+(( TERM_HEIGHT -= 4 ))
+(( TERM_WIDTH  > 160 )) && TERM_WIDTH=160
+(( TERM_HEIGHT >  60 )) && TERM_HEIGHT=60
 
 # --------------------------- helpers ------------------------------
 require() { command -v "$1" >/dev/null 2>&1 || { printf 'Error: %s required\n' "$1" >&2; exit 1; }; }
@@ -39,12 +46,13 @@ APPEARANCE
   -t, --truecolor          Force 24‑bit colour
   -f, --force              Colour even if stdout not a TTY
   -b, --box                Draw ASCII box
-  -B, --box-style <name>   Box style: default|dashed|dash2|round|double|heavy|round|parchment|simple|shell|html|plus|comment|php|chain
+  -B, --box-style <name>   Box style: default|dashed|dash2|round|double|heavy|parchment|simple|shell|html|plus|comment|php|chain
   -O, --orientation <o>    Gradient orientation: h|v|d
   -P, --palette <file>     Palette file (HEX per line)
   -T, --theme <name>       fire|ice|sunset|ocean|rainbow
-  -I, --image <file>       ASCII‑art mode via img2txt
-  --blink                  Blinking text
+  -I, --image <file>       ASCII‑art mode via img2txt/jp2a/chafa
+      --blink              Blinking text
+      --image-opacity <n>  Image brightness (0–100, default $image_opacity)
 
 MISC
   -v, --version            Print version and exit
@@ -53,41 +61,43 @@ MISC
 EXAMPLES
   echo "hello" | chromacat -a -d 2
   figlet "Docker" | chromacat -b -B parchment -aa -d 6 -O d
+  chromacat -I screenshot.png --image-opacity 80
 EOF
 }
 
 # ------------------------- option parsing -------------------------
 require getopt
 OPTS=$(getopt -o p:F:S:ad:s:itfbB:O:P:T:I:vh \
-  --long spread:,freq:,seed:,animate,style:,line,duration:,speed:,invert,truecolor,force,box,box-style:,orientation:,palette:,theme:,image:,blink,version,help -- "$@") \
- || { usage; exit 1; }
+  --long spread:,freq:,seed:,animate,style:,line,duration:,speed:,invert,truecolor,force,box,box-style:,orientation:,palette:,theme:,image:,blink,image-opacity:,version,help -- "$@") \
+  || { usage; exit 1; }
 
 eval set -- "$OPTS"
 while true; do
   case $1 in
-    -p|--spread)       spread=$2; shift 2;;
-    -F|--freq)         freq=$2; shift 2;;
-    -S|--seed)         seed=$2; shift 2;;
-    -a|--animate)      animation_style=classic; shift;;
-    --style)           animation_style=$2; shift 2;;
-    -aa|--line)        animation_style=line; shift;;
-    -d|--duration)     duration=$2; shift 2;;
-    -s|--speed)        speed=$2; shift 2;;
-    -i|--invert)       invert=true; shift;;
-    -t|--truecolor)    want_truecolor=true; shift;;
-    -f|--force)        force=true; shift;;
-    -b|--box)          build_box=true; shift;;
-    -B|--box-style)    build_box=true; box_style=$2; shift 2;;
-    -O|--orientation)  orientation=$2; shift 2;;
-    -P|--palette)      palette_file=$2; shift 2;;
-    --blink) blink=true; shift;;
+    -p|--spread)           spread=$2; shift 2;;
+    -F|--freq)             freq=$2; shift 2;;
+    -S|--seed)             seed=$2; shift 2;;
+    -a|--animate)          animation_style=classic; shift;;
+    --style)               animation_style=$2; shift 2;;
+    -aa|--line)            animation_style=line; shift;;
+    -d|--duration)         duration=$2; shift 2;;
+    -s|--speed)            speed=$2; shift 2;;
+    -i|--invert)           invert=true; shift;;
+    -t|--truecolor)        want_truecolor=true; shift;;
+    -f|--force)            force=true; shift;;
+    -b|--box)              build_box=true; shift;;
+    -B|--box-style)        build_box=true; box_style=$2; shift 2;;
+    -O|--orientation)      orientation=$2; shift 2;;
+    -P|--palette)          palette_file=$2; shift 2;;
+    --blink)               blink=true; shift;;
+    --image-opacity)       image_opacity=$2; shift 2;;
     -T|--theme)
       IFS=',' read -ra THEMES <<< "$2"
       shift 2
       ;;
-    -I|--image)        ascii_image=$2; shift 2;;
-    -v|--version)      printf '%s %s\n' "$(basename "$0")" "$VERSION"; exit 0;;
-    -h|--help)         usage; exit 0;;
+    -I|--image)            ascii_image=$2; shift 2;;
+    -v|--version)          printf '%s %s\n' "$(basename "$0")" "$VERSION"; exit 0;;
+    -h|--help)             usage; exit 0;;
     --) shift; break;;
   esac
 done
@@ -112,20 +122,18 @@ PALETTE=""
 if [[ -n $palette_file ]]; then
   mapfile -t _pal < "$palette_file" || { echo "Bad palette file" >&2; exit 1; }
   PALETTE=$(IFS=,; echo "${_pal[*]}")
-else
-  if [[ ${#THEMES[@]} -gt 0 ]]; then
-    for theme in "${THEMES[@]}"; do
-      case $theme in
-        fire)    PALETTE+=",FF6B00,FF8C00,FFA500,FFD700";;
-        ice)     PALETTE+=",00FFFF,00CED1,1E90FF,4169E1";;
-        sunset)  PALETTE+=",FF4500,FF6347,FF7F50,FF8C00,FFD700";;
-        ocean)   PALETTE+=",006994,008CBA,00AEEF,33CCFF";;
-        rainbow) PALETTE+=",FF0000,FF7F00,FFFF00,00FF00,0000FF,4B0082,8B00FF";;
-        *) echo "Unknown theme: $theme" >&2 ;;
-      esac
-    done
-    PALETTE="${PALETTE#,}"  # Trim leading comma
-  fi
+elif [[ ${#THEMES[@]} -gt 0 ]]; then
+  for theme in "${THEMES[@]}"; do
+    case $theme in
+      fire)    PALETTE+=",FF6B00,FF8C00,FFA500,FFD700";;
+      ice)     PALETTE+=",00FFFF,00CED1,1E90FF,4169E1";;
+      sunset)  PALETTE+=",FF4500,FF6347,FF7F50,FF8C00,FFD700";;
+      ocean)   PALETTE+=",006994,008CBA,00AEEF,33CCFF";;
+      rainbow) PALETTE+=",FF0000,FF7F00,FFFF00,00FF00,0000FF,4B0082,8B00FF";;
+      *) echo "Unknown theme: $theme" >&2 ;;
+    esac
+  done
+  PALETTE="${PALETTE#,}"
 fi
 
 get_seed() { (( seed > 0 )) && echo "$seed" || echo "$RANDOM"; }
@@ -151,7 +159,7 @@ colour_block() {
       sprintf("38;2;%d;%d;%d",r,g,b):
       sprintf("38;5;%d",16+int(r*6/256)*36+int(g*6/256)*6+int(b*6/256))
   }
-  function blink_on() { return "\033[5m" }
+  function blink_on()  { return "\033[5m" }
   function blink_off() { return "\033[25m" }
   function pal(i){ return p[(i%pc)+1] }
   function hex2dec(h,   n,v,i,d) {
@@ -166,7 +174,7 @@ colour_block() {
   function rainbow(i,r,g,b,col){
     if(pc){
       col=pal(i)
-    }else{
+    } else {
       r=sin(freq*i)*127+128;
       g=sin(freq*i+2*pi/3)*127+128;
       b=sin(freq*i+4*pi/3)*127+128;
@@ -177,7 +185,9 @@ colour_block() {
   {
     for(j=1;j<=length($0);j++){
       c=substr($0,j,1)
-      if(orient=="v") idx=NR; else if(orient=="d") idx=NR+j/spread; else idx=j+NR/spread
+      if(orient=="v") idx=NR
+      else if(orient=="d") idx=NR+j/spread
+      else idx=j+NR/spread
       idx+=seed
       col=rainbow(int(idx))
       r=hex2dec(substr(col,1,2)); g=hex2dec(substr(col,3,2)); b=hex2dec(substr(col,5,2));
@@ -192,21 +202,13 @@ colour_block() {
   }'
 }
 
-
 # --------------------------- box drawer ---------------------------
 box_draw() {
   local style=$box_style
   mapfile -t LINES
-
-  # ── calculate longest visible line ──────────────────────────────
   local max=0 line
-  for line in "${LINES[@]}"; do
-    (( ${#line} > max )) && max=${#line}
-  done
-
-  # ── helpers ─────────────────────────────────────────────────────
+  for line in "${LINES[@]}"; do (( ${#line} > max )) && max=${#line}; done
   hr() { printf '%*s' "$1" | tr ' ' "$2"; }
-
   case $style in
   # ---------------------------------------------------------------- default  (+‑‑‑)
   default)
@@ -348,55 +350,86 @@ sleeper() { awk -v s="$speed"            'BEGIN{printf "%.5f", 1/s}'; }
 
 animate_classic() {
   tput civis; trap 'tput cnorm; exit' INT TERM
-  mapfile -t L
-  local n=${#L[@]} tot
-  tot=$(frames); local sl; sl=$(sleeper)
+  mapfile -t L; local n=${#L[@]}; local tot; tot=$(frames); local sl; sl=$(sleeper)
   for ((f=0; f<tot; f++)); do
     printf '%s\n' "${L[@]}" | colour_block
-    printf '\033[%dA' "$n"
-    sleep "$sl"
+    printf '\033[%dA' "$n"; sleep "$sl"
   done
   printf '\033[%dB' "$n"; tput cnorm
 }
 
 animate_line() {
   tput civis; trap 'tput cnorm; exit' INT TERM
-  mapfile -t L; local n=${#L[@]}
-  local sl; if (( duration > 0 )); then
+  mapfile -t L; local n=${#L[@]}; local sl
+  if (( duration > 0 )); then
     sl=$(awk -v d="$duration" -v n="$n" 'BEGIN{printf "%.5f", d/n}')
-  else sl=$(sleeper); fi
+  else
+    sl=$(sleeper)
+  fi
   for ((i=0; i<n; i++)); do
-    printf '%s\n' "${L[i]}" | colour_block
-    sleep "$sl"
+    printf '%s\n' "${L[i]}" | colour_block; sleep "$sl"
   done
   tput cnorm
 }
 
-# --------------------- ASCII‑image import -------------------------
+# --------------------- ASCII‑image import (UTF‑8 output) -------------------------
+# ──────── detect terminal size ────────
+TERM_WIDTH=$(tput cols)
+TERM_HEIGHT=$(tput lines)
+
+# ──────── ASCII‑image import (ANSI colours, fit screen) ────────
 if [[ -n $ascii_image ]]; then
-  require img2txt
-  ascii_payload=$(img2txt --width="${COLUMNS:-80}" --color < "$ascii_image" \
-                 | sed $'s/\e\[[0-9;]*[A-Za-z]//g')
+  if command -v chafa >/dev/null; then
+    ascii_payload=$(
+      chafa \
+        --size="${TERM_WIDTH}x${TERM_HEIGHT}" \
+        --format=ansi \
+        --symbols=block \
+        "$ascii_image"
+    )
+  elif command -v jp2a >/dev/null; then
+    ascii_payload=$(
+      jp2a \
+        --width="$TERM_WIDTH" \
+        --height="$TERM_HEIGHT" \
+        --colors \
+        --output=- \
+        "$ascii_image"
+    )
+  elif command -v img2txt >/dev/null; then
+    ascii_payload=$(
+      img2txt \
+        -W "$TERM_WIDTH" \
+        -H "$TERM_HEIGHT" \
+        -f ansi \
+        "$ascii_image"
+    )
+  else
+    echo "Error: No image renderer found (img2txt, jp2a or chafa)." >&2
+    exit 1
+  fi
+
   files=("-")
 fi
+
 [[ ${#files[@]} -eq 0 ]] && files=("-")
 
 # ---------------------------- main loop ---------------------------
 for f in "${files[@]}"; do
-  # read input
   if [[ $f == "-" ]]; then
     input=${ascii_payload:-$(cat)}
   else
     input=$(cat "$f")
   fi
 
-  # optional box
-  $build_box && input=$(printf '%s\n' "$input" | box_draw)
-
-  # render
-  case $animation_style in
-    classic) printf '%s\n' "$input" | animate_classic ;;
-    line)    printf '%s\n' "$input" | animate_line ;;
-    *)       printf '%s\n' "$input" | colour_block ;;
-  esac
+  if [[ -n $ascii_image ]]; then
+    printf '%s\n' "$ascii_payload"
+  else
+    $build_box && input=$(printf '%s\n' "$input" | box_draw)
+    case $animation_style in
+      classic) printf '%s\n' "$input" | animate_classic ;;
+      line)    printf '%s\n' "$input" | animate_line   ;;
+      *)       printf '%s\n' "$input" | colour_block   ;;
+    esac
+  fi
 done
