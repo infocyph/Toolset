@@ -12,6 +12,7 @@ build_box=false   box_style="default"     # default|parchment|simple|html|shell|
 orientation="h"                           # h|v|d
 palette_file=""   theme="rainbow"
 ascii_image="" blink=false
+THEMES=()
 
 # --------------------------- helpers ------------------------------
 require() { command -v "$1" >/dev/null 2>&1 || { printf 'Error: %s required\n' "$1" >&2; exit 1; }; }
@@ -58,7 +59,7 @@ EOF
 # ------------------------- option parsing -------------------------
 require getopt
 OPTS=$(getopt -o p:F:S:ad:s:itfbB:O:P:T:I:vh \
- --long spread:,freq:,seed:,animate,style:,line,duration:,speed:,invert,truecolor,force,box,box-style:,orientation:,palette:,theme:,image:,version,help -- "$@") \
+  --long spread:,freq:,seed:,animate,style:,line,duration:,speed:,invert,truecolor,force,box,box-style:,orientation:,palette:,theme:,image:,blink,version,help -- "$@") \
  || { usage; exit 1; }
 
 eval set -- "$OPTS"
@@ -112,7 +113,7 @@ if [[ -n $palette_file ]]; then
   mapfile -t _pal < "$palette_file" || { echo "Bad palette file" >&2; exit 1; }
   PALETTE=$(IFS=,; echo "${_pal[*]}")
 else
-  if [[ ${#THEMES[@]:-} -gt 0 ]]; then
+  if [[ ${#THEMES[@]} -gt 0 ]]; then
     for theme in "${THEMES[@]}"; do
       case $theme in
         fire)    PALETTE+=",FF6B00,FF8C00,FFA500,FFD700";;
