@@ -102,7 +102,13 @@ while true; do
   esac
 done
 files=("$@")
-
+if   command -v gawk >/dev/null 2>&1; then AWK=gawk
+elif command -v mawk >/dev/null 2>&1; then AWK=mawk
+elif command -v awk  >/dev/null 2>&1; then AWK=awk
+else
+  printf 'Error: no awk found\n' >&2
+  exit 1
+fi
 # -------------- environment / sanity checks -----------------------
 truecolor=false
 [[ $want_truecolor == true && ${COLORTERM:-} == *truecolor* ]] && truecolor=true
@@ -147,7 +153,7 @@ esac
 
 # ---------------------- colouriser (portable AWK) -----------------
 colour_block() {
-  awk -v spread="$spread" -v blink="$blink" -v freq="$freq" -v seed="$(get_seed)" \
+  $AWK -v spread="$spread" -v blink="$blink" -v freq="$freq" -v seed="$(get_seed)" \
       -v tc="$truecolor" -v palette="$PALETTE" -v orient="$orientation" \
       -v invert="$invert" '
   BEGIN {
@@ -345,8 +351,8 @@ box_draw() {
 }
 
 # ----------------------- animation helpers ------------------------
-frames()  { awk -v d="$duration" -v s="$speed" 'BEGIN{printf "%d", d*s}'; }
-sleeper() { awk -v s="$speed"            'BEGIN{printf "%.5f", 1/s}'; }
+frames()  { $AWK -v d="$duration" -v s="$speed" 'BEGIN{printf "%d", d*s}'; }
+sleeper() { $AWK -v s="$speed"            'BEGIN{printf "%.5f", 1/s}'; }
 
 animate_classic() {
   tput civis; trap 'tput cnorm; exit' INT TERM
