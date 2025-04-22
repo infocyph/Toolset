@@ -43,6 +43,7 @@ APPEARANCE
   -P, --palette <file>     Palette file (HEX per line)
   -T, --theme <name>       fire|ice|sunset|ocean|rainbow
   -I, --image <file>       ASCII‑art mode via img2txt
+  --blink                  Blinking text
 
 MISC
   -v, --version            Print version and exit
