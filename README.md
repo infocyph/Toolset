@@ -1,4 +1,3 @@
-```markdown
 # Toolset
 
 Welcome to **Toolset**, a versatile collection of standalone shell-based CLIs to streamline your day-to-day development
@@ -434,5 +433,3 @@ Please open an issue or pull request against this repo.
 ## License
 
 This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for details.
-
-```
