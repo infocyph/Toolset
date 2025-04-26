@@ -378,6 +378,20 @@ A non-interactive, parameter-based SQLite CLI.
 | `seed`                                                                | Import seed files (SQL, CSV, JSON)            |
 | `reset`                                                               | Backup → drop & recreate DB → migrate → seed  |
 
+### Global Options
+
+These flags must come before the command name:
+
+| Option                      | Description                                                   |
+|-----------------------------|---------------------------------------------------------------|
+| `--db <file>`               | **(required)** SQLite database file                           |
+| `--env <env>`               | Environment name (default: `default`)                         |
+| `--migrations-path <path>`  | Migrations directory (default: `./migrations`)                |
+| `--seeds-path <path>`       | Seeds directory (default: `./seeds`)                          |
+| `--backup-path <path>`      | Backup directory (default: `./db_backups`)                    |
+| `--export-path <path>`      | Export directory (default: `./exports`)                       |
+| `--use-lock`                | Enable automatic lock-retry behavior on update/delete queries |
+
 #### Examples
 
 ```bash
@@ -419,6 +433,17 @@ sqlitex --db my.db seed
 
 # Fully reset DB: backup, recreate, migrate, seed
 sqlitex --db my.db reset
+
+# WITH GLOBAL OPTIONS
+
+# Use a custom database file and environment (it'll rename the file accordingly)
+sqlitex --db prod.db --env staging migrate
+
+# Enable lock-retry and run a safe delete
+sqlitex --db my.db --use-lock delete --table users --where "id>100"
+
+# Specify custom migrations and seeds locations
+sqlitex --db test.db --migrations-path ./db/migrations --seeds-path ./db/seeds reset
 ```
 
 ---
