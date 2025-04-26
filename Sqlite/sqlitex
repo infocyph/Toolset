@@ -1,0 +1,432 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ===========================================
+# Global Configuration (with defaults)
+# ===========================================
+ENV="default"
+DB=""
+MIGRATIONS_PATH="./migrations"
+SEEDS_PATH="./seeds"
+BACKUP_DIR="./db_backups"
+EXPORT_DIR="./exports"
+USE_LOCK="false"
+MIG_TABLE_VAR="migrations_${ENV}"
+
+# ===========================================
+# Color Codes for CLI Logging
+# ===========================================
+NC='\033[0m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+
+# ===========================================
+# Logging Helpers
+# ===========================================
+log_success() { echo -e "${GREEN}✅ $1${NC}"; }
+log_error()   { echo -e "${RED}❌ $1${NC}" >&2; exit 1; }
+log_info()    { echo -e "${CYAN}ℹ️  $1${NC}"; }
+log_warn()    { echo -e "${YELLOW}⚠️  $1${NC}"; }
+
+# ===========================================
+# Environment Checks & Utilities
+# ===========================================
+ensure_sqlite()    { command -v sqlite3 >/dev/null 2>&1 || log_error "sqlite3 is required."; }
+ensure_jq()        { command -v jq     >/dev/null 2>&1 || log_error "jq is required for JSON seeding."; }
+ensure_db_exists() { [[ ! -f "$DB" ]] && log_error "Database '$DB' does not exist."; }
+
+backup_db() {
+  mkdir -p "$BACKUP_DIR"
+  local file="$BACKUP_DIR/$(basename "${DB%.db}")_$(date +%Y%m%d_%H%M%S).db"
+  cp "$DB" "$file"
+  log_info "Backup created at: $file"
+}
+
+# ===========================================
+# Timing Helpers
+# ===========================================
+timer_start() { START_TIME=$(date +%s%N); }
+timer_end() {
+  local end=$(date +%s%N)
+  local ms=$(( (end - START_TIME) / 1000000 ))
+  echo -e "${YELLOW}⏱️  ${ms} ms${NC}"
+}
+
+# ===========================================
+# Lock-Retry for SQL
+# ===========================================
+attempt_query() {
+  local sql="$1"
+  local retries=5 delay=0.5
+  for ((i=1; i<=retries; i++)); do
+    if sqlite3 "$DB" "$sql"; then
+      return 0
+    else
+      log_warn "Database is locked, retry $i/$retries..."
+      sleep "$delay"
+    fi
+  done
+  log_error "Failed after $retries retries due to lock."
+}
+
+run_sql() {
+  local sql="$1"
+  if [[ "$USE_LOCK" == "true" ]]; then
+    attempt_query "$sql"
+  else
+    sqlite3 "$DB" "$sql"
+  fi
+}
+
+run_sql_file() {
+  local file="$1"
+  if [[ "$USE_LOCK" == "true" ]]; then
+    local sql
+    sql=$(<"$file")
+    attempt_query "$sql"
+  else
+    sqlite3 "$DB" <"$file"
+  fi
+}
+
+# ===========================================
+# JSON/CSV Import Helpers
+# ===========================================
+detect_columns() {
+  sqlite3 "$DB" "PRAGMA table_info($1);" | awk -F'|' '{print $2}' | xargs
+}
+
+import_csv() {
+  local file="$1" table="$2"
+  sqlite3 "$DB" <<EOF
+.mode csv
+.import '$file' $table
+EOF
+}
+
+import_json() {
+  local file="$1" table="$2"
+  ensure_jq
+  local tmp
+  tmp=$(mktemp)
+  jq -r '(.[0] | keys_unsorted) as \$k | \$k, (.[] | [.[ \$k[] ]])[] | @csv' "$file" >"$tmp"
+  import_csv "$tmp" "$table"
+  rm "$tmp"
+}
+
+# ===========================================
+# Migration Functions
+# ===========================================
+ensure_migration_table() {
+  run_sql "CREATE TABLE IF NOT EXISTS $MIG_TABLE_VAR (
+    migration_file TEXT PRIMARY KEY,
+    applied_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+  );"
+}
+
+migrate_up() {
+  ensure_db_exists
+  ensure_migration_table
+  local applied
+  applied=$(sqlite3 "$DB" "SELECT migration_file FROM $MIG_TABLE_VAR;")
+  for file in "$MIGRATIONS_PATH"/*.sql; do
+    [[ -f "$file" ]] || continue
+    [[ "$file" =~ \.down\.sql$ ]] && continue
+    local name
+    name=$(basename "$file")
+    if ! grep -qx "$name" <<<"$applied"; then
+      log_info "Applying migration: $name"
+      run_sql_file "$file"
+      run_sql "INSERT INTO $MIG_TABLE_VAR(migration_file) VALUES('$name');"
+      log_success "Migrated: $name"
+    fi
+  done
+}
+
+rollback_migration() {
+  ensure_db_exists
+  ensure_migration_table
+  local last down_file
+  last=$(sqlite3 "$DB" "SELECT migration_file FROM $MIG_TABLE_VAR ORDER BY applied_at DESC LIMIT 1;")
+  [[ -z "$last" ]] && log_info "No migrations to rollback." && return
+  down_file="$MIGRATIONS_PATH/${last%.sql}.down.sql"
+  [[ -f "$down_file" ]] || log_error "Down script not found: $down_file"
+  log_info "Rolling back: $last"
+  run_sql_file "$down_file"
+  run_sql "DELETE FROM $MIG_TABLE_VAR WHERE migration_file='$last';"
+  log_success "Rolled back: $last"
+}
+
+# ===========================================
+# Seed Function
+# ===========================================
+seed_all() {
+  ensure_db_exists
+  for file in "$SEEDS_PATH"/*; do
+    [[ -f "$file" ]] || continue
+    local base ext name table
+    base=$(basename "$file")
+    ext=${base##*.}
+    name=${base%.*}
+    if [[ "$ext" == "sql" ]]; then
+      log_info "Seeding SQL: $base"
+      run_sql_file "$file"
+    elif [[ "$ext" == "csv" ]]; then
+      table=${name%_seed}
+      log_info "Seeding CSV: $base → $table"
+      import_csv "$file" "$table"
+    elif [[ "$ext" == "json" ]]; then
+      table=${name%_seed}
+      log_info "Seeding JSON: $base → $table"
+      import_json "$file" "$table"
+    else
+      log_warn "Skipping unknown seed: $base"
+    fi
+  done
+  log_success "Seeding complete."
+}
+
+# ===========================================
+# Reset Database (migrate + seed)
+# ===========================================
+reset_db() {
+  ensure_db_exists
+  backup_db
+  rm "$DB" && touch "$DB"
+  log_success "Database reset: $DB"
+  migrate_up
+  seed_all
+}
+
+# ===========================================
+# Schema Inspection
+# ===========================================
+show_schema() {
+  ensure_db_exists
+  sqlite3 "$DB" ".schema $1"
+}
+
+# ===========================================
+# Record Operations
+# ===========================================
+select_records() {
+  local table="$1" where_clause="${2:-1=1}" export_fmt="$3"
+  ensure_db_exists
+  timer_start
+  if [[ "$export_fmt" == "csv" ]]; then
+    mkdir -p "$EXPORT_DIR"
+    local f="$EXPORT_DIR/${table}_$(date +%Y%m%d_%H%M%S).csv"
+    sqlite3 -header -csv "$DB" "SELECT * FROM $table WHERE $where_clause;" >"$f"
+    log_success "Exported CSV: $f"
+  elif [[ "$export_fmt" == "json" ]]; then
+    json_data=$(sqlite3 -json "$DB" "SELECT * FROM $table WHERE $where_clause;")
+    echo "$json_data"
+  else
+    sqlite3 -header -column "$DB" "SELECT * FROM $table WHERE $where_clause;"
+  fi
+  timer_end
+}
+
+update_record() {
+  local table="$1" set_clause="$2" where_clause="$3"
+  ensure_db_exists
+  backup_db
+  timer_start
+  run_sql "UPDATE $table SET $set_clause WHERE $where_clause"
+  timer_end
+  log_success "Updated table: $table"
+}
+
+delete_record() {
+  local table="$1" where_clause="$2"
+  ensure_db_exists
+  backup_db
+  timer_start
+  run_sql "DELETE FROM $table WHERE $where_clause"
+  timer_end
+  log_success "Deleted from: $table"
+}
+
+# ===========================================
+# Command Implementations (cmd_*)
+# ===========================================
+cmd_create_db() {
+  sqlite3 "$DB" "" \
+    && log_success "Database created: $DB"
+}
+
+cmd_create_table() {
+  local table cols
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --table)   table="$2"; shift 2 ;;
+      --columns) cols="$2";  shift 2 ;;
+      *)         log_error "create-table: unknown option $1" ;;
+    esac
+  done
+  [[ -z $table || -z $cols ]] && usage
+  ensure_db_exists
+  run_sql "CREATE TABLE IF NOT EXISTS $table ($cols)" \
+    && log_success "Table created: $table"
+}
+
+cmd_insert() {
+  local table vals
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --table)  table="$2"; shift 2 ;;
+      --values) vals="$2";  shift 2 ;;
+      *)        log_error "insert: unknown option $1" ;;
+    esac
+  done
+  [[ -z $table || -z $vals ]] && usage
+  ensure_db_exists
+  run_sql "INSERT INTO $table VALUES ($vals)" \
+    && log_success "Inserted into: $table"
+}
+
+cmd_insert_batch() {
+  local file
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --file) file="$2"; shift 2 ;;
+      *)      log_error "insert-batch: unknown option $1" ;;
+    esac
+  done
+  [[ -z $file ]] && usage
+  ensure_db_exists
+  run_sql_file "$file" \
+    && log_success "Batch insert from: $file"
+}
+
+cmd_select() {
+  local table where export_fmt
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --table)  table="$2";       shift 2 ;;
+      --where)  where="$2";       shift 2 ;;
+      --export) export_fmt="$2";  shift 2 ;;
+      *)        log_error "select: unknown option $1" ;;
+    esac
+  done
+  [[ -z $table ]] && usage
+  select_records "$table" "$where" "$export_fmt"
+}
+
+cmd_update() {
+  local table set_clause where
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --table) table="$2";       shift 2 ;;
+      --set)   set_clause="$2";  shift 2 ;;
+      --where) where="$2";       shift 2 ;;
+      *)       log_error "update: unknown option $1" ;;
+    esac
+  done
+  [[ -z $table || -z $set_clause || -z $where ]] && usage
+  update_record "$table" "$set_clause" "$where"
+}
+
+cmd_delete() {
+  local table where
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --table) table="$2"; shift 2 ;;
+      --where) where="$2"; shift 2 ;;
+      *)        log_error "delete: unknown option $1" ;;
+    esac
+  done
+  [[ -z $table || -z $where ]] && usage
+  delete_record "$table" "$where"
+}
+
+cmd_schema() {
+  local table
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --table) table="$2"; shift 2 ;;
+      *)        log_error "schema: unknown option $1" ;;
+    esac
+  done
+  [[ -z $table ]] && usage
+  show_schema "$table"
+}
+
+cmd_migrate() {
+  local rollback=false
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --rollback) rollback=true; shift ;;
+      *)          log_error "migrate: unknown option $1" ;;
+    esac
+  done
+  $rollback && rollback_migration || migrate_up
+}
+
+cmd_seed() {
+  seed_all
+}
+
+cmd_reset() {
+  reset_db
+}
+
+# ===========================================
+# Usage & Dispatcher
+# ===========================================
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [GLOBAL OPTIONS] COMMAND [OPTIONS]
+
+Global Options:
+  --db <file>                 SQLite database file (required)
+  --env <env>                 Environment name (default: default)
+  --migrations-path <path>    Migrations directory (default: ./migrations)
+  --seeds-path <path>         Seeds directory (default: ./seeds)
+  --backup-path <path>        Backup directory (default: ./db_backups)
+  --export-path <path>        Export directory (default: ./exports)
+  --use-lock                  Enable lock-retry behavior
+
+Commands:
+  create-db
+  create-table   --table <name> --columns "<col_defs>"
+  insert         --table <name> --values "<vals>"
+  insert-batch   --file <sql_file>
+  select         --table <name> [--where "<cond>"] [--export csv|json]
+  update         --table <name> --set "<set>" --where "<cond>"
+  delete         --table <name> --where "<cond>"
+  schema         --table <name>
+  migrate        [--rollback]
+  seed
+  reset
+EOF
+  exit 1
+}
+
+# Parse global options
+while [[ $# -gt 0 && "$1" == --* ]]; do
+  case "$1" in
+    --db)              DB="$2"; shift 2 ;;
+    --env)             ENV="$2"; shift 2 ;;
+    --migrations-path) MIGRATIONS_PATH="$2"; shift 2 ;;
+    --seeds-path)      SEEDS_PATH="$2"; shift 2 ;;
+    --backup-path)     BACKUP_DIR="$2"; shift 2 ;;
+    --export-path)     EXPORT_DIR="$2"; shift 2 ;;
+    --use-lock)        USE_LOCK="true"; shift ;;
+    *)                 log_error "Unknown global option: $1" ;;
+  esac
+done
+
+[[ -z "$DB" ]] && log_error "--db <file> is required." && usage
+MIG_TABLE_VAR="migrations_${ENV}"
+ensure_sqlite
+
+# Dispatch
+cmd="$1"; shift || usage
+if declare -f "cmd_$cmd" >/dev/null; then
+  "cmd_$cmd" "$@"
+else
+  log_error "Unknown command: $cmd"
+fi
