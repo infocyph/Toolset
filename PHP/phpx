@@ -51,7 +51,7 @@ setup_logging() {
 log_action() {
   # Purpose: Write a log entry to $LOG_FILE with a given level and message.
   # Usage:   log_action "ERROR" "Something went wrong"
-  
+
   local level="$1"
   local message="$2"
   local current_time
@@ -124,7 +124,7 @@ show_last_lines() {
   # By default, max_lines=5.
 
   local line_buffer=()
-  local max_lines=5          # Number of lines to display
+  local max_lines=5 # Number of lines to display
   local is_terminal=false
 
   # Check if stdout is attached to a terminal
@@ -246,7 +246,7 @@ add_sury_repo_if_needed() {
 
       # Construct the sources.list entry for sury.org
       echo "deb [signed-by=/usr/share/keyrings/deb.sury.org-php.gpg] https://packages.sury.org/php/ $codename main" \
-        > /etc/apt/sources.list.d/php.list
+        >/etc/apt/sources.list.d/php.list
 
       apt-get update -y 2>&1 | show_last_lines
     fi
@@ -336,10 +336,10 @@ check_and_clean_php_extensions() {
 
   local missing_extensions=()
   IFS=$'\n' read -r -d '' -a missing_extensions < <(
-    "$php_binary" -m 2>&1 \
-      | grep "Unable to load dynamic library" \
-      | awk -F"'" '{print $2}' \
-      && printf '\0'
+    "$php_binary" -m 2>&1 |
+      grep "Unable to load dynamic library" |
+      awk -F"'" '{print $2}' &&
+      printf '\0'
   )
 
   if [[ ${#missing_extensions[@]} -eq 0 ]]; then
@@ -355,11 +355,11 @@ check_and_clean_php_extensions() {
     local ext_base
     ext_base="$(basename "$ext" .so)"
 
-    find "/etc/php/$version" -type f -name "*${ext_base}*.ini" -exec rm -v {} \; 2>/dev/null \
-      | while read -r removed_file; do
-          echo -e "${GREEN}Removed $removed_file${NC}"
-          log_action "INFO" "Removed broken extension ini: $removed_file"
-        done
+    find "/etc/php/$version" -type f -name "*${ext_base}*.ini" -exec rm -v {} \; 2>/dev/null |
+      while read -r removed_file; do
+        echo -e "${GREEN}Removed $removed_file${NC}"
+        log_action "INFO" "Removed broken extension ini: $removed_file"
+      done
   done
 
   echo -e "${GREEN}Cleaned up missing extensions for PHP $version.${NC}"
@@ -423,27 +423,23 @@ configure_web_server() {
     }
   fi
 
-  declare -A server_names=( ["apache2"]="Apache" ["nginx"]="Nginx" ["lighttpd"]="Lighttpd" )
-  local installed_servers=()
-  local active_servers=()
-  local service
+  # ──────────────────────────────────────────────────────────────────────────────
+  # Detect which servers are installed & running
+  declare -A server_names=(["apache2"]="Apache" ["nginx"]="Nginx" ["lighttpd"]="Lighttpd")
+  local installed_servers=() active_servers=() service
 
-  # Detect installed vs running servers
   for service in "${!server_names[@]}"; do
     if dpkg -l | grep -q "^ii  $service "; then
       installed_servers+=("$service")
-      if systemctl is-active --quiet "$service"; then
-        active_servers+=("$service")
-      fi
+      systemctl is-active --quiet "$service" && active_servers+=("$service")
     fi
   done
 
   if [[ ${#installed_servers[@]} -eq 0 ]]; then
-    echo -e "${YELLOW}No supported web servers (Apache, Nginx, Lighttpd) are installed.${NC}"
+    echo -e "${YELLOW}No supported web servers (Apache, Nginx, Lighttpd) installed.${NC}"
     log_action "WARN" "No supported web servers installed."
     return 0
   fi
-
   installed_servers+=("exit")
 
   echo -e "${YELLOW}Detected installed web servers:${NC}"
@@ -451,7 +447,7 @@ configure_web_server() {
     if [[ "${installed_servers[$i]}" == "exit" ]]; then
       echo "$((i + 1)). Exit without configuring"
     else
-      echo "$((i + 1)). ${server_names[${installed_servers[$i]}]}"
+      printf "%d. %s\n" "$((i + 1))" "${server_names[${installed_servers[$i]}]}"
       if [[ " ${active_servers[*]} " =~ " ${installed_servers[$i]} " ]]; then
         echo "   (Currently running)"
       else
@@ -460,102 +456,121 @@ configure_web_server() {
     fi
   done
 
-  read -rp "Select a web server to configure with PHP $version (enter number): " server_selection
-  while ! [[ "$server_selection" =~ ^[0-9]+$ && "$server_selection" -ge 1 && "$server_selection" -le ${#installed_servers[@]} ]]; do
-    echo -e "${RED}Invalid selection. Please enter a number between 1 and ${#installed_servers[@]}.${NC}"
-    read -rp "Select a web server to configure with PHP $version (enter number): " server_selection
+  # Prompt selection
+  read -rp "Select a web server to configure with PHP $version (enter number): " sel
+  while ! [[ "$sel" =~ ^[0-9]+$ && "$sel" -ge 1 && "$sel" -le ${#installed_servers[@]} ]]; do
+    echo -e "${RED}Invalid selection. Enter a number between 1 and ${#installed_servers[@]}.${NC}"
+    read -rp "Select a web server to configure with PHP $version (enter number): " sel
   done
-  local selected_server="${installed_servers[$((server_selection - 1))]}"
+  local selected_server="${installed_servers[$((sel - 1))]}"
 
   if [[ "$selected_server" == "exit" ]]; then
     echo -e "${YELLOW}Exiting without configuring any server.${NC}"
-    log_action "INFO" "User chose to exit without configuring any server."
+    log_action "INFO" "User chose to exit."
     return 0
   fi
 
   case "$selected_server" in
-    apache2)
-      local apache_needs_restart=false
+  apache2)
+    local apache_needs_restart=false
 
-      disable_conflicting_modules() {
-        local module="$1"
-        if apache2ctl -M 2>/dev/null | grep -qi "$module"; then
-          a2dismod "$module"
+    # ─────────── Helpers ───────────
+    disable_other_mod_php() {
+      local current="php$version"
+      local mods
+      mods=$(apache2ctl -M 2>/dev/null |
+        grep -Eo 'php[0-9]+\.[0-9]+_module' |
+        sed 's/_module//')
+      for mod in $mods; do
+        if [[ "$mod" != "$current" ]]; then
+          a2dismod "$mod" 2>/dev/null || true
           apache_needs_restart=true
         fi
-      }
+      done
+    }
 
-      enable_required_modules() {
-        local modules=("proxy" "proxy_fcgi" "setenvif" "rewrite" "ssl" "socache_shmcb" "headers")
-        for mod in "${modules[@]}"; do
-          if ! apache2ctl -M 2>/dev/null | grep -qi "${mod}_module"; then
-            a2enmod "$mod"
-            apache_needs_restart=true
-          fi
-        done
-      }
-
-      if systemctl is-active --quiet "php$version-fpm"; then
-        echo -e "${YELLOW}Configuring Apache to use PHP-FPM for PHP $version...${NC}"
-        log_action "INFO" "Configuring Apache to use PHP-FPM for PHP $version."
-
-        disable_conflicting_modules "php$version"
-        enable_required_modules
-        a2enconf "php$version-fpm" 2>/dev/null || true
-
-        a2dismod mpm_prefork 2>/dev/null || true
-        a2enmod mpm_event 2>/dev/null || true
-        apache_needs_restart=true
-
-      else
-        echo -e "${YELLOW}Configuring Apache to use mod_php for PHP $version...${NC}"
-        log_action "INFO" "Configuring Apache to use mod_php for PHP $version."
-
-        if [ -f "/etc/apache2/conf-enabled/php$version-fpm.conf" ]; then
-          a2disconf "php$version-fpm"
+    disable_other_php_fpm_confs() {
+      local current="php$version-fpm.conf"
+      for conf in /etc/apache2/conf-enabled/php*-fpm.conf; do
+        [[ -e $conf ]] || continue
+        local base=$(basename "$conf")
+        if [[ "$base" != "$current" ]]; then
+          a2disconf "${base%.conf}" 2>/dev/null || true
           apache_needs_restart=true
         fi
+      done
+    }
 
-        a2enmod "php$version" 2>/dev/null || {
-          echo -e "${RED}mod_php for PHP $version not found. Did you install libapache2-mod-php$version?${NC}"
-          log_action "ERROR" "Failed to enable mod_php for PHP $version."
-          return 1
-        }
+    enable_required_modules() {
+      local mods=(proxy proxy_fcgi setenvif rewrite ssl socache_shmcb headers) m
+      for m in "${mods[@]}"; do
+        if ! apache2ctl -M 2>/dev/null | grep -qi "${m}_module"; then
+          a2enmod "$m"
+          apache_needs_restart=true
+        fi
+      done
+    }
+    # ──────────────────────────────────
 
-        enable_required_modules
+    if systemctl is-active --quiet "php$version-fpm"; then
+      echo -e "${YELLOW}Configuring Apache to use PHP-FPM for PHP $version...${NC}"
+      log_action "INFO" "Using PHP-FPM (php$version-fpm)."
 
-        a2dismod mpm_event 2>/dev/null || true
-        a2enmod mpm_prefork 2>/dev/null || true
-        apache_needs_restart=true
-      fi
+      disable_other_mod_php
+      disable_other_php_fpm_confs
+      enable_required_modules
 
-      if [ "$apache_needs_restart" = true ]; then
-        echo -e "${YELLOW}Restarting Apache to apply changes...${NC}"
-        log_action "INFO" "Restarting Apache."
-        systemctl restart apache2
-      fi
-      ;;
-    nginx | lighttpd)
-      echo -e "${YELLOW}Configuring $selected_server to use PHP-FPM for PHP $version...${NC}"
-      log_action "INFO" "Configuring $selected_server to use PHP-FPM for PHP $version."
+      a2enconf "php$version-fpm" 2>/dev/null || true
+      a2dismod mpm_prefork 2>/dev/null || true
+      a2enmod mpm_event 2>/dev/null || true
+      apache_needs_restart=true
 
-      if ! systemctl is-active --quiet "php$version-fpm"; then
-        echo -e "${RED}PHP-FPM for PHP $version is not running. Please install/start it before proceeding.${NC}"
-        log_action "ERROR" "PHP-FPM for PHP $version is not active."
+    else
+      echo -e "${YELLOW}Configuring Apache to use mod_php for PHP $version...${NC}"
+      log_action "INFO" "Using mod_php (libapache2-mod-php$version)."
+
+      disable_other_php_fpm_confs
+      disable_other_mod_php
+
+      a2enmod "php$version" 2>/dev/null || {
+        echo -e "${RED}mod_php for PHP $version not found. Install libapache2-mod-php$version?${NC}"
+        log_action "ERROR" "Failed to enable mod_php for PHP $version."
         return 1
-      fi
+      }
+      enable_required_modules
 
-      echo -e "${YELLOW}Update your $selected_server config to use the socket at: /run/php/php$version-fpm.sock${NC}"
-      if [[ "$selected_server" == "nginx" ]]; then
-        echo -e "${YELLOW}  fastcgi_pass unix:/run/php/php$version-fpm.sock;${NC}"
-      else
-        echo -e "${YELLOW}  fastcgi.server = ( \".php\" => (( \"socket\" => \"/run/php/php$version-fpm.sock\" )) )${NC}"
-      fi
-      ;;
+      a2dismod mpm_event 2>/dev/null || true
+      a2enmod mpm_prefork 2>/dev/null || true
+      apache_needs_restart=true
+    fi
+
+    if [[ "$apache_needs_restart" == true ]]; then
+      echo -e "${YELLOW}Restarting Apache to apply changes...${NC}"
+      log_action "INFO" "Restarting Apache."
+      systemctl restart apache2
+    fi
+    ;;
+  nginx | lighttpd)
+    echo -e "${YELLOW}Configuring $selected_server to use PHP-FPM for PHP $version...${NC}"
+    log_action "INFO" "Using PHP-FPM (php$version-fpm) for $selected_server."
+
+    if ! systemctl is-active --quiet "php$version-fpm"; then
+      echo -e "${RED}php$version-fpm is not running. Start it first.${NC}"
+      log_action "ERROR" "php$version-fpm inactive."
+      return 1
+    fi
+
+    echo -e "${YELLOW}Set your $selected_server fastcgi socket to:/run/php/php$version-fpm.sock${NC}"
+    if [[ "$selected_server" == "nginx" ]]; then
+      echo "  fastcgi_pass unix:/run/php/php$version-fpm.sock;"
+    else
+      echo "  fastcgi.server = ( \".php\" => (( \"socket\" => \"/run/php/php$version-fpm.sock\" )) )"
+    fi
+    ;;
   esac
 
   echo -e "${GREEN}Done configuring $selected_server with PHP $version.${NC}"
-  log_action "INFO" "Completed web server configuration for $selected_server with PHP $version."
+  log_action "INFO" "Completed configuration for $selected_server + PHP $version."
 }
 
 ################################################################################
@@ -645,13 +660,13 @@ install_php_extensions() {
   log_action "INFO" "Listing installed PHP extensions for PHP $version."
   local installed_extensions=()
   IFS=$'\n' read -r -d '' -a installed_extensions < <(
-    dpkg -l \
-      | grep "^ii" \
-      | grep "php$version-" \
-      | awk '{print $2}' \
-      | sed "s/php$version-//g" \
-      | sort \
-      && printf '\0'
+    dpkg -l |
+      grep "^ii" |
+      grep "php$version-" |
+      awk '{print $2}' |
+      sed "s/php$version-//g" |
+      sort &&
+      printf '\0'
   )
 
   if [[ ${#installed_extensions[@]} -eq 0 ]]; then
@@ -671,11 +686,11 @@ install_php_extensions() {
   log_action "INFO" "Listing installable PHP extensions for PHP $version."
   local available_extensions=()
   IFS=$'\n' read -r -d '' -a available_extensions < <(
-    apt-cache pkgnames \
-      | grep "^php$version-" \
-      | sed "s/php$version-//g" \
-      | sort \
-      && printf '\0'
+    apt-cache pkgnames |
+      grep "^php$version-" |
+      sed "s/php$version-//g" |
+      sort &&
+      printf '\0'
   )
 
   if [[ ${#available_extensions[@]} -eq 0 ]]; then
@@ -701,13 +716,13 @@ install_php_extensions() {
     selection="$(echo -e "${selection}" | sed -e 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     if [[ "$selection" =~ ^[0-9]+$ ]]; then
       local idx=$((selection - 1))
-      if (( idx >= 0 && idx < ${#available_extensions[@]} )); then
-        extensions_to_install+=( "php$version-${available_extensions[$idx]}" )
+      if ((idx >= 0 && idx < ${#available_extensions[@]})); then
+        extensions_to_install+=("php$version-${available_extensions[$idx]}")
       fi
     else
       for ext in "${available_extensions[@]}"; do
         if [[ "$ext" == "$selection" ]]; then
-          extensions_to_install+=( "php$version-$ext" )
+          extensions_to_install+=("php$version-$ext")
           break
         fi
       done
@@ -860,28 +875,28 @@ serve() {
   # Parse arguments
   while [[ "$1" ]]; do
     case "$1" in
-      --host)
-        shift
-        host="$1"
-        ;;
-      --port)
-        shift
-        port="$1"
-        ;;
-      --root)
-        shift
-        root_dir="$1"
-        ;;
-      --router)
-        shift
-        router_file="$1"
-        ;;
-      --verbose|-v)
-        verbose=true
-        ;;
-      *)
-        echo -e "${YELLOW}Unknown argument: $1${NC}"
-        ;;
+    --host)
+      shift
+      host="$1"
+      ;;
+    --port)
+      shift
+      port="$1"
+      ;;
+    --root)
+      shift
+      root_dir="$1"
+      ;;
+    --router)
+      shift
+      router_file="$1"
+      ;;
+    --verbose | -v)
+      verbose=true
+      ;;
+    *)
+      echo -e "${YELLOW}Unknown argument: $1${NC}"
+      ;;
     esac
     shift
   done
@@ -1115,7 +1130,6 @@ display_usage() {
   echo -e "${GREEN}For more information or help, consult the script documentation or source code on GitHub.${NC}"
 }
 
-
 ################################################################################
 # Remove PHP Version
 ################################################################################
@@ -1147,11 +1161,11 @@ remove_php_version() {
 
   local php_packages=()
   IFS=$'\n' read -r -d '' -a php_packages < <(
-    dpkg -l \
-      | grep "^ii" \
-      | awk '{print $2}' \
-      | grep -E "^php$version(-|$)" \
-      && printf '\0'
+    dpkg -l |
+      grep "^ii" |
+      awk '{print $2}' |
+      grep -E "^php$version(-|$)" &&
+      printf '\0'
   )
 
   if [[ ${#php_packages[@]} -gt 0 ]]; then
@@ -1190,13 +1204,13 @@ remove_php_extension() {
 
   local installed_extensions=()
   IFS=$'\n' read -r -d '' -a installed_extensions < <(
-    dpkg -l \
-      | grep "^ii" \
-      | grep "php$version-" \
-      | awk '{print $2}' \
-      | sed "s/php$version-//g" \
-      | sort \
-      && printf '\0'
+    dpkg -l |
+      grep "^ii" |
+      grep "php$version-" |
+      awk '{print $2}' |
+      sed "s/php$version-//g" |
+      sort &&
+      printf '\0'
   )
 
   if [[ ${#installed_extensions[@]} -eq 0 ]]; then
@@ -1207,10 +1221,10 @@ remove_php_extension() {
 
   echo -e "${GREEN}Installed PHP extensions for PHP $version:${NC}"
   for i in "${!installed_extensions[@]}"; do
-      printf "%2d. %-20s" $((i + 1)) "${installed_extensions[$i]}"
-      if (((i + 1) % 5 == 0)); then
-        echo ""
-      fi
+    printf "%2d. %-20s" $((i + 1)) "${installed_extensions[$i]}"
+    if (((i + 1) % 5 == 0)); then
+      echo ""
+    fi
   done
   echo ""
 
@@ -1222,7 +1236,7 @@ remove_php_extension() {
     selection="$(echo -e "$selection" | sed -e 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     if [[ "$selection" =~ ^[0-9]+$ ]]; then
       local idx=$((selection - 1))
-      if (( idx >= 0 && idx < ${#installed_extensions[@]} )); then
+      if ((idx >= 0 && idx < ${#installed_extensions[@]})); then
         extensions_to_remove+=("php$version-${installed_extensions[$idx]}")
       fi
     else
@@ -1271,7 +1285,7 @@ perform_system_checks() {
   fi
 
   # 2) Check free space
-  local min_free_kb="50000"  # 50MB
+  local min_free_kb="50000" # 50MB
   local free_space
   free_space="$(df / | tail -1 | awk '{print $4}')"
   if [[ "$free_space" -lt "$min_free_kb" ]]; then
@@ -1356,7 +1370,7 @@ self_update() {
 # Config Generator
 ################################################################################
 generate_php_config() {
-  local ENVIRONMENT="${1,,}"  # lowercase
+  local ENVIRONMENT="${1,,}" # lowercase
   local PHP_VERSION="$2"
 
   # ─── Validation ─────────────────────────────
@@ -1375,25 +1389,25 @@ generate_php_config() {
   # ─── Defaults & Paths ──────────────────────
   local AVG_PHP_PROCESS_MB=40
   local TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}')
-  local MAX_CHILDREN=$(( TOTAL_MEM / AVG_PHP_PROCESS_MB ))
+  local MAX_CHILDREN=$((TOTAL_MEM / AVG_PHP_PROCESS_MB))
   local FPM_POOL_PATH="./fpm.${ENVIRONMENT}.conf"
   local PHP_INI_PATH="./php.${ENVIRONMENT}.ini"
 
   # ─── PHP-FPM Pool Configuration ────────────
-  cat > "$FPM_POOL_PATH" <<EOF
+  cat >"$FPM_POOL_PATH" <<EOF
 ; Auto-generated PHP-FPM pool config for $ENVIRONMENT
 
 pm = dynamic
 pm.max_children = $MAX_CHILDREN
-pm.start_servers = $(( MAX_CHILDREN / 5 ))
-pm.min_spare_servers = $(( MAX_CHILDREN / 6 ))
-pm.max_spare_servers = $(( MAX_CHILDREN / 3 ))
+pm.start_servers = $((MAX_CHILDREN / 5))
+pm.min_spare_servers = $((MAX_CHILDREN / 6))
+pm.max_spare_servers = $((MAX_CHILDREN / 3))
 pm.max_requests = 500
 catch_workers_output = yes
 
 access.log = /var/log/php${PHP_VERSION}-fpm.${ENVIRONMENT}.access.log
 slowlog = /var/log/php${PHP_VERSION}-fpm.${ENVIRONMENT}.slow.log
-request_slowlog_timeout = $( [[ "$ENVIRONMENT" == "production" ]] && echo "3s" || echo "2s" )
+request_slowlog_timeout = $([[ "$ENVIRONMENT" == "production" ]] && echo "3s" || echo "2s")
 EOF
 
   # ─── OPCache + JIT PHP INI ─────────────────
@@ -1419,7 +1433,7 @@ EOF
     UPLOAD_SIZE="200M"
   fi
 
-  cat > "$PHP_INI_PATH" <<EOF
+  cat >"$PHP_INI_PATH" <<EOF
 ; Auto-generated php.ini for $ENVIRONMENT
 
 memory_limit = 512M
@@ -1429,7 +1443,7 @@ post_max_size = $UPLOAD_SIZE
 upload_max_filesize = $UPLOAD_SIZE
 
 error_reporting = E_ALL
-display_errors = $( [[ "$ENVIRONMENT" == "production" ]] && echo "Off" || echo "On" )
+display_errors = $([[ "$ENVIRONMENT" == "production" ]] && echo "Off" || echo "On")
 log_errors = On
 error_log = /var/log/php_errors.${ENVIRONMENT}.log
 
@@ -1469,52 +1483,52 @@ setup_logging
 perform_system_checks
 
 case "$1" in
-  switch | s)
-    switch_php_version "$2"
-    ;;
-  ext | extensions | x)
-    install_php_extensions "$2"
-    ;;
-  install | i)
-    case "$2" in
-      composer)
-        install_composer
-        ;;
-      *)
-        install_pecl_package "$2"
-        ;;
-    esac
-    ;;
-  serve)
-    serve "${@:2}"
-    ;;
-  run)
-    run_php_script "$2" "$3"
-    ;;
-  remove)
-    if [[ "$2" =~ ^[0-9]+\.[0-9]+$ ]]; then
-      if [[ "$3" == "ext" || "$3" == "extension" ]]; then
-        remove_php_extension "$2"
-      else
-        remove_php_version "$2"
-      fi
-    else
-      remove_php_extension
-    fi
-    ;;
-  generate-config)
-    generate_php_config "$2" "$3"
-    ;;
-  self-update)
-    self_update
-    ;;
-  sury)
-    add_sury_repo_if_needed
-    ;;
-  clean)
-    check_and_clean_php_extensions "$2"
+switch | s)
+  switch_php_version "$2"
+  ;;
+ext | extensions | x)
+  install_php_extensions "$2"
+  ;;
+install | i)
+  case "$2" in
+  composer)
+    install_composer
     ;;
   *)
-    display_usage
+    install_pecl_package "$2"
     ;;
+  esac
+  ;;
+serve)
+  serve "${@:2}"
+  ;;
+run)
+  run_php_script "$2" "$3"
+  ;;
+remove)
+  if [[ "$2" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    if [[ "$3" == "ext" || "$3" == "extension" ]]; then
+      remove_php_extension "$2"
+    else
+      remove_php_version "$2"
+    fi
+  else
+    remove_php_extension
+  fi
+  ;;
+generate-config)
+  generate_php_config "$2" "$3"
+  ;;
+self-update)
+  self_update
+  ;;
+sury)
+  add_sury_repo_if_needed
+  ;;
+clean)
+  check_and_clean_php_extensions "$2"
+  ;;
+*)
+  display_usage
+  ;;
 esac
