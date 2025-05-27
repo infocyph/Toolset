@@ -702,7 +702,7 @@ install_php_extensions() {
     return
   fi
 
-  # ─────────── Filter out already installed ───────────
+  # Filter out already installed
   local filtered_extensions=()
   for ext in "${available_extensions[@]}"; do
     if [[ ! " ${installed_extensions[*]} " =~ " ${ext} " ]]; then
@@ -725,7 +725,7 @@ install_php_extensions() {
   done
   echo
 
-  # ─────────── Prompt & install ───────────
+  # ─────────── Prompt & collect selection ───────────
   read -rp "Enter numbers or names of the extensions to install (comma-separated): " extension_selection
   IFS=',' read -r -a selection_array <<<"$extension_selection"
   local extensions_to_install=()
@@ -749,9 +749,9 @@ install_php_extensions() {
     return
   fi
 
+  # ─────────── Install selected extensions ───────────
   echo -e "${YELLOW}Updating apt and installing:${NC} ${extensions_to_install[*]}"
   log_action "INFO" "Installing extensions: ${extensions_to_install[*]} for PHP $version."
-
   apt update -y 2>&1 | show_last_lines
   if ! apt install -y "${extensions_to_install[@]}" 2>&1 | show_last_lines; then
     echo -e "${RED}Failed to install one or more selected extensions.${NC}"
@@ -759,8 +759,23 @@ install_php_extensions() {
     return 1
   fi
 
-  echo -e "${GREEN}Successfully installed:${NC} ${extensions_to_install[*]}"
-  log_action "INFO" "Installed extensions for PHP $version: ${extensions_to_install[*]}."
+  # ─────────── Enable newly installed extensions ───────────
+  echo -e "${YELLOW}Enabling PHP extensions...${NC}"
+  local pkg
+  for pkg in "${extensions_to_install[@]}"; do
+    local ext_name="${pkg#php$version-}"
+    echo -e " • Enabling ${ext_name}..."
+    phpenmod -v "$version" "$ext_name"
+  done
+
+  # ─────────── Reload FPM to pick up new modules ───────────
+  if systemctl is-active --quiet "php$version-fpm"; then
+    echo -e "${YELLOW}Reloading php$version-fpm service...${NC}"
+    systemctl reload "php$version-fpm"
+  fi
+
+  echo -e "${GREEN}Successfully installed and enabled:${NC} ${extensions_to_install[*]}"
+  log_action "INFO" "Installed & enabled extensions for PHP $version: ${extensions_to_install[*]}."
 }
 
 ################################################################################
