@@ -185,8 +185,8 @@ add_sury_repo_if_needed() {
 
   # We also want the codename (e.g., jammy, bookworm, bullseye)
   if ! command -v lsb_release &>/dev/null; then
-    apt-get update -y 2>&1 | show_last_lines
-    apt-get install -y lsb-release 2>&1 | show_last_lines
+    apt update -y 2>&1 | show_last_lines
+    apt install -y lsb-release 2>&1 | show_last_lines
   fi
   local codename
   codename="$(lsb_release -sc 2>/dev/null || echo "")"
@@ -202,8 +202,8 @@ add_sury_repo_if_needed() {
     if ! command -v add-apt-repository &>/dev/null; then
       echo -e "${YELLOW}Installing 'software-properties-common' so we can add repositories...${NC}"
       log_action "INFO" "Installing software-properties-common."
-      apt-get update -y 2>&1 | show_last_lines
-      apt-get install -y software-properties-common 2>&1 | show_last_lines
+      apt update -y 2>&1 | show_last_lines
+      apt install -y software-properties-common 2>&1 | show_last_lines
     fi
   }
 
@@ -225,7 +225,7 @@ add_sury_repo_if_needed() {
       echo -e "${YELLOW}Adding the Ondrej PHP PPA (ppa:ondrej/php) for $detected_os ($codename).${NC}"
       log_action "INFO" "Adding the Ondrej PPA (ppa:ondrej/php)."
       add-apt-repository -y ppa:ondrej/php 2>&1 | show_last_lines
-      apt-get update -y 2>&1 | show_last_lines
+      apt update -y 2>&1 | show_last_lines
     fi
   }
 
@@ -237,8 +237,8 @@ add_sury_repo_if_needed() {
       echo -e "${YELLOW}Adding the Sury.org repo for $detected_os ($codename).${NC}"
       log_action "INFO" "Adding the Sury.org repo."
 
-      apt-get update -y 2>&1 | show_last_lines
-      apt-get install -y ca-certificates curl 2>&1 | show_last_lines
+      apt update -y 2>&1 | show_last_lines
+      apt install -y ca-certificates curl 2>&1 | show_last_lines
 
       # Download & install the Sury keyring
       curl -sSLo /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb
@@ -248,7 +248,7 @@ add_sury_repo_if_needed() {
       echo "deb [signed-by=/usr/share/keyrings/deb.sury.org-php.gpg] https://packages.sury.org/php/ $codename main" \
         >/etc/apt/sources.list.d/php.list
 
-      apt-get update -y 2>&1 | show_last_lines
+      apt update -y 2>&1 | show_last_lines
     fi
   }
 
@@ -394,9 +394,9 @@ install_php_version() {
   echo -e "${YELLOW}Installing missing PHP $version packages: ${packages_to_install[*]}...${NC}"
   log_action "INFO" "Installing missing packages for PHP $version: ${packages_to_install[*]}."
 
-  apt-get update -y 2>&1 | show_last_lines
+  apt update -y 2>&1 | show_last_lines
 
-  if ! apt-get install -y "${packages_to_install[@]}" 2>&1 | show_last_lines; then
+  if ! apt install -y "${packages_to_install[@]}" 2>&1 | show_last_lines; then
     echo -e "${RED}Failed to install one or more PHP $version packages: ${packages_to_install[*]}.${NC}"
     log_action "ERROR" "Failed to install PHP $version packages: ${packages_to_install[*]}."
     return 1
@@ -634,6 +634,7 @@ install_php_extensions() {
   require_sudo
   local version="$1"
 
+  # Detect PHP version if none provided
   if [[ -z "$version" ]]; then
     version="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null)"
     if [[ -z "$version" ]]; then
@@ -645,7 +646,8 @@ install_php_extensions() {
     log_action "INFO" "Detected PHP version: $version in install_php_extensions."
   fi
 
-  if ! dpkg -l | grep -q "^ii  php$version"; then
+  # Ensure PHP version is installed
+  if ! dpkg -l | grep -q "^ii  php$version "; then
     echo -e "${YELLOW}PHP $version is not installed. Attempting to install...${NC}"
     log_action "WARN" "PHP $version is not installed. Attempting to install."
     install_php_version "$version" || {
@@ -655,18 +657,20 @@ install_php_extensions() {
     }
   fi
 
+  # Clean any stale extension toggles
   check_and_clean_php_extensions "$version"
 
+  # ─────────── Gather installed extensions ───────────
   log_action "INFO" "Listing installed PHP extensions for PHP $version."
   local installed_extensions=()
   IFS=$'\n' read -r -d '' -a installed_extensions < <(
-    dpkg -l |
-      grep "^ii" |
-      grep "php$version-" |
-      awk '{print $2}' |
-      sed "s/php$version-//g" |
-      sort &&
-      printf '\0'
+    dpkg -l \
+      | grep "^ii" \
+      | grep "php$version-" \
+      | awk '{print $2}' \
+      | sed "s/^php$version-//" \
+      | sort \
+    && printf '\0'
   )
 
   if [[ ${#installed_extensions[@]} -eq 0 ]]; then
@@ -675,56 +679,66 @@ install_php_extensions() {
   else
     echo -e "${GREEN}Installed PHP extensions for PHP $version:${NC}"
     for i in "${!installed_extensions[@]}"; do
-      printf "%2d. %-20s" $((i + 1)) "${installed_extensions[$i]}"
-      if (((i + 1) % 5 == 0)); then
-        echo ""
-      fi
+      printf "%2d. %-20s" $((i+1)) "${installed_extensions[$i]}"
+      (( (i+1) % 5 == 0 )) && echo
     done
-    echo ""
+    echo
   fi
 
+  # ─────────── Gather installable extensions ───────────
   log_action "INFO" "Listing installable PHP extensions for PHP $version."
   local available_extensions=()
   IFS=$'\n' read -r -d '' -a available_extensions < <(
-    apt-cache pkgnames |
-      grep "^php$version-" |
-      sed "s/php$version-//g" |
-      sort &&
-      printf '\0'
+    apt-cache pkgnames \
+      | grep "^php$version-" \
+      | sed "s/^php$version-//" \
+      | sort \
+    && printf '\0'
   )
 
   if [[ ${#available_extensions[@]} -eq 0 ]]; then
-    echo -e "${RED}No installable extensions found in apt-cache for PHP $version.${NC}"
+    echo -e "${RED}No extensions found in apt-cache for PHP $version.${NC}"
     log_action "WARN" "No installable extensions found for PHP $version."
     return
   fi
 
-  echo -e "${YELLOW}Installable PHP extensions for PHP $version:${NC}"
-  for i in "${!available_extensions[@]}"; do
-    printf "%2d. %-20s" $((i + 1)) "${available_extensions[$i]}"
-    if (((i + 1) % 5 == 0)); then
-      echo ""
+  # Filter out already installed
+  local filtered_extensions=()
+  for ext in "${available_extensions[@]}"; do
+    if [[ ! " ${installed_extensions[*]} " =~ " ${ext} " ]]; then
+      filtered_extensions+=("$ext")
     fi
   done
-  echo ""
+  available_extensions=("${filtered_extensions[@]}")
 
-  read -rp "Enter the numbers or names of the extensions you want to install (comma-separated): " extension_selection
+  if [[ ${#available_extensions[@]} -eq 0 ]]; then
+    echo -e "${GREEN}All available extensions for PHP $version are already installed.${NC}"
+    log_action "INFO" "No new extensions to install for PHP $version."
+    return
+  fi
+
+  # ─────────── Display installable extensions ───────────
+  echo -e "${YELLOW}Installable PHP extensions for PHP $version:${NC}"
+  for i in "${!available_extensions[@]}"; do
+    printf "%2d. %-20s" $((i+1)) "${available_extensions[$i]}"
+    (( (i+1) % 5 == 0 )) && echo
+  done
+  echo
+
+  # ─────────── Prompt & collect selection ───────────
+  read -rp "Enter numbers or names of the extensions to install (comma-separated): " extension_selection
   IFS=',' read -r -a selection_array <<<"$extension_selection"
   local extensions_to_install=()
 
-  for selection in "${selection_array[@]}"; do
-    selection="$(echo -e "${selection}" | sed -e 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    if [[ "$selection" =~ ^[0-9]+$ ]]; then
-      local idx=$((selection - 1))
-      if ((idx >= 0 && idx < ${#available_extensions[@]})); then
-        extensions_to_install+=("php$version-${available_extensions[$idx]}")
-      fi
+  for sel in "${selection_array[@]}"; do
+    sel="${sel//[[:space:]]/}"
+    if [[ "$sel" =~ ^[0-9]+$ ]]; then
+      idx=$((sel - 1))
+      [[ $idx -ge 0 && $idx -lt ${#available_extensions[@]} ]] \
+        && extensions_to_install+=("php$version-${available_extensions[$idx]}")
     else
       for ext in "${available_extensions[@]}"; do
-        if [[ "$ext" == "$selection" ]]; then
-          extensions_to_install+=("php$version-$ext")
-          break
-        fi
+        [[ "$ext" == "$sel" ]] && extensions_to_install+=("php$version-$ext") && break
       done
     fi
   done
@@ -735,18 +749,33 @@ install_php_extensions() {
     return
   fi
 
-  echo -e "${YELLOW}Updating apt and installing the selected extensions...${NC}"
+  # ─────────── Install selected extensions ───────────
+  echo -e "${YELLOW}Updating apt and installing:${NC} ${extensions_to_install[*]}"
   log_action "INFO" "Installing extensions: ${extensions_to_install[*]} for PHP $version."
-
-  apt-get update -y 2>&1 | show_last_lines
-  if ! apt-get install -y "${extensions_to_install[@]}" 2>&1 | show_last_lines; then
+  apt update -y 2>&1 | show_last_lines
+  if ! apt install -y "${extensions_to_install[@]}" 2>&1 | show_last_lines; then
     echo -e "${RED}Failed to install one or more selected extensions.${NC}"
-    log_action "ERROR" "Failed to install extensions for PHP $version: ${extensions_to_install[*]}."
+    log_action "ERROR" "Failed to install: ${extensions_to_install[*]} for PHP $version."
     return 1
   fi
 
-  echo -e "${GREEN}Extensions installed for PHP $version: ${extensions_to_install[*]}${NC}"
-  log_action "INFO" "Successfully installed extensions for PHP $version: ${extensions_to_install[*]}."
+  # ─────────── Enable newly installed extensions ───────────
+  echo -e "${YELLOW}Enabling PHP extensions...${NC}"
+  local pkg
+  for pkg in "${extensions_to_install[@]}"; do
+    local ext_name="${pkg#php$version-}"
+    echo -e " • Enabling ${ext_name}..."
+    phpenmod -v "$version" "$ext_name"
+  done
+
+  # ─────────── Reload FPM to pick up new modules ───────────
+  if systemctl is-active --quiet "php$version-fpm"; then
+    echo -e "${YELLOW}Reloading php$version-fpm service...${NC}"
+    systemctl reload "php$version-fpm"
+  fi
+
+  echo -e "${GREEN}Successfully installed and enabled:${NC} ${extensions_to_install[*]}"
+  log_action "INFO" "Installed & enabled extensions for PHP $version: ${extensions_to_install[*]}."
 }
 
 ################################################################################
@@ -759,8 +788,8 @@ install_composer() {
   if ! command -v curl &>/dev/null; then
     echo -e "${YELLOW}curl is missing. Installing curl...${NC}"
     log_action "INFO" "curl was not found; installing it."
-    apt-get update -y 2>&1 | show_last_lines
-    apt-get install -y curl 2>&1 | show_last_lines
+    apt update -y 2>&1 | show_last_lines
+    apt install -y curl 2>&1 | show_last_lines
     if ! command -v curl &>/dev/null; then
       echo -e "${RED}Failed to install curl.${NC}"
       log_action "ERROR" "Failed to install curl for install_composer."
@@ -823,8 +852,8 @@ install_pecl_package() {
   if ! command -v pecl &>/dev/null; then
     echo -e "${YELLOW}PECL is missing. Installing required packages (php-pear, php-dev)...${NC}"
     log_action "INFO" "Installing php-pear and possibly php-dev for PECL usage."
-    apt-get update -y 2>&1 | show_last_lines
-    apt-get install -y php-pear php-dev 2>&1 | show_last_lines
+    apt update -y 2>&1 | show_last_lines
+    apt install -y php-pear php-dev 2>&1 | show_last_lines
     if ! command -v pecl &>/dev/null; then
       echo -e "${RED}Failed to install PECL (php-pear, php-dev). Aborting.${NC}"
       log_action "ERROR" "PECL not found even after installing php-pear/php-dev."
@@ -1169,9 +1198,9 @@ remove_php_version() {
   )
 
   if [[ ${#php_packages[@]} -gt 0 ]]; then
-    apt-get purge -y "${php_packages[@]}" 2>&1 | show_last_lines
+    apt purge -y "${php_packages[@]}" 2>&1 | show_last_lines
     log_action "INFO" "Removed packages for PHP $version: ${php_packages[*]}."
-    apt-get autoremove -y 2>&1 | show_last_lines || true
+    apt autoremove -y 2>&1 | show_last_lines || true
   else
     echo -e "${RED}No specific packages found for PHP $version. Possibly already removed.${NC}"
     log_action "WARN" "No packages matched for PHP $version removal."
@@ -1258,13 +1287,13 @@ remove_php_extension() {
   echo -e "${YELLOW}Removing selected extensions...${NC}"
   log_action "INFO" "Removing extensions: ${extensions_to_remove[*]} for PHP $version."
 
-  if ! apt-get purge -y "${extensions_to_remove[@]}" 2>&1 | show_last_lines; then
+  if ! apt purge -y "${extensions_to_remove[@]}" 2>&1 | show_last_lines; then
     echo -e "${RED}Failed to remove some of the selected extensions.${NC}"
     log_action "ERROR" "Failed to remove selected extensions for PHP $version."
     return 1
   fi
 
-  apt-get autoremove -y 2>&1 | show_last_lines || true
+  apt autoremove -y 2>&1 | show_last_lines || true
 
   log_action "INFO" "Removed extensions: ${extensions_to_remove[*]} for PHP $version."
   echo -e "${GREEN}Extensions removed for PHP $version: ${extensions_to_remove[*]}${NC}"
@@ -1298,8 +1327,8 @@ perform_system_checks() {
   if ! command -v curl &>/dev/null; then
     echo -e "${YELLOW}curl is missing. Installing now...${NC}"
     log_action "INFO" "curl not found, attempting installation."
-    apt-get update -y 2>&1 | show_last_lines
-    apt-get install -y curl 2>&1 | show_last_lines
+    apt update -y 2>&1 | show_last_lines
+    apt install -y curl 2>&1 | show_last_lines
     if ! command -v curl &>/dev/null; then
       echo -e "${RED}Failed to install curl.${NC}"
       log_action "ERROR" "Failed to install curl."
@@ -1310,8 +1339,8 @@ perform_system_checks() {
   if ! command -v wget &>/dev/null; then
     echo -e "${YELLOW}wget is missing. Installing now...${NC}"
     log_action "INFO" "wget not found, attempting installation."
-    apt-get update -y 2>&1 | show_last_lines
-    apt-get install -y wget 2>&1 | show_last_lines
+    apt update -y 2>&1 | show_last_lines
+    apt install -y wget 2>&1 | show_last_lines
     if ! command -v wget &>/dev/null; then
       echo -e "${RED}Failed to install wget.${NC}"
       log_action "ERROR" "Failed to install wget."
