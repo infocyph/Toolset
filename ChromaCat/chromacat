@@ -14,6 +14,14 @@ palette_file="" theme="rainbow"
 ascii_image="" blink=false
 THEMES=()
 no_color=false
+mode="char" # char|line
+
+match_regex="" only_match=false strip_ansi=false
+log_mode=false stream_mode=false
+box_title="" box_center=false
+header_text=""
+list_themes=false sample_theme="" random_theme=false
+do_self_update=false
 
 # --------------------------- helpers ------------------------------
 require() { command -v "$1" >/dev/null 2>&1 || {
@@ -43,8 +51,14 @@ COLOUR / ANIMATION
   -a, --animate            Classic scrolling animation
   -aa,--line               Line-by-line reveal animation
       --style <name>       Animation style (classic|line|none)
+      --per-line           Use one colour per line (faster, log-friendly)
   -d, --duration <sec>     Animation seconds (default $duration)
   -s, --speed <fps>        Frames / second (default $speed)
+  -m, --match <regex>      Colour only text matching regex
+      --only-match         Hide non-matching characters
+      --strip-ansi         Strip existing ANSI codes before colouring
+      --log                Log preset (no animation, per-line gradient)
+      --stream             Disable animations for streaming input
 
 APPEARANCE
   -i, --invert             Invert foreground / background
@@ -52,21 +66,86 @@ APPEARANCE
   -f, --force              Colour even if stdout not a TTY
   -b, --box                Draw ASCII box
   -B, --box-style <name>   Box style: default|dashed|dash2|round|double|heavy|parchment|simple|shell|html|plus|comment|php|chain
+      --title <text>       Box title line
+      --center             Center-align box content
   -O, --orientation <o>    Gradient orientation: h|v|d
   -P, --palette <file>     Palette file (HEX per line)
   -T, --theme <name>       fire|ice|sunset|ocean|rainbow
+      --list-themes        Show available themes and exit
+      --sample-theme <n>   Preview theme and exit
+      --random-theme       Pick a random theme
   -I, --image <file>       ASCII-art mode via img2txt/jp2a/chafa
       --blink              Blinking text
 
 MISC
+  -H, --header <text>      Render header/banner (figlet if available)
+  -U, --self-update        Fetch latest chromacat and replace current script
   -v, --version            Print version and exit
   -h, --help               Show this help
+
+ENV
+  CHROMACAT_PATH           Override update target path for --self-update
 
 EXAMPLES
   echo "hello" | chromacat -a -d 2
   figlet "Docker" | chromacat -b -B parchment -aa -d 6 -O d
   chromacat -I screenshot.png
 EOF
+}
+
+self_update() {
+  require curl
+
+  local script_url="https://raw.githubusercontent.com/infocyph/Toolset/main/ChromaCat/chromacat"
+  local temp_file
+  if ! temp_file=$(mktemp /tmp/chromacat.XXXXXX 2>/dev/null); then
+    temp_file="/tmp/chromacat.$$"
+  fi
+
+  local target="${CHROMACAT_PATH:-}"
+  if [[ -z $target ]]; then
+    if command -v chromacat >/dev/null 2>&1; then
+      target=$(command -v chromacat)
+    else
+      target="$0"
+    fi
+  fi
+
+  echo "Checking for updates to chromacat..."
+  echo "Source: $script_url"
+  echo "Target: $target"
+
+  if ! curl -fsSL "$script_url" -o "$temp_file"; then
+    echo "Failed to download the latest chromacat script from GitHub." >&2
+    rm -f "$temp_file" || true
+    return 1
+  fi
+
+  if command -v sha256sum >/dev/null 2>&1 && [[ -f "$target" ]]; then
+    local remote_hash local_hash
+    remote_hash="$(sha256sum "$temp_file" | awk '{print $1}')"
+    local_hash="$(sha256sum "$target" 2>/dev/null | awk '{print $1}')"
+    if [[ -n $remote_hash && "$remote_hash" == "$local_hash" ]]; then
+      echo "chromacat is already up-to-date."
+      rm -f "$temp_file" || true
+      return 0
+    fi
+  fi
+
+  if [[ -f "$target" ]]; then
+    local backup="${target}.bak-$(date +'%Y%m%d%H%M%S')"
+    cp "$target" "$backup" 2>/dev/null || true
+  fi
+
+  if ! mv "$temp_file" "$target" 2>/dev/null; then
+    echo "Failed to overwrite $target. You may need to run with sudo or set CHROMACAT_PATH." >&2
+    rm -f "$temp_file" || true
+    return 1
+  fi
+
+  chmod +x "$target" || true
+  echo "chromacat has been updated to the latest version."
+  return 0
 }
 
 # ------------------------ env defaults ---------------------------
@@ -79,8 +158,8 @@ animation_style=${CHROMACAT_STYLE:-$animation_style}
 
 # ------------------------- option parsing -------------------------
 require getopt
-OPTS=$(getopt -o p:F:S:ad:s:itfbB:O:P:T:I:vh \
-  --long spread:,freq:,seed:,animate,style:,line,duration:,speed:,invert,truecolor,force,box,box-style:,orientation:,palette:,theme:,image:,blink,version,help -- "$@") ||
+OPTS=$(getopt -o p:F:S:ad:s:itfbB:O:P:T:I:vhm:H:U \
+  --long spread:,freq:,seed:,animate,style:,line,duration:,speed:,invert,truecolor,force,box,box-style:,orientation:,palette:,theme:,image:,blink,per-line,match:,only-match,strip-ansi,log,stream,list-themes,sample-theme:,random-theme,header:,title:,center,self-update,version,help -- "$@") ||
   {
     usage
     exit 1
@@ -113,6 +192,10 @@ while true; do
     animation_style=line
     shift
     ;;
+  --per-line)
+    mode="line"
+    shift
+    ;;
   -d | --duration)
     duration=$2
     shift 2
@@ -120,6 +203,26 @@ while true; do
   -s | --speed)
     speed=$2
     shift 2
+    ;;
+  -m | --match)
+    match_regex=$2
+    shift 2
+    ;;
+  --only-match)
+    only_match=true
+    shift
+    ;;
+  --strip-ansi)
+    strip_ansi=true
+    shift
+    ;;
+  --log)
+    log_mode=true
+    shift
+    ;;
+  --stream)
+    stream_mode=true
+    shift
     ;;
   -i | --invert)
     invert=true
@@ -142,6 +245,15 @@ while true; do
     box_style=$2
     shift 2
     ;;
+  --title)
+    box_title=$2
+    build_box=true
+    shift 2
+    ;;
+  --center)
+    box_center=true
+    shift
+    ;;
   -O | --orientation)
     orientation=$2
     shift 2
@@ -158,9 +270,29 @@ while true; do
     IFS=',' read -ra THEMES <<<"$2"
     shift 2
     ;;
+  --list-themes)
+    list_themes=true
+    shift
+    ;;
+  --sample-theme)
+    sample_theme=$2
+    shift 2
+    ;;
+  --random-theme)
+    random_theme=true
+    shift
+    ;;
   -I | --image)
     ascii_image=$2
     shift 2
+    ;;
+  -H | --header)
+    header_text=$2
+    shift 2
+    ;;
+  -U | --self-update)
+    do_self_update=true
+    shift
     ;;
   -v | --version)
     printf '%s %s\n' "$(basename "$0")" "$VERSION"
@@ -177,6 +309,12 @@ while true; do
   esac
 done
 files=("$@")
+
+# ------------------ self-update early exit -----------------------
+if [[ $do_self_update == true ]]; then
+  self_update
+  exit $?
+fi
 
 # ------------------ terminal dimensions --------------------------
 detect_term_size
@@ -219,11 +357,47 @@ if [[ -n ${NO_COLOR:-} ]]; then
   truecolor=false
 fi
 
+# log / stream presets
+if [[ $log_mode == true ]]; then
+  animation_style=none
+  mode="line"
+fi
+
+if [[ $stream_mode == true ]]; then
+  animation_style=none
+fi
+
+# list themes early
+if [[ $list_themes == true ]]; then
+  cat <<EOF
+Available themes:
+  fire
+  ice
+  sunset
+  ocean
+  rainbow
+EOF
+  exit 0
+fi
+
 # ---------------------------- seed -------------------------------
 if ((seed > 0)); then
   SEED="$seed"
 else
   SEED="$RANDOM"
+fi
+
+# -------------------- theme selection tweaks ---------------------
+# sample-theme overrides env/CLI themes
+if [[ -n $sample_theme ]]; then
+  THEMES=("$sample_theme")
+fi
+
+# random-theme chooses if no explicit theme or palette
+if [[ $random_theme == true && ${#THEMES[@]} -eq 0 && -z $palette_file ]]; then
+  themes_rand=(fire ice sunset ocean rainbow)
+  idx=$((RANDOM % ${#themes_rand[@]}))
+  THEMES=("${themes_rand[$idx]}")
 fi
 
 # --------------------------- palette ------------------------------
@@ -262,10 +436,12 @@ esac
 colour_block() {
   $AWK -v spread="$spread" -v blink="$blink" -v freq="$freq" -v seed="$SEED" \
     -v tc="$truecolor" -v palette="$PALETTE" -v orient="$orientation" \
-    -v invert="$invert" '
+    -v invert="$invert" -v mode="$mode" -v match_regex="$match_regex" \
+    -v only_match="$only_match" -v strip_ansi="$strip_ansi" '
   BEGIN {
     pi=3.1415926536;
     if (palette!="") pc=split(palette,p,",");
+    has_match = (match_regex != "") ? 1 : 0;
   }
   function rgb(r,g,b){
     return (tc=="true") ?
@@ -296,17 +472,66 @@ colour_block() {
     return col;
   }
   {
-    for (j=1; j<=length($0); j++) {
-      c = substr($0,j,1);
-      if (orient=="v")       idx = NR;
-      else if (orient=="d")  idx = NR + j/spread;
-      else                   idx = j + NR/spread;
-      idx += seed;
-      col = rainbow(int(idx));
-      r = hex2dec(substr(col,1,2));
-      g = hex2dec(substr(col,3,2));
-      b = hex2dec(substr(col,5,2));
-      code = rgb(r,g,b);
+    line = $0;
+    if (strip_ansi=="true") {
+      gsub(/\033\[[0-9;]*m/, "", line);
+    }
+
+    delete in_match;
+    if (has_match) {
+      start = 1;
+      while (start <= length(line)) {
+        m = match(substr(line, start), match_regex);
+        if (m == 0) break;
+        m = m + start - 1;
+        e = m + RLENGTH - 1;
+        for (k = m; k <= e; k++) in_match[k] = 1;
+        start = e + 1;
+      }
+    }
+
+    have_line_code = 0;
+    for (j=1; j<=length(line); j++) {
+      c = substr(line,j,1);
+
+      if (mode=="line") {
+        if (!have_line_code) {
+          if (orient=="v")       idx = NR;
+          else if (orient=="d")  idx = NR;
+          else                   idx = NR;
+          idx += seed;
+          col = rainbow(int(idx));
+          r = hex2dec(substr(col,1,2));
+          g = hex2dec(substr(col,3,2));
+          b = hex2dec(substr(col,5,2));
+          line_code = rgb(r,g,b);
+          have_line_code = 1;
+        }
+        code = line_code;
+      } else {
+        if (orient=="v")       idx = NR;
+        else if (orient=="d")  idx = NR + j/spread;
+        else                   idx = j + NR/spread;
+        idx += seed;
+        col = rainbow(int(idx));
+        r = hex2dec(substr(col,1,2));
+        g = hex2dec(substr(col,3,2));
+        b = hex2dec(substr(col,5,2));
+        code = rgb(r,g,b);
+      }
+
+      if (has_match) {
+        in_m = (j in in_match);
+        if (!in_m) {
+          if (only_match=="true") {
+            continue;
+          } else {
+            printf "%s", c;
+            continue;
+          }
+        }
+      }
+
       if (invert=="true") printf "\033[7m";
       if (blink=="true")  printf "%s", blink_on();
       printf "\033[%sm%s", code, c;
@@ -323,7 +548,27 @@ box_draw() {
   mapfile -t LINES
   local max=0 line
   for line in "${LINES[@]}"; do ((${#line} > max)) && max=${#line}; done
+
   hr() { printf '%*s' "$1" | tr ' ' "$2"; }
+
+  print_box_line() {
+    local left=$1 text=$2 right=$3
+    if [[ $box_center == true ]]; then
+      local len=${#text}
+      if ((len < max)); then
+        local pad_left=$(((max - len) / 2))
+        local pad_right=$((max - len - pad_left))
+        printf '%s ' "$left"
+        printf '%*s%s%*s' "$pad_left" "" "$text" "$pad_right" ""
+        printf ' %s\n' "$right"
+      else
+        printf '%s %-*s %s\n' "$left" "$max" "$text" "$right"
+      fi
+    else
+      printf '%s %-*s %s\n' "$left" "$max" "$text" "$right"
+    fi
+  }
+
   case $style in
   # ---------------------------------------------------------------- default  (+---)
   default)
@@ -331,7 +576,8 @@ box_draw() {
     printf '%s' "$tl"
     hr $((max + 2)) "$h"
     printf '%s\n' "$tr"
-    for line in "${LINES[@]}"; do printf '%s %-*s %s\n' "$v" "$max" "$line" "$v"; done
+    if [[ -n $box_title ]]; then print_box_line "$v" "$box_title" "$v"; fi
+    for line in "${LINES[@]}"; do print_box_line "$v" "$line" "$v"; done
     printf '%s' "$bl"
     hr $((max + 2)) "$h"
     printf '%s\n' "$br"
@@ -342,14 +588,11 @@ box_draw() {
     local tl='+' tr='+' bl='+' br='+' v='|'
     local dash_line=""
     for ((i = 0; i < max + 2; i++)); do
-      if ((i % 2 == 0)); then
-        dash_line+='-'
-      else
-        dash_line+=' '
-      fi
+      if ((i % 2 == 0)); then dash_line+='-'; else dash_line+=' '; fi
     done
     printf '%s%s%s\n' "$tl" "$dash_line" "$tr"
-    for line in "${LINES[@]}"; do printf '%s %-*s %s\n' "$v" "$max" "$line" "$v"; done
+    if [[ -n $box_title ]]; then print_box_line "$v" "$box_title" "$v"; fi
+    for line in "${LINES[@]}"; do print_box_line "$v" "$line" "$v"; done
     printf '%s%s%s\n' "$bl" "$dash_line" "$br"
     ;;
 
@@ -358,6 +601,7 @@ box_draw() {
     local border
     border=$(hr $((max + 6)) '-')
     printf '%s\n' "$border"
+    if [[ -n $box_title ]]; then printf '-- %-*s --\n' "$max" "$box_title"; fi
     for line in "${LINES[@]}"; do
       printf -- "-- %-*s --\n" "$max" "$line"
     done
@@ -370,7 +614,8 @@ box_draw() {
     printf '%s' "$tl"
     hr $((max + 2)) "$h"
     printf '%s\n' "$tr"
-    for line in "${LINES[@]}"; do printf '%s %-*s %s\n' "$v" "$max" "$line" "$v"; done
+    if [[ -n $box_title ]]; then print_box_line "$v" "$box_title" "$v"; fi
+    for line in "${LINES[@]}"; do print_box_line "$v" "$line" "$v"; done
     printf '%s' "$bl"
     hr $((max + 2)) "$h"
     printf '%s\n' "$br"
@@ -382,7 +627,8 @@ box_draw() {
     printf '%s' "$tl"
     hr $((max + 2)) "$h"
     printf '%s\n' "$tr"
-    for line in "${LINES[@]}"; do printf '%s %-*s %s\n' "$v" "$max" "$line" "$v"; done
+    if [[ -n $box_title ]]; then print_box_line "$v" "$box_title" "$v"; fi
+    for line in "${LINES[@]}"; do print_box_line "$v" "$line" "$v"; done
     printf '%s' "$bl"
     hr $((max + 2)) "$h"
     printf '%s\n' "$br"
@@ -390,11 +636,12 @@ box_draw() {
 
   # ---------------------------------------------------------------- round  (() )
   round)
-    local tl='(' tr=')' bl='(' br=')'
+    local tl='(' tr=')' bl='(' br=')' v='|'
     printf '%s' "$tl"
     hr $((max + 2)) "-"
     printf '%s\n' "$tr"
-    for line in "${LINES[@]}"; do printf '%s %-*s %s\n' "(" "$max" "$line" ")"; done
+    if [[ -n $box_title ]]; then print_box_line "$v" "$box_title" "$v"; fi
+    for line in "${LINES[@]}"; do print_box_line "$v" "$line" "$v"; done
     printf '%s' "$bl"
     hr $((max + 2)) "-"
     printf '%s\n' "$br"
@@ -404,7 +651,11 @@ box_draw() {
   parchment)
     local head_len=$((max + 4))
     printf ' %s\n' "$(hr "$head_len" '_')"
-    printf '/\\ %*s\\\n' $((max + 2)) ""
+    if [[ -n $box_title ]]; then
+      printf '/\\ %-*s\\\n' "$max" "$box_title"
+    else
+      printf '/\\ %*s\\\n' $((max + 2)) ""
+    fi
     printf '\\_| %-*s |\n' "$max" "${LINES[0]:-}"
     for ((i = 1; i < ${#LINES[@]}; i++)); do
       printf '  | %-*s |\n' "$max" "${LINES[i]}"
@@ -419,7 +670,8 @@ box_draw() {
   simple)
     hr $((max + 4)) '*'
     printf '\n'
-    for line in "${LINES[@]}"; do printf '* %-*s *\n' "$max" "$line"; done
+    if [[ -n $box_title ]]; then print_box_line '*' "$box_title" '*'; fi
+    for line in "${LINES[@]}"; do print_box_line '*' "$line" '*'; done
     hr $((max + 4)) '*'
     printf '\n'
     ;;
@@ -428,7 +680,8 @@ box_draw() {
   shell)
     hr $((max + 4)) '#'
     printf '\n'
-    for line in "${LINES[@]}"; do printf '# %-*s #\n' "$max" "$line"; done
+    if [[ -n $box_title ]]; then print_box_line '#' "$box_title" '#'; fi
+    for line in "${LINES[@]}"; do print_box_line '#' "$line" '#'; done
     hr $((max + 4)) '#'
     printf '\n'
     ;;
@@ -437,6 +690,7 @@ box_draw() {
   html)
     local border="<!-- $(hr "$max" '-') -->"
     printf '%s\n' "$border"
+    if [[ -n $box_title ]]; then printf '<!-- %-*s -->\n' "$max" "$box_title"; fi
     for line in "${LINES[@]}"; do printf '<!-- %-*s -->\n' "$max" "$line"; done
     printf '%s\n' "$border"
     ;;
@@ -444,6 +698,7 @@ box_draw() {
   # ---------------------------------------------------------------- comment /* */
   comment)
     printf '/* %s */\n' "$(hr "$max" '*')"
+    if [[ -n $box_title ]]; then printf ' * %-*s *\n' "$max" "$box_title"; fi
     for line in "${LINES[@]}"; do printf ' * %-*s *\n' "$max" "$line"; done
     printf '/* %s */\n' "$(hr "$max" '*')"
     ;;
@@ -451,6 +706,7 @@ box_draw() {
   # ---------------------------------------------------------------- php  <? ---- ?>
   php)
     printf '<?%s?>\n' "$(hr "$max" '-')"
+    if [[ -n $box_title ]]; then printf '| %-*s |\n' "$max" "$box_title"; fi
     for line in "${LINES[@]}"; do printf '| %-*s |\n' "$max" "$line"; done
     printf '<?%s?>\n' "$(hr "$max" '-')"
     ;;
@@ -461,7 +717,8 @@ box_draw() {
     printf '%s' "$tl"
     hr $((max + 2)) "$h"
     printf '%s\n' "$tr"
-    for line in "${LINES[@]}"; do printf '%s %-*s %s\n' "$v" "$max" "$line" "$v"; done
+    if [[ -n $box_title ]]; then print_box_line "$v" "$box_title" "$v"; fi
+    for line in "${LINES[@]}"; do print_box_line "$v" "$line" "$v"; done
     printf '%s' "$bl"
     hr $((max + 2)) "$h"
     printf '%s\n' "$br"
@@ -476,8 +733,9 @@ box_draw() {
     done
     border=${border:0:target_len}
     printf '%s\n' "${border}"
+    if [[ -n $box_title ]]; then print_box_line '<>' "$box_title" '<>'; fi
     for line in "${LINES[@]}"; do
-      printf '<> %-*s <>\n' "$max" "${line}"
+      print_box_line '<>' "$line" '<>'
     done
     printf '%s\n' "${border}"
     ;;
@@ -527,6 +785,12 @@ animate_line() {
   tput cnorm || true
 }
 
+# ---------------- sample-theme preview ---------------------------
+if [[ -n $sample_theme ]]; then
+  printf 'Sample for theme "%s"\n' "$sample_theme" | colour_block
+  exit 0
+fi
+
 # --------------------- ASCII-image import (ANSI as-is) ------------
 if [[ -n $ascii_image ]]; then
   if command -v chafa >/dev/null 2>&1; then
@@ -551,6 +815,32 @@ if [[ -n $ascii_image ]]; then
   else
     echo "Error: No image renderer found (img2txt, jp2a or chafa)." >&2
     exit 1
+  fi
+  exit 0
+fi
+
+# ----------------------- header helper ----------------------------
+if [[ -n $header_text ]]; then
+  if command -v figlet >/dev/null 2>&1; then
+    header_payload=$(figlet "$header_text" 2>/dev/null || printf '%s\n' "$header_text")
+  else
+    header_payload=$header_text
+  fi
+
+  if [[ $build_box == true ]]; then
+    content=$(printf '%s\n' "$header_payload" | box_draw)
+  else
+    content=$header_payload
+  fi
+
+  if [[ $no_color == true ]]; then
+    printf '%s\n' "$content"
+  else
+    case $animation_style in
+    classic) printf '%s\n' "$content" | animate_classic ;;
+    line) printf '%s\n' "$content" | animate_line ;;
+    *) printf '%s\n' "$content" | colour_block ;;
+    esac
   fi
   exit 0
 fi
