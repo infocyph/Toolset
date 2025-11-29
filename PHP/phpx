@@ -2006,10 +2006,6 @@ self_update() {
     return 0
   fi
 
-  if [[ -f "$local_file" ]]; then
-    mv "$local_file" "${local_file}.bak-$(date +'%Y%m%d%H%M%S')" 2>/dev/null || true
-  fi
-
   if ! mv "$temp_file" "$local_file"; then
     echo -e "${RED}Failed to overwrite $local_file with the new phpx script.${NC}"
     log_action "ERROR" "Failed to move updated script into place."

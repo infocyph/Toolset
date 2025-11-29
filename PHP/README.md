@@ -149,7 +149,7 @@ Some commands require root (via `sudo`):
 
     * Downloads latest `phpx` from GitHub.
     * Compares SHA-256 hash against local copy.
-    * Backs up old script and replaces `/usr/local/bin/phpx` atomically.
+    * Replaces `/usr/local/bin/phpx` atomically.
 
 ---
 

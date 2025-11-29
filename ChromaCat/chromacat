@@ -132,11 +132,6 @@ self_update() {
     fi
   fi
 
-  if [[ -f "$target" ]]; then
-    local backup="${target}.bak-$(date +'%Y%m%d%H%M%S')"
-    cp "$target" "$backup" 2>/dev/null || true
-  fi
-
   if ! mv "$temp_file" "$target" 2>/dev/null; then
     echo "Failed to overwrite $target. You may need to run with sudo or set CHROMACAT_PATH." >&2
     rm -f "$temp_file" || true
