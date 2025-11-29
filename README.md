@@ -67,8 +67,6 @@ See each tool’s README (linked above) for full command reference and examples.
 Bug fixes, small UX improvements, new subcommands or better docs are all welcome.
 Feel free to open an issue or PR against this repo.
 
----
-
 ## License
 
 Licensed under the **MIT License**. See [LICENSE](LICENSE) for details.
