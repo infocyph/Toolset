@@ -49,7 +49,7 @@ extra gradient on top).
 | `-S, --seed <n>`       | PRNG seed (0 = random per run)                                   |
 | `-a, --animate`        | Classic scrolling animation (full buffer scrolls)                |
 | `-aa, --line`          | Line-by-line reveal animation                                    |
-| `--style <name>`       | Animation style: `classic`                                       | `line` | `none`                     |
+| `--style <name>`       | Animation style: `classic`/`line`/`none`                         |
 | `--per-line`           | One colour per line (faster, log-friendly; works with all modes) |
 | `-d, --duration <sec>` | Animation duration in seconds                                    |
 | `-s, --speed <fps>`    | Frames per second (for animations)                               |
@@ -220,3 +220,6 @@ echo "Consistent colours" | chromacat -S 42 -T sunset
 ```bash
 sudo chromacat --self-update
 ```
+
+That’s it. Drop it into your pipelines instead of `cat` and you get colour/animation *for free*, and log-friendly modes
+when you want signal over noise.

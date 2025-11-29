@@ -3,6 +3,9 @@
 set -euo pipefail
 VERSION="1.0"
 
+# Preserve original argv for possible cat fallback
+ORIG_ARGS=("$@")
+
 # ---------------------------- defaults ----------------------------
 spread=3.0 freq=0.1 seed=0
 animation_style=none # none | classic | line
@@ -154,11 +157,10 @@ animation_style=${CHROMACAT_STYLE:-$animation_style}
 # ------------------------- option parsing -------------------------
 require getopt
 OPTS=$(getopt -o p:F:S:ad:s:itfbB:O:P:T:I:vhm:H:U \
-  --long spread:,freq:,seed:,animate,style:,line,duration:,speed:,invert,truecolor,force,box,box-style:,orientation:,palette:,theme:,image:,blink,per-line,match:,only-match,strip-ansi,log,stream,list-themes,sample-theme:,random-theme,header:,title:,center,self-update,version,help -- "$@") ||
-  {
-    usage
-    exit 1
-  }
+  --long spread:,freq:,seed:,animate,style:,line,duration:,speed:,invert,truecolor,force,box,box-style:,orientation:,palette:,theme:,image:,blink,per-line,match:,only-match,strip-ansi,log,stream,list-themes,sample-theme:,random-theme,header:,title:,center,self-update,version,help -- "$@") || {
+  # Unknown/invalid options? Behave exactly like cat.
+  exec cat "${ORIG_ARGS[@]}"
+}
 
 eval set -- "$OPTS"
 while true; do
@@ -312,10 +314,9 @@ if [[ $do_self_update == true ]]; then
 fi
 
 # ------------------ terminal dimensions --------------------------
-detect_term_size
-
-# ----------------------- AWK selection ---------------------------
-if command -v gawk >/dev/null 2>&1; then
+detect_term_size() if # ----------------------- AWK selection ---------------------------
+  command -v gawk >/dev/null 2>&1
+then
   AWK=gawk
 elif command -v mawk >/dev/null 2>&1; then
   AWK=mawk
@@ -373,6 +374,32 @@ Available themes:
   rainbow
 EOF
   exit 0
+fi
+
+# ----------------- auto-fallback to cat (raw mode) ----------------
+# If stdout is NOT a TTY, user didn't force colour, and no decorative features
+# are requested, behave exactly like /bin/cat with the original arguments.
+if [[ ! -t 1 && $force == false ]] &&
+  [[ $build_box == false ]] &&
+  [[ -z $ascii_image ]] &&
+  [[ -z $header_text ]] &&
+  [[ $log_mode == false ]] &&
+  [[ $stream_mode == false ]] &&
+  [[ -z $match_regex ]] &&
+  [[ $only_match == false ]] &&
+  [[ $strip_ansi == false ]] &&
+  [[ $blink == false ]] &&
+  [[ $invert == false ]] &&
+  [[ $want_truecolor == false ]] &&
+  [[ -z $palette_file ]] &&
+  [[ ${#THEMES[@]} -eq 0 ]] &&
+  [[ $animation_style == "none" ]] &&
+  [[ $mode == "char" ]] &&
+  [[ $list_themes == false ]] &&
+  [[ -z $sample_theme ]] &&
+  [[ $random_theme == false ]] &&
+  [[ $do_self_update == false ]]; then
+  exec cat "${ORIG_ARGS[@]}"
 fi
 
 # ---------------------------- seed -------------------------------
