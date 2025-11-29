@@ -6,21 +6,21 @@ All tools are standalone bash scripts and can be installed with a single `curl +
 
 ## Tools at a Glance
 
-| Tool        | Area            | Quick Summary                                                 | Docs                                       |
-|-------------|-----------------|---------------------------------------------------------------|--------------------------------------------|
-| `dockex`    | Docker          | Inspect, benchmark, backup/restore and clean Docker resources | [Docker/README.md](Docker/README.md)       |
-| `phpx`      | PHP             | PHP version/extension manager, FPM/webserver config, doctor   | [PHP/README.md](PHP/README.md)             |
-| `gitx`      | Git             | Opinionated Git workflow, reporting & cleanup helper          | [Git/README.md](Git/README.md)             |
-| `chromacat` | Terminal output | Colourful / animated text & ASCII art in the terminal         | [ChromaCat/README.md](ChromaCat/README.md) |
-| `sqlitex`   | SQLite          | Non-interactive, flag-driven SQLite admin & migrations        | [Sqlite/README.md](Sqlite/README.md)       |
+| Tool        | Area            | Quick Summary                                                 | Docs                             |
+|-------------|-----------------|---------------------------------------------------------------|----------------------------------|
+| `dockex`    | Docker          | Inspect, benchmark, backup/restore and clean Docker resources | [Docker](Docker/README.md)       |
+| `phpx`      | PHP             | PHP version/extension manager, FPM/webserver config, doctor   | [PHP](PHP/README.md)             |
+| `gitx`      | Git             | Opinionated Git workflow, reporting & cleanup helper          | [Git](Git/README.md)             |
+| `chromacat` | Terminal output | Colourful / animated text & ASCII art in the terminal         | [ChromaCat](ChromaCat/README.md) |
+| `sqlitex`   | SQLite          | Non-interactive, flag-driven SQLite admin & migrations        | [Sqlite](Sqlite/README.md)       |
 
 ### Tool Documentation
 
-- **dockex** – Docker helper: [Docker/README.md](Docker/README.md)
-- **phpx** – PHP manager / doctor: [PHP/README.md](PHP/README.md)
-- **gitx** – Git workflow helper: [Git/README.md](Git/README.md)
-- **chromacat** – colourful terminal text: [ChromaCat/README.md](ChromaCat/README.md)
-- **sqlitex** – SQLite CLI: [Sqlite/README.md](Sqlite/README.md)
+- **dockex** – Docker helper: [Docker](Docker/README.md)
+- **phpx** – PHP manager / doctor: [PHP](PHP/README.md)
+- **gitx** – Git workflow helper: [Git](Git/README.md)
+- **chromacat** – colourful terminal text: [ChromaCat](ChromaCat/README.md)
+- **sqlitex** – SQLite CLI: [Sqlite](Sqlite/README.md)
 
 ---
 
