@@ -2,7 +2,7 @@
 
 set -euo pipefail
 VERSION="1.0"
-
+AWK=awk
 # Preserve original argv for possible cat fallback
 ORIG_ARGS=("$@")
 
@@ -155,7 +155,11 @@ box_style=${CHROMACAT_BOX_STYLE:-$box_style}
 animation_style=${CHROMACAT_STYLE:-$animation_style}
 
 # ------------------------- option parsing -------------------------
-require getopt
+if ! command -v getopt >/dev/null 2>&1; then
+  # No getopt? behave exactly like cat.
+  exec cat "${ORIG_ARGS[@]}"
+fi
+
 OPTS=$(getopt -o p:F:S:ad:s:itfbB:O:P:T:I:vhm:H:U \
   --long spread:,freq:,seed:,animate,style:,line,duration:,speed:,invert,truecolor,force,box,box-style:,orientation:,palette:,theme:,image:,blink,per-line,match:,only-match,strip-ansi,log,stream,list-themes,sample-theme:,random-theme,header:,title:,center,self-update,version,help -- "$@") || {
   # Unknown/invalid options? Behave exactly like cat.
@@ -314,9 +318,10 @@ if [[ $do_self_update == true ]]; then
 fi
 
 # ------------------ terminal dimensions --------------------------
-detect_term_size() if # ----------------------- AWK selection ---------------------------
-  command -v gawk >/dev/null 2>&1
-then
+detect_term_size
+
+# ----------------------- AWK selection ---------------------------
+if command -v gawk >/dev/null 2>&1; then
   AWK=gawk
 elif command -v mawk >/dev/null 2>&1; then
   AWK=mawk
@@ -377,8 +382,6 @@ EOF
 fi
 
 # ----------------- auto-fallback to cat (raw mode) ----------------
-# If stdout is NOT a TTY, user didn't force colour, and no decorative features
-# are requested, behave exactly like /bin/cat with the original arguments.
 if [[ ! -t 1 && $force == false ]] &&
   [[ $build_box == false ]] &&
   [[ -z $ascii_image ]] &&
@@ -410,12 +413,10 @@ else
 fi
 
 # -------------------- theme selection tweaks ---------------------
-# sample-theme overrides env/CLI themes
 if [[ -n $sample_theme ]]; then
   THEMES=("$sample_theme")
 fi
 
-# random-theme chooses if no explicit theme or palette
 if [[ $random_theme == true && ${#THEMES[@]} -eq 0 && -z $palette_file ]]; then
   themes_rand=(fire ice sunset ocean rainbow)
   idx=$((RANDOM % ${#themes_rand[@]}))
@@ -592,7 +593,6 @@ box_draw() {
   }
 
   case $style in
-  # ---------------------------------------------------------------- default  (+---)
   default)
     local tl='+' tr='+' bl='+' br='+' h='-' v='|'
     printf '%s' "$tl"
@@ -604,8 +604,6 @@ box_draw() {
     hr $((max + 2)) "$h"
     printf '%s\n' "$br"
     ;;
-
-  # ---------------------------------------------------------------- dashed  (- - -)
   dashed)
     local tl='+' tr='+' bl='+' br='+' v='|'
     local dash_line=""
@@ -617,20 +615,14 @@ box_draw() {
     for line in "${LINES[@]}"; do print_box_line "$v" "$line" "$v"; done
     printf '%s%s%s\n' "$bl" "$dash_line" "$br"
     ;;
-
-  # ---------------------------------------------------------------- dash2
   dash2)
     local border
     border=$(hr $((max + 6)) '-')
     printf '%s\n' "$border"
     if [[ -n $box_title ]]; then printf '-- %-*s --\n' "$max" "$box_title"; fi
-    for line in "${LINES[@]}"; do
-      printf -- "-- %-*s --\n" "$max" "$line"
-    done
+    for line in "${LINES[@]}"; do printf -- "-- %-*s --\n" "$max" "$line"; done
     printf '%s\n' "$border"
     ;;
-
-  # ---------------------------------------------------------------- double  (+===)
   double)
     local tl='+' tr='+' bl='+' br='+' h='=' v='|'
     printf '%s' "$tl"
@@ -642,8 +634,6 @@ box_draw() {
     hr $((max + 2)) "$h"
     printf '%s\n' "$br"
     ;;
-
-  # ---------------------------------------------------------------- heavy  (#)
   heavy)
     local tl='#' tr='#' bl='#' br='#' h='#' v='#'
     printf '%s' "$tl"
@@ -655,8 +645,6 @@ box_draw() {
     hr $((max + 2)) "$h"
     printf '%s\n' "$br"
     ;;
-
-  # ---------------------------------------------------------------- round  (() )
   round)
     local tl='(' tr=')' bl='(' br=')' v='|'
     printf '%s' "$tl"
@@ -668,8 +656,6 @@ box_draw() {
     hr $((max + 2)) "-"
     printf '%s\n' "$br"
     ;;
-
-  # ---------------------------------------------------------------- parchment (unchanged ASCII)
   parchment)
     local head_len=$((max + 4))
     printf ' %s\n' "$(hr "$head_len" '_')"
@@ -687,8 +673,6 @@ box_draw() {
     printf '  |   %s_|_.\n' "$(hr "$u1" '_')"
     printf '   \\_/%s/\n' "$(hr "$max" '_')"
     ;;
-
-  # ---------------------------------------------------------------- simple  (*)
   simple)
     hr $((max + 4)) '*'
     printf '\n'
@@ -697,8 +681,6 @@ box_draw() {
     hr $((max + 4)) '*'
     printf '\n'
     ;;
-
-  # ---------------------------------------------------------------- shell (#)
   shell)
     hr $((max + 4)) '#'
     printf '\n'
@@ -707,8 +689,6 @@ box_draw() {
     hr $((max + 4)) '#'
     printf '\n'
     ;;
-
-  # ---------------------------------------------------------------- html
   html)
     local border="<!-- $(hr "$max" '-') -->"
     printf '%s\n' "$border"
@@ -716,24 +696,18 @@ box_draw() {
     for line in "${LINES[@]}"; do printf '<!-- %-*s -->\n' "$max" "$line"; done
     printf '%s\n' "$border"
     ;;
-
-  # ---------------------------------------------------------------- comment /* */
   comment)
     printf '/* %s */\n' "$(hr "$max" '*')"
     if [[ -n $box_title ]]; then printf ' * %-*s *\n' "$max" "$box_title"; fi
     for line in "${LINES[@]}"; do printf ' * %-*s *\n' "$max" "$line"; done
     printf '/* %s */\n' "$(hr "$max" '*')"
     ;;
-
-  # ---------------------------------------------------------------- php  <? ---- ?>
   php)
     printf '<?%s?>\n' "$(hr "$max" '-')"
     if [[ -n $box_title ]]; then printf '| %-*s |\n' "$max" "$box_title"; fi
     for line in "${LINES[@]}"; do printf '| %-*s |\n' "$max" "$line"; done
     printf '<?%s?>\n' "$(hr "$max" '-')"
     ;;
-
-  # ---------------------------------------------------------------- plus (legacy ASCII single-line)
   plus)
     local tl='+' tr='+' bl='+' br='+' h='-' v='|'
     printf '%s' "$tl"
@@ -745,24 +719,15 @@ box_draw() {
     hr $((max + 2)) "$h"
     printf '%s\n' "$br"
     ;;
-
-  # ---------------------------------------------------------------- chain  (<><><> …)
   chain)
-    local border=""
-    local target_len=$((max + 6))
-    while ((${#border} < target_len)); do
-      border+='<>'
-    done
+    local border="" target_len=$((max + 6))
+    while ((${#border} < target_len)); do border+='<>'; done
     border=${border:0:target_len}
     printf '%s\n' "${border}"
     if [[ -n $box_title ]]; then print_box_line '<>' "$box_title" '<>'; fi
-    for line in "${LINES[@]}"; do
-      print_box_line '<>' "$line" '<>'
-    done
+    for line in "${LINES[@]}"; do print_box_line '<>' "$line" '<>'; done
     printf '%s\n' "${border}"
     ;;
-
-  # ---------------------------------------------------------------- unknown
   *)
     echo "Unknown box style: $style" >&2
     exit 1

@@ -1303,6 +1303,7 @@ list_php_versions() {
 phpx_info() {
   local version="$1"
 
+  # Resolve version
   if [[ -z "$version" ]]; then
     if command -v php &>/dev/null; then
       version="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null)"
@@ -1317,6 +1318,7 @@ phpx_info() {
 
   version="$(get_php_version "$version")" || return 1
 
+  # Resolve binary
   local php_bin=""
   if [[ -x "/usr/bin/php$version" ]]; then
     php_bin="/usr/bin/php$version"
@@ -1328,6 +1330,7 @@ phpx_info() {
     return 1
   fi
 
+  # php -i / php -m snapshot
   local php_info
   php_info="$("$php_bin" -i 2>/dev/null)"
 
@@ -1337,63 +1340,265 @@ phpx_info() {
     return 1
   fi
 
-  local loaded_ini additional_ini_dir memory_limit max_execution_time opcache_enable opcache_jit opcache_jit_buffer
-
-  loaded_ini="$(echo "$php_info" | awk -F'=> ' '/^Loaded Configuration File/ {gsub(/^ +| +$/,"",$2); print $2; exit}')"
-  additional_ini_dir="$(echo "$php_info" | awk -F'=> ' '/^Scan this dir for additional .ini files/ {gsub(/^ +| +$/,"",$2); print $2; exit}')"
-  memory_limit="$(echo "$php_info" | awk -F'=> ' '/^memory_limit / {gsub(/^ +| +$/,"",$2); print $2; exit}')"
-  max_execution_time="$(echo "$php_info" | awk -F'=> ' '/^max_execution_time / {gsub(/^ +| +$/,"",$2); print $2; exit}')"
-  opcache_enable="$(echo "$php_info" | awk -F'=> ' '/^opcache.enable / {gsub(/^ +| +$/,"",$2); print $2; exit}')"
-  opcache_jit="$(echo "$php_info" | awk -F'=> ' '/^opcache.jit / {gsub(/^ +| +$/,"",$2); print $2; exit}')"
-  opcache_jit_buffer="$(echo "$php_info" | awk -F'=> ' '/^opcache.jit_buffer_size / {gsub(/^ +| +$/,"",$2); print $2; exit}')"
-
   local module_list
   module_list="$("$php_bin" -m 2>/dev/null)"
   local extension_total
   extension_total="$(echo "$module_list" | grep -vE '^\s*$' | wc -l)"
 
-  local common_exts=() ext
-  for ext in mysqli pdo_mysql intl gd curl mbstring xml opcache redis xdebug imagick; do
-    if echo "$module_list" | grep -qi "^$ext$"; then
-      common_exts+=("$ext")
-    fi
-  done
+  # helper to read php -i entries
+  local get_val
+  get_val() {
+    local key="$1"
+    echo "$php_info" | awk -F'=> ' -v key="$key" '
+      index($1, key) == 1 {
+        gsub(/^ +| +$/, "", $2);
+        print $2;
+        exit
+      }
+    '
+  }
 
+  # General config
+  local loaded_ini additional_ini_dir ini_search_path extension_dir
+  loaded_ini="$(get_val "Loaded Configuration File")"
+  additional_ini_dir="$(get_val "Scan this dir for additional .ini files")"
+  ini_search_path="$(get_val "Configuration File (php.ini) Path")"
+  extension_dir="$(get_val "extension_dir")"
+
+  # Key runtime settings (prioritized)
+  local memory_limit max_execution_time max_input_time post_max_size upload_max_filesize default_socket_timeout
+  local display_errors log_errors error_log
+  memory_limit="$(get_val "memory_limit")"
+  max_execution_time="$(get_val "max_execution_time")"
+  max_input_time="$(get_val "max_input_time")"
+  post_max_size="$(get_val "post_max_size")"
+  upload_max_filesize="$(get_val "upload_max_filesize")"
+  default_socket_timeout="$(get_val "default_socket_timeout")"
+  display_errors="$(get_val "display_errors")"
+  log_errors="$(get_val "log_errors")"
+  error_log="$(get_val "error_log")"
+
+  # FPM service state
   local fpm_state="not installed"
   if command -v systemctl &>/dev/null; then
     if systemctl is-active --quiet "php${version}-fpm"; then
       fpm_state="active"
     elif systemctl list-unit-files 2>/dev/null | grep -q "php${version}-fpm.service"; then
       fpm_state="installed (inactive)"
-    else
-      fpm_state="not installed"
     fi
   fi
 
+  # FPM pool details (best-effort)
+  local fpm_pool_dir="/etc/php/${version}/fpm/pool.d"
+  local fpm_listen fpm_pm fpm_max_children fpm_start_servers fpm_min_spare fpm_max_spare fpm_max_requests
+  local fpm_slowlog fpm_req_slow_timeout
+
+  if [[ -d "$fpm_pool_dir" ]]; then
+    fpm_listen="$(
+      grep -R "^[[:space:]]*listen[[:space:]]*=" "$fpm_pool_dir" 2>/dev/null |
+        grep -vE '^\s*;' | head -n1 |
+        awk -F'=' '{gsub(/^ +| +$/, "", $2); print $2}'
+    )"
+    fpm_pm="$(
+      grep -R "^[[:space:]]*pm[[:space:]]*=" "$fpm_pool_dir" 2>/dev/null |
+        grep -vE '^\s*;' | head -n1 |
+        awk -F'=' '{gsub(/^ +| +$/, "", $2); print $2}'
+    )"
+    fpm_max_children="$(
+      grep -R "^[[:space:]]*pm.max_children[[:space:]]*=" "$fpm_pool_dir" 2>/dev/null |
+        grep -vE '^\s*;' | head -n1 |
+        awk -F'=' '{gsub(/^ +| +$/, "", $2); print $2}'
+    )"
+    fpm_start_servers="$(
+      grep -R "^[[:space:]]*pm.start_servers[[:space:]]*=" "$fpm_pool_dir" 2>/dev/null |
+        grep -vE '^\s*;' | head -n1 |
+        awk -F'=' '{gsub(/^ +| +$/, "", $2); print $2}'
+    )"
+    fpm_min_spare="$(
+      grep -R "^[[:space:]]*pm.min_spare_servers[[:space:]]*=" "$fpm_pool_dir" 2>/dev/null |
+        grep -vE '^\s*;' | head -n1 |
+        awk -F'=' '{gsub(/^ +| +$/, "", $2); print $2}'
+    )"
+    fpm_max_spare="$(
+      grep -R "^[[:space:]]*pm.max_spare_servers[[:space:]]*=" "$fpm_pool_dir" 2>/dev/null |
+        grep -vE '^\s*;' | head -n1 |
+        awk -F'=' '{gsub(/^ +| +$/, "", $2); print $2}'
+    )"
+    fpm_max_requests="$(
+      grep -R "^[[:space:]]*pm.max_requests[[:space:]]*=" "$fpm_pool_dir" 2>/dev/null |
+        grep -vE '^\s*;' | head -n1 |
+        awk -F'=' '{gsub(/^ +| +$/, "", $2); print $2}'
+    )"
+    fpm_slowlog="$(
+      grep -R "^[[:space:]]*slowlog[[:space:]]*=" "$fpm_pool_dir" 2>/dev/null |
+        grep -vE '^\s*;' | head -n1 |
+        awk -F'=' '{gsub(/^ +| +$/, "", $2); print $2}'
+    )"
+    fpm_req_slow_timeout="$(
+      grep -R "^[[:space:]]*request_slowlog_timeout[[:space:]]*=" "$fpm_pool_dir" 2>/dev/null |
+        grep -vE '^\s*;' | head -n1 |
+        awk -F'=' '{gsub(/^ +| +$/, "", $2); print $2}'
+    )"
+  fi
+
+  # OPcache + JIT values for printing + hints
+  local opcache_enable opcache_enable_cli opcache_memory_consumption opcache_validate_timestamps opcache_revalidate_freq
+  local opcache_max_accelerated_files opcache_jit opcache_jit_buffer_size
+  opcache_enable="$(get_val "opcache.enable")"
+  opcache_enable_cli="$(get_val "opcache.enable_cli")"
+  opcache_memory_consumption="$(get_val "opcache.memory_consumption")"
+  opcache_validate_timestamps="$(get_val "opcache.validate_timestamps")"
+  opcache_revalidate_freq="$(get_val "opcache.revalidate_freq")"
+  opcache_max_accelerated_files="$(get_val "opcache.max_accelerated_files")"
+  opcache_jit="$(get_val "opcache.jit")"
+  opcache_jit_buffer_size="$(get_val "opcache.jit_buffer_size")"
+
+  local opcache_keys=(
+    "opcache.enable"
+    "opcache.enable_cli"
+    "opcache.memory_consumption"
+    "opcache.interned_strings_buffer"
+    "opcache.max_accelerated_files"
+    "opcache.validate_timestamps"
+    "opcache.revalidate_freq"
+    "opcache.fast_shutdown"
+    "opcache.save_comments"
+  )
+  local jit_keys=(
+    "opcache.jit"
+    "opcache.jit_buffer_size"
+    "opcache.jit_debug"
+    "opcache.jit_prof_threshold"
+  )
+
+  # Extensions from dpkg (phpX.Y-* packages)
+  local installed_ext_pkgs=()
+  if command -v dpkg &>/dev/null; then
+    IFS=$'\n' read -r -d '' -a installed_ext_pkgs < <(
+      dpkg -l 2>/dev/null |
+        grep "^ii" |
+        grep "php${version}-" |
+        awk '{print $2}' |
+        sed "s/^php${version}-//" |
+        sort &&
+        printf '\0'
+    )
+  fi
+
+  # Signal extensions
+  local has_xdebug="no"
+  if echo "$module_list" | grep -qi '^xdebug$'; then
+    has_xdebug="yes"
+  fi
+
+  # Heuristic "mode" guess
+  local mode_guess="unknown"
+  if [[ "$display_errors" =~ [Oo]n ]] || [[ "$opcache_validate_timestamps" == "1" ]]; then
+    mode_guess="development-ish"
+  elif [[ "$opcache_enable" == "1" ]] && [[ "$opcache_validate_timestamps" == "0" ]]; then
+    mode_guess="production-ish"
+  fi
+
+  # ────────────────────────────────────────────────────────────────
+  # Output
+  # ────────────────────────────────────────────────────────────────
   echo -e "${GREEN}PHP Info for $version${NC}"
   echo "---------------------------------"
   echo "Binary:          $php_bin"
+  echo "Mode (guess):    $mode_guess"
   echo "Loaded php.ini:  ${loaded_ini:-<not reported>}"
   echo "Additional ini:  ${additional_ini_dir:-<none>}"
+  echo "INI search path: ${ini_search_path:-<unknown>}"
+  echo "extension_dir:   ${extension_dir:-<unknown>}"
   echo
+
   echo "Key settings:"
   echo "  memory_limit           = ${memory_limit:-<unknown>}"
   echo "  max_execution_time     = ${max_execution_time:-<unknown>}"
-  echo "  opcache.enable         = ${opcache_enable:-<unknown>}"
-  echo "  opcache.jit            = ${opcache_jit:-<unknown>}"
-  echo "  opcache.jit_buffer_size= ${opcache_jit_buffer:-<unknown>}"
+  echo "  max_input_time         = ${max_input_time:-<unknown>}"
+  echo "  post_max_size          = ${post_max_size:-<unknown>}"
+  echo "  upload_max_filesize    = ${upload_max_filesize:-<unknown>}"
+  echo "  default_socket_timeout = ${default_socket_timeout:-<unknown>}"
+  echo "  display_errors         = ${display_errors:-<unknown>}"
+  echo "  log_errors             = ${log_errors:-<unknown>}"
+  echo "  error_log              = ${error_log:-<unknown>}"
   echo
+
   echo "FPM:"
-  echo "  Service: php${version}-fpm   -> ${fpm_state}"
-  echo "  Pool dir: /etc/php/${version}/fpm/pool.d"
+  echo "  Service: php${version}-fpm -> ${fpm_state}"
+  echo "  Pool dir: $fpm_pool_dir"
+  [[ -n "$fpm_listen" ]]           && echo "  listen               = $fpm_listen"
+  [[ -n "$fpm_pm" ]]               && echo "  pm                   = $fpm_pm"
+  [[ -n "$fpm_max_children" ]]     && echo "  pm.max_children      = $fpm_max_children"
+  [[ -n "$fpm_start_servers" ]]    && echo "  pm.start_servers     = $fpm_start_servers"
+  [[ -n "$fpm_min_spare" ]]        && echo "  pm.min_spare_servers = $fpm_min_spare"
+  [[ -n "$fpm_max_spare" ]]        && echo "  pm.max_spare_servers = $fpm_max_spare"
+  [[ -n "$fpm_max_requests" ]]     && echo "  pm.max_requests      = $fpm_max_requests"
+  [[ -n "$fpm_slowlog" ]]          && echo "  slowlog              = $fpm_slowlog"
+  [[ -n "$fpm_req_slow_timeout" ]] && echo "  request_slowlog_timeout = $fpm_req_slow_timeout"
   echo
+
   echo "Extensions:"
-  echo "  Total:  ${extension_total:-0}"
-  if [[ ${#common_exts[@]} -gt 0 ]]; then
-    echo "  Common: ${common_exts[*]}"
+  echo "  Total modules (php -m): ${extension_total:-0}"
+  echo "  xdebug loaded:          $has_xdebug"
+  if [[ ${#installed_ext_pkgs[@]} -gt 0 ]]; then
+    echo "  apt php${version}-* packages:"
+    local i
+    for i in "${!installed_ext_pkgs[@]}"; do
+      printf "    %-18s" "${installed_ext_pkgs[$i]}"
+      (((i + 1) % 4 == 0)) && echo
+    done
+    echo
+  else
+    echo "  apt php${version}-* packages: <none detected>"
+  fi
+  echo
+
+  echo "OPcache:"
+  local key val
+  for key in "${opcache_keys[@]}"; do
+    val="$(get_val "$key")"
+    [[ -n "$val" ]] && printf "  %-25s = %s\n" "$key" "$val"
+  done
+  echo
+
+  echo "JIT:"
+  for key in "${jit_keys[@]}"; do
+    val="$(get_val "$key")"
+    [[ -n "$val" ]] && printf "  %-25s = %s\n" "$key" "$val"
+  done
+  echo
+
+  # Simple perf hints (best-effort)
+  echo "Perf hints:"
+  if [[ "$opcache_enable" != "1" ]]; then
+    echo "  - OPcache is disabled; enable it for anything non-trivial."
+  fi
+  if [[ "$memory_limit" =~ ^([0-9]+)(M|G)$ ]]; then
+    local num="${BASH_REMATCH[1]}"; local unit="${BASH_REMATCH[2]}"
+    # treat <256M as low
+    if [[ "$unit" == "M" && "$num" -lt 256 ]]; then
+      echo "  - memory_limit < 256M; may be tight for modern frameworks."
+    fi
+  fi
+  if [[ "$has_xdebug" == "yes" ]] && [[ "$mode_guess" != "development-ish" ]]; then
+    echo "  - xdebug is loaded; consider disabling in production (big perf hit)."
+  fi
+  if [[ "$opcache_validate_timestamps" == "1" ]] && [[ "$opcache_revalidate_freq" == "0" || "$opcache_revalidate_freq" == "1" ]]; then
+    echo "  - OPcache is re-validating very frequently; OK for dev, sub-optimal for prod."
+  fi
+  if [[ -n "$opcache_memory_consumption" ]]; then
+    # strip non-digits
+    local mem_raw="${opcache_memory_consumption//[^0-9]/}"
+    if [[ -n "$mem_raw" && "$mem_raw" -lt 128 ]]; then
+      echo "  - opcache.memory_consumption < 128; consider bumping for large apps."
+    fi
+  fi
+  if [[ "$opcache_jit_buffer_size" == "0" || "$opcache_jit" == "0" ]]; then
+    echo "  - JIT effectively disabled; that's fine, but know it's off."
   fi
 
-  log_action "INFO" "info: displayed summary for PHP $version ($php_bin)."
+  log_action "INFO" "info: displayed extended summary + hints for PHP $version ($php_bin)."
 }
 
 ################################################################################
@@ -1445,7 +1650,54 @@ doctor_php_version() {
   echo -e "${GREEN}phpx doctor for PHP $version${NC}"
   echo "---------------------------------"
 
+  # Snapshot php -i / php -m (for internal analysis only)
+  local php_info module_list
+  php_info="$("$php_bin" -i 2>/dev/null || true)"
+  module_list="$("$php_bin" -m 2>/dev/null || true)"
+
+  # Small helper to read php -i values (no printing)
+  local get_val
+  get_val() {
+    local key="$1"
+    echo "$php_info" | awk -F'=> ' -v key="$key" '
+      index($1, key) == 1 {
+        gsub(/^ +| +$/, "", $2);
+        print $2;
+        exit
+      }
+    '
+  }
+
+  # Helper to convert sizes like 128M / 1G → bytes (best-effort)
+  local to_bytes
+  to_bytes() {
+    local v="$1"
+    [[ -z "$v" || "$v" == "-1" ]] && { echo 0; return; }
+    # Strip spaces
+    v="${v//[[:space:]]/}"
+    # Just a plain number?
+    if [[ "$v" =~ ^[0-9]+$ ]]; then
+      echo "$v"
+      return
+    fi
+    local num unit
+    num="${v%[kKmMgG]}"
+    unit="${v:${#v}-1:1}"
+    if ! [[ "$num" =~ ^[0-9]+$ ]]; then
+      echo 0
+      return
+    fi
+    case "$unit" in
+    k|K) echo $((num * 1024)) ;;
+    m|M) echo $((num * 1024 * 1024)) ;;
+    g|G) echo $((num * 1024 * 1024 * 1024)) ;;
+    *)   echo 0 ;;
+    esac
+  }
+
+  # ────────────────────────────────────────────────────────────────
   # 1) CLI vs FPM / default CLI
+  # ────────────────────────────────────────────────────────────────
   local default_cli_version=""
   if command -v php &>/dev/null; then
     default_cli_version="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "")"
@@ -1463,7 +1715,7 @@ doctor_php_version() {
     echo "[WARN] Could not determine default CLI PHP (php command not found)."
   fi
 
-  # FPM status
+  # FPM service status
   if command -v systemctl &>/dev/null; then
     if systemctl is-active --quiet "php${version}-fpm"; then
       echo "[OK]  php${version}-fpm service is active."
@@ -1476,7 +1728,9 @@ doctor_php_version() {
     echo "[INFO] systemctl not available; skipping FPM service checks."
   fi
 
-  # 2) Broken extensions
+  # ────────────────────────────────────────────────────────────────
+  # 2) Broken extensions (.so) via php -m stderr
+  # ────────────────────────────────────────────────────────────────
   local php_modules_output
   php_modules_output="$("$php_bin" -m 2>&1 || true)"
 
@@ -1504,7 +1758,9 @@ doctor_php_version() {
     fi
   fi
 
-  # 3) Apache PHP module conflicts
+  # ────────────────────────────────────────────────────────────────
+  # 3) Apache PHP module conflicts (mod_php)
+  # ────────────────────────────────────────────────────────────────
   if command -v apache2ctl &>/dev/null; then
     local apache_php_mods
     apache_php_mods="$(apache2ctl -M 2>/dev/null |
@@ -1545,7 +1801,9 @@ doctor_php_version() {
     echo "[INFO] Apache not detected (apache2ctl missing); skipping mod_php checks."
   fi
 
+  # ────────────────────────────────────────────────────────────────
   # 4) FPM max_children vs memory hint
+  # ────────────────────────────────────────────────────────────────
   local total_mem_mb
   total_mem_mb="$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')"
   if [[ -n "$total_mem_mb" && "$total_mem_mb" =~ ^[0-9]+$ ]]; then
@@ -1571,6 +1829,84 @@ doctor_php_version() {
     fi
   else
     echo "[INFO] Could not determine total system memory; skipping FPM sizing hints."
+  fi
+
+  # ────────────────────────────────────────────────────────────────
+  # 5) Key runtime settings: only warn when obviously off
+  # ────────────────────────────────────────────────────────────────
+  if [[ -n "$php_info" ]]; then
+    local memory_limit max_execution_time max_input_time post_max_size upload_max_filesize display_errors log_errors
+    memory_limit="$(get_val "memory_limit")"
+    max_execution_time="$(get_val "max_execution_time")"
+    max_input_time="$(get_val "max_input_time")"
+    post_max_size="$(get_val "post_max_size")"
+    upload_max_filesize="$(get_val "upload_max_filesize")"
+    display_errors="$(get_val "display_errors")"
+    log_errors="$(get_val "log_errors")"
+
+    # memory_limit < 256M
+    local mem_bytes
+    mem_bytes="$(to_bytes "$memory_limit")"
+    if ((mem_bytes > 0 && mem_bytes < 268435456)); then # 256M
+      echo "[WARN] memory_limit (${memory_limit:-?}) is under 256M; can be tight for modern frameworks."
+    fi
+
+    # max_execution_time too high (or unlimited)
+    if [[ -n "$max_execution_time" && "$max_execution_time" != "0" && "$max_execution_time" -gt 300 ]]; then
+      echo "[WARN] max_execution_time = $max_execution_time; consider lowering (<300s) for runaway script protection."
+    fi
+
+    # post_max_size / upload_max_filesize mismatch
+    local post_bytes up_bytes
+    post_bytes="$(to_bytes "$post_max_size")"
+    up_bytes="$(to_bytes "$upload_max_filesize")"
+    if ((post_bytes > 0 && up_bytes > 0 && up_bytes > post_bytes)); then
+      echo "[WARN] upload_max_filesize ($upload_max_filesize) > post_max_size ($post_max_size); large uploads will be rejected."
+    fi
+
+    # dev-style error display
+    if [[ "$display_errors" =~ [Oo]n ]] && [[ "$log_errors" =~ [Oo]f[fF]? ]]; then
+      echo "[WARN] display_errors is On while log_errors is Off; for production, prefer logging over on-page errors."
+    fi
+  fi
+
+  # ────────────────────────────────────────────────────────────────
+  # 6) OPcache & JIT: status + obvious issues only
+  # ────────────────────────────────────────────────────────────────
+  if [[ -n "$php_info" ]]; then
+    local opcache_enable opcache_memory_consumption opcache_validate_timestamps opcache_revalidate_freq
+    local opcache_jit opcache_jit_buffer_size
+    opcache_enable="$(get_val "opcache.enable")"
+    opcache_memory_consumption="$(get_val "opcache.memory_consumption")"
+    opcache_validate_timestamps="$(get_val "opcache.validate_timestamps")"
+    opcache_revalidate_freq="$(get_val "opcache.revalidate_freq")"
+    opcache_jit="$(get_val "opcache.jit")"
+    opcache_jit_buffer_size="$(get_val "opcache.jit_buffer_size")"
+
+    if [[ "$opcache_enable" != "1" ]]; then
+      echo "[WARN] OPcache appears disabled; enable it for any non-trivial application."
+    fi
+
+    local op_mem_raw
+    op_mem_raw="$(to_bytes "${opcache_memory_consumption}M")" # if it's just a number like '128'
+    if ((op_mem_raw > 0 && op_mem_raw < 134217728)); then # <128M
+      echo "[WARN] opcache.memory_consumption (${opcache_memory_consumption:-?}) may be low for larger codebases."
+    fi
+
+    if [[ "$opcache_validate_timestamps" == "1" && ( "$opcache_revalidate_freq" == "0" || "$opcache_revalidate_freq" == "1" ) ]]; then
+      echo "[INFO] OPcache is revalidating on every request (freq=$opcache_revalidate_freq); ideal for dev, not for production."
+    fi
+
+    if [[ -z "$opcache_jit_buffer_size" || "$opcache_jit_buffer_size" == "0" || "$opcache_jit" == "0" ]]; then
+      echo "[INFO] JIT appears disabled (buffer/jit=0); acceptable, just be aware it's off."
+    fi
+  fi
+
+  # ────────────────────────────────────────────────────────────────
+  # 7) xdebug presence
+  # ────────────────────────────────────────────────────────────────
+  if echo "$module_list" | grep -qi '^xdebug$'; then
+    echo "[WARN] xdebug extension is loaded. Great for debugging, but a major slowdown in production."
   fi
 
   echo

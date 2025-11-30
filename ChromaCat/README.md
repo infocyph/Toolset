@@ -29,7 +29,7 @@ Or keep it in your `$HOME/bin` and add to `PATH`.
 
 ```bash
 echo "Hello" | chromacat [options]
-chromacat [options] <file.txt
+chromacat [options] <file.txt>
 tail -f app.log | chromacat --log
 ```
 
