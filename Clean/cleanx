@@ -1,0 +1,917 @@
+#!/usr/bin/env bash
+# cleanx — safe, modular, fast disk & inode cleaner for Linux (Bash)
+# Dry-run by default; use --yes to apply. Optimized for Debian/Ubuntu.
+#
+# Examples:
+#   cleanx --report
+#   sudo cleanx --yes apt logs tmp usercache langcaches journal
+#   sudo cleanx --yes --low-impact --aggressive docker podman containerd
+#   cleanx --report inode-scan --inode-path=/var --inode-depth=4 --inode-top=100
+#   sudo cleanx --yes --quota=5G apt logs tmp
+#   cleanx --report --json
+#
+# Config files (optional, sourced if present):
+#   /etc/cleanfy.conf
+#   ~/.config/cleanfy.conf
+#   --config=/path/to/custom.conf
+#
+# EXCLUDE_GLOBS / INCLUDE_GLOBS should be bash arrays, e.g.:
+#   EXCLUDE_GLOBS=( "/var/log/private/*" "/var/tmp/do-not-touch/*" )
+#   INCLUDE_GLOBS=( "*.log" "*.gz" )
+#
+set -Eeuo pipefail
+IFS=$'\n\t'
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# ---------- Meta / Repo ----------
+readonly TOOL_NAME="cleanx"
+readonly VERSION="1.7.0"
+readonly REPO_SLUG="infocyph/Toolset"
+readonly RAW_BASE="https://raw.githubusercontent.com/${REPO_SLUG}"
+# channels: main (default) or a branch/tag name
+CHANNEL="main"
+SCRIPT_PATH_IN_REPO="Clean/${TOOL_NAME}"
+CHECKSUM_PATH_IN_REPO="${SCRIPT_PATH_IN_REPO}.sha256" # optional; used if exists
+
+# ---------- Defaults ----------
+DRY_RUN=1
+ASSUME_YES=0
+AGGRESSIVE=0
+LOW_IMPACT=0
+FORCE_RUN=0
+SECURE_ERASE=0 # overwrite files instead of plain rm (slow; opt-in)
+JSON_REPORT=0
+QUOTA_BYTES=0
+
+JOURNAL_KEEP="7d"   # or "200M"
+LOG_MAX_SIZE="100M" # truncate *.log > this
+TMP_DAYS=7          # delete /tmp older than N days
+SNAP_RETAIN=2       # keep only N snap revisions
+TARGET_USER="${SUDO_USER:-${USER}}"
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6 || echo "$HOME")"
+LOCK="/tmp/.cleanfy.lock"
+
+# inode-scan parameters
+INODE_PATH="."
+INODE_DEPTH=3
+INODE_TOP=50
+
+# per-run derived
+CONFIG_OVERRIDE_FILE=""
+EXCLUDE_GLOBS=()
+INCLUDE_GLOBS=()
+
+# ---------- Helpers ----------
+color() { printf "\033[%sm%s\033[0m" "$1" "$2"; }
+info() { echo "$(color '1;34' '[INFO]') $*"; }
+ok() { echo "$(color '1;32' '[ OK ]') $*"; }
+warn() { echo "$(color '1;33' '[WARN]') $*"; }
+err() { echo "$(color '1;31' '[ERR ]') $*" >&2; }
+die() {
+  err "$*"
+  exit 1
+}
+need() { command -v "$1" >/dev/null 2>&1 || die "Missing command: $1"; }
+
+human() { numfmt --to=iec --suffix=B --format="%.1f" "$1" 2>/dev/null || echo "$1"; }
+
+# size parser: "5G" -> bytes
+parse_size() {
+  local s="${1:-0}"
+  [[ -z "$s" ]] && echo 0 && return
+  local unit="${s^^}"
+  if [[ "$unit" =~ ^[0-9]+$ ]]; then
+    echo "$unit"
+    return
+  fi
+  if [[ "$unit" =~ ^([0-9]+)([KMGTP]?)B?$ ]]; then
+    local num="${BASH_REMATCH[1]}"
+    local u="${BASH_REMATCH[2]}"
+    local mul=1
+    case "$u" in
+    K) mul=$((1024)) ;;
+    M) mul=$((1024 ** 2)) ;;
+    G) mul=$((1024 ** 3)) ;;
+    T) mul=$((1024 ** 4)) ;;
+    P) mul=$((1024 ** 5)) ;;
+    *) mul=1 ;;
+    esac
+    echo $((num * mul))
+  else
+    echo 0
+  fi
+}
+
+low_impact_wrap() {
+  if ((LOW_IMPACT)); then
+    ionice -c3 nice -n 10 "$@"
+  else
+    "$@"
+  fi
+}
+
+run() {
+  if ((DRY_RUN)); then
+    echo "    [dry-run] $*"
+  else
+    low_impact_wrap bash -c "$*"
+  fi
+}
+
+confirm() {
+  ((ASSUME_YES)) && return 0
+  read -r -p "Proceed? [y/N] " ans
+  [[ "${ans,,}" == "y" || "${ans,,}" == "yes" ]]
+}
+
+take_lock() {
+  if [[ -e "$LOCK" ]]; then
+    die "Another ${TOOL_NAME} run seems active (lock: $LOCK). Remove if stale."
+  fi
+  echo $$ >"$LOCK"
+  trap 'rm -f "$LOCK"' EXIT
+}
+
+asroot() { [[ $EUID -eq 0 ]] || die "Run as root (sudo) for system cleanup."; }
+
+preflight() {
+  # Safety: bail if rootfs >= 98% used unless --force
+  local use_pct
+  use_pct=$(df -P / | awk 'NR==2{gsub("%","",$5); print $5+0}')
+  if ((use_pct >= 98 && !FORCE_RUN)); then
+    warn "Root filesystem at ${use_pct}% use. Use --force to proceed."
+    exit 1
+  fi
+}
+
+# Build find prune expression from EXCLUDE_GLOBS
+exclude_expr() {
+  local out=()
+  if ((${#EXCLUDE_GLOBS[@]})); then
+    out+=(\()
+    local first=1
+    for g in "${EXCLUDE_GLOBS[@]}"; do
+      if ((first)); then first=0; else out+=(-o); fi
+      out+=(-path "$g")
+    done
+    out+=(\) -prune -o)
+  fi
+  printf '%s ' "${out[@]}"
+}
+
+include_name_args() {
+  local out=()
+  if ((${#INCLUDE_GLOBS[@]})); then
+    out+=(\()
+    local first=1
+    for g in "${INCLUDE_GLOBS[@]}"; do
+      if ((first)); then first=0; else out+=(-o); fi
+      out+=(-name "$g")
+    done
+    out+=(\))
+  fi
+  printf '%s ' "${out[@]}"
+}
+
+# Secure delete helpers
+secure_delete_files() {
+  local root="$1"
+  shift || true
+  if ((SECURE_ERASE)); then
+    run "find \"$root\" $(exclude_expr) -type f $* -exec shred -zuf {} +"
+  else
+    run "find \"$root\" $(exclude_expr) -type f $* -delete"
+  fi
+}
+secure_delete_tree() {
+  local root="$1"
+  if ((SECURE_ERASE)); then
+    run "find \"$root\" $(exclude_expr) -type f -exec shred -zuf {} +"
+    run "find \"$root\" $(exclude_expr) -depth -mindepth 1 -exec rm -rf {} +"
+  else
+    run "rm -rf \"$root\""
+  fi
+}
+
+# Quota accounting
+root_used_bytes() { df -B1 --output=used / | tail -1 | tr -d '[:space:]' || echo 0; }
+maybe_stop_for_quota() {
+  if ((QUOTA_BYTES > 0 && !DRY_RUN)); then
+    local now_used=$(root_used_bytes)
+    local reclaimed=$((QUOTA_START_USED - now_used))
+    if ((reclaimed >= QUOTA_BYTES)); then
+      info "Quota target reached: reclaimed $(human "$reclaimed") ≥ $(human "$QUOTA_BYTES"). Stopping."
+      QUOTA_REACHED=1
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# ---------- Self-path + Update ----------
+self_path() {
+  # Resolve the absolute path of this script (follows symlinks)
+  local src="${BASH_SOURCE[0]}"
+  while [ -h "$src" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="$dir/$src"
+  done
+  cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd
+}
+SELF_DIR="$(self_path)"
+SELF="${SELF_DIR}/$(basename "${BASH_SOURCE[0]}")"
+
+remote_url() { echo "${RAW_BASE}/${CHANNEL}/${SCRIPT_PATH_IN_REPO}"; }
+remote_checksum_url() { echo "${RAW_BASE}/${CHANNEL}/${CHECKSUM_PATH_IN_REPO}"; }
+
+latest_version() {
+  # Parse VERSION from remote script (no external jq)
+  curl -fsSL "$(remote_url)" | awk -F'"' '/^readonly VERSION=/{print $2; exit}' || true
+}
+
+verify_checksum_if_available() {
+  local file="$1"
+  local sum_url
+  sum_url="$(remote_checksum_url)"
+  if curl -fsI "$sum_url" >/dev/null 2>&1; then
+    info "Verifying checksum..."
+    local tmp_sum
+    tmp_sum="$(mktemp)"
+    curl -fsSL "$sum_url" -o "$tmp_sum"
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum -c --ignore-missing <(sed "s| .*|  $file|" "$tmp_sum") || {
+        rm -f "$tmp_sum"
+        die "Checksum verification failed."
+      }
+    elif command -v shasum >/dev/null 2>&1; then
+      local want
+      want="$(awk '{print $1}' "$tmp_sum")"
+      local got
+      got="$(shasum -a 256 "$file" | awk '{print $1}')"
+      [[ "$want" == "$got" ]] || {
+        rm -f "$tmp_sum"
+        die "Checksum verification failed."
+      }
+    else
+      warn "No sha256 tool found; skipping checksum verification."
+    fi
+    rm -f "$tmp_sum"
+    ok "Checksum OK."
+  else
+    warn "No checksum file found at $(remote_checksum_url); skipping verification."
+  fi
+}
+
+self_update() {
+  need curl
+  local url
+  url="$(remote_url)"
+  info "Updating ${TOOL_NAME} from: $url"
+  local tmp
+  tmp="$(mktemp)"
+  curl -fsSL "$url" -o "$tmp" || {
+    rm -f "$tmp"
+    die "Download failed."
+  }
+  chmod +x "$tmp"
+  verify_checksum_if_available "$tmp" || true
+
+  # Atomic replace with backup
+  local backup="${SELF}.bak.$(date +%s)"
+  cp -f "$SELF" "$backup" 2>/dev/null || true
+  mv -f "$tmp" "$SELF"
+  chmod +x "$SELF"
+  ok "Updated to latest from ${CHANNEL}. Backup: $backup"
+}
+
+self_check_update() {
+  need curl
+  local remote_ver
+  remote_ver="$(latest_version)"
+  if [[ -z "$remote_ver" ]]; then
+    warn "Could not fetch remote version."
+    return 1
+  fi
+  echo "local:  ${VERSION}"
+  echo "remote: ${remote_ver}  (channel: ${CHANNEL})"
+  if [[ "$remote_ver" != "$VERSION" ]]; then
+    echo "update_available: yes"
+    return 10
+  else
+    echo "update_available: no"
+    return 0
+  fi
+}
+
+# ---------- Inode helpers ----------
+inode_df() { df -ih -x tmpfs -x devtmpfs -x squashfs; }
+inode_top_current_dir() {
+  find . -mindepth 1 -maxdepth 1 -xdev -printf '%P\n' |
+    while IFS= read -r name; do
+      c=$(find "./$name" -xdev -printf '.' 2>/dev/null | wc -c)
+      printf "%12d  %s\n" "$c" "$name"
+    done | sort -nr | head -20
+}
+inode_hotspots_var() {
+  for d in /var /var/log /var/cache /var/tmp /var/spool; do
+    [[ -d "$d" ]] || continue
+    echo "== $d (top 15 by inode count, depth 2) =="
+    find "$d" -xdev -mindepth 1 -maxdepth 2 -type d -print0 |
+      while IFS= read -r -d '' dir; do
+        c=$(find "$dir" -xdev -mindepth 1 -maxdepth 1 -printf '.' 2>/dev/null | wc -c)
+        printf "%12d  %s\n" "$c" "$dir"
+      done | sort -nr | head -15
+    echo
+  done
+}
+inode_deleted_open_files() {
+  if ! command -v lsof >/dev/null 2>&1; then
+    echo "(lsof not installed)"
+    return
+  fi
+  lsof +L1 2>/dev/null | awk 'NR==1 || $NF ~ /deleted$/'
+}
+inode_scan() {
+  local path="${1:-.}"
+  local depth="${2:-3}"
+  local top="${3:-50}"
+  info "Inode scan: path=$path depth=$depth top=$top"
+  find "$path" -xdev -type d -mindepth 0 -maxdepth "$depth" -print0 |
+    while IFS= read -r -d '' d; do
+      c=$(find "$d" -xdev -mindepth 1 -maxdepth 1 -printf '.' 2>/dev/null | wc -c)
+      printf "%12d  %s\n" "$c" "$d"
+    done | sort -nr | head -"$top"
+}
+
+# ---------- Report ----------
+report() {
+  info "Filesystem usage (blocks):"
+  df -hT -x squashfs -x tmpfs -x devtmpfs
+  echo
+  info "Filesystem usage (inodes):"
+  inode_df
+  echo
+  info "Current directory — top 20 by size (blocks):"
+  find . -mindepth 1 -maxdepth 1 -print0 |
+    du --files0-from=- -xh --one-file-system | sort -h | tail -20 || true
+  echo
+  info "Current directory — top 20 by inode count:"
+  inode_top_current_dir
+  echo
+  info "/var hotspots by inode count:"
+  inode_hotspots_var
+  echo
+  info "Deleted-but-open files:"
+  inode_deleted_open_files
+  echo
+}
+
+# ---------- Tasks ----------
+task_apt() {
+  info "APT clean (autoremove + cache)"
+  need apt
+  run "apt autoremove --purge -y"
+  run "apt clean"
+}
+task_apt_residuals() {
+  info "APT residual configs (rc packages): purge"
+  need dpkg
+  if ((DRY_RUN)); then
+    dpkg -l | awk '/^rc/{print "    [would] apt purge -y "$2}'
+  else dpkg -l | awk '/^rc/{print $2}' | xargs -r -L100 apt purge -y; fi
+}
+task_journal() {
+  info "Systemd journal vacuum -> keep: ${JOURNAL_KEEP}"
+  need journalctl
+  run "journalctl --rotate"
+  run "journalctl --disk-usage"
+  if [[ "$JOURNAL_KEEP" =~ ^[0-9]+[smhdw]$ ]]; then
+    run "journalctl --vacuum-time=${JOURNAL_KEEP}"
+  else run "journalctl --vacuum-size=${JOURNAL_KEEP}"; fi
+}
+task_logs() {
+  info "Logs: delete rotated older than 14d, truncate *.log > ${LOG_MAX_SIZE}"
+  secure_delete_files "/var/log" "-name" "*.gz" -a "-mtime" "+14"
+  local inc
+  inc=$(include_name_args)
+  if [[ -n "$inc" ]]; then
+    run "find /var/log $(exclude_expr) -type f $inc -size +${LOG_MAX_SIZE} -exec truncate -s 0 {} +"
+  else
+    run "find /var/log $(exclude_expr) -type f -name '*.log' -size +${LOG_MAX_SIZE} -exec truncate -s 0 {} +"
+  fi
+}
+task_tmp() {
+  info "/tmp: delete entries older than ${TMP_DAYS}d"
+  run "find /tmp $(exclude_expr) -mindepth 1 -mtime +${TMP_DAYS} -exec rm -rf {} +"
+}
+task_tmpfiles() {
+  info "systemd-tmpfiles: clean according to policy"
+  command -v systemd-tmpfiles >/dev/null || {
+    warn "systemd-tmpfiles not present"
+    return 0
+  }
+  run "systemd-tmpfiles --clean"
+}
+task_usercache() {
+  info "User caches & trash for $TARGET_USER ($TARGET_HOME)"
+  if [[ -d "$TARGET_HOME/.cache" ]]; then
+    secure_delete_files "$TARGET_HOME/.cache"
+    run "find \"$TARGET_HOME/.cache\" $(exclude_expr) -type d -empty -delete"
+  fi
+  secure_delete_tree "$TARGET_HOME/.thumbnails" || true
+  secure_delete_tree "$TARGET_HOME/.cache/thumbnails" || true
+  secure_delete_tree "$TARGET_HOME/.local/share/Trash/files" || true
+  secure_delete_tree "$TARGET_HOME/.local/share/Trash/info" || true
+}
+task_langcaches() {
+  info "Language/tool caches (Composer/npm/pnpm/yarn/pip) for $TARGET_USER"
+  su - "$TARGET_USER" -s /bin/bash -c "command -v composer >/dev/null && composer clear-cache || true"
+  su - "$TARGET_USER" -s /bin/bash -c "command -v npm >/dev/null && npm cache clean --force || true"
+  su - "$TARGET_USER" -s /bin/bash -c "command -v pnpm >/dev/null && pnpm store prune || true"
+  su - "$TARGET_USER" -s /bin/bash -c "command -v yarn >/dev/null && yarn cache clean || true"
+  su - "$TARGET_USER" -s /bin/bash -c "command -v pip >/dev/null && pip cache purge || true"
+}
+task_snap() {
+  info "Snap: retain ${SNAP_RETAIN} revisions, remove disabled & saved snapshots"
+  command -v snap >/dev/null || {
+    warn "snap not installed"
+    return 0
+  }
+  run "snap set system refresh.retain=${SNAP_RETAIN}"
+  if ((DRY_RUN)); then
+    snap list --all | awk '/disabled/{print "    [would] snap remove "$1" --revision="$3}'
+  else snap list --all | awk '/disabled/{print $1" --revision="$3}' | xargs -r -L1 snap remove; fi
+  if ((DRY_RUN)); then
+    snap saved | awk 'NR>1{print "    [would] snap forget "$1}'
+  else snap saved | awk 'NR>1{print $1}' | xargs -r -L1 snap forget; fi
+}
+task_flatpak() {
+  info "Flatpak: remove unused & delete-data"
+  command -v flatpak >/dev/null || {
+    warn "flatpak not installed"
+    return 0
+  }
+  run "flatpak uninstall --unused -y"
+  run "flatpak remove --delete-data -y --unused"
+}
+task_docker() {
+  info "Docker: prune all unused (images/containers/networks/build cache)"
+  command -v docker >/dev/null || {
+    warn "docker not installed"
+    return 0
+  }
+  run "docker system df || true"
+  if ((AGGRESSIVE)); then run "docker system prune -af --volumes"; else run "docker system prune -af"; fi
+}
+task_podman() {
+  info "Podman: prune unused"
+  command -v podman >/dev/null || {
+    warn "podman not installed"
+    return 0
+  }
+  run "podman system prune -af"
+  ((AGGRESSIVE)) && run "podman volume prune -f"
+}
+task_containerd() {
+  info "containerd: remove untagged images with ctr"
+  command -v ctr >/dev/null || {
+    warn "ctr not installed"
+    return 0
+  }
+  if ((DRY_RUN)); then
+    ctr -n default images ls | awk '/\<none\>/{print "    [would] ctr -n default images rm "$1}'
+  else ctr -n default images ls | awk '/\<none\>/{print $1}' | xargs -r -L50 ctr -n default images rm; fi
+}
+task_kernels() {
+  info "Old kernels: apt autoremove (safe)"
+  run "apt autoremove --purge -y"
+}
+task_coredumps() {
+  info "Core/crash dumps: delete core* > 50M and /var/crash"
+  if ((SECURE_ERASE)); then
+    run "find / -xdev $(exclude_expr) -type f -name 'core*' -size +50M -exec shred -zuf {} + 2>/dev/null"
+  else run "find / -xdev $(exclude_expr) -type f -name 'core*' -size +50M -delete 2>/dev/null"; fi
+  run "rm -rf /var/crash/* 2>/dev/null || true"
+}
+task_buildcache() {
+  info "Build caches: ccache/distcc (if present)"
+  run "ccache --zero-stats >/dev/null 2>&1 || true"
+  run "ccache --clear >/dev/null 2>&1 || true"
+}
+task_browsers() {
+  info "Browser caches for $TARGET_USER (Chromium/Chrome/Firefox)"
+  local uhome="$TARGET_HOME"
+  for d in "$uhome/.cache/chromium" "$uhome/.cache/google-chrome" \
+    "$uhome/.config/chromium/Default/Service Worker/CacheStorage" \
+    "$uhome/.config/google-chrome/Default/Service Worker/CacheStorage"; do
+    [[ -d "$d" ]] && secure_delete_tree "$d"
+  done
+  [[ -d "$uhome/.cache/mozilla/firefox" ]] && secure_delete_tree "$uhome/.cache/mozilla/firefox"
+  if [[ -d "$uhome/.mozilla/firefox" ]]; then
+    while IFS= read -r -d '' p; do
+      secure_delete_tree "$p/cache2"
+      secure_delete_tree "$p/storage/default"
+    done < <(find "$uhome/.mozilla/firefox" -maxdepth 1 -type d -name '*.default*' -print0)
+  fi
+}
+task_timeshift() {
+  info "Timeshift: prune old snapshots (keep last 3 of each type)"
+  command -v timeshift >/dev/null || {
+    warn "timeshift not installed"
+    return 0
+  }
+  local types=(hourly daily weekly monthly)
+  for t in "${types[@]}"; do
+    mapfile -t snaps < <(timeshift --list | awk -v T="$t" '$0 ~ T {print $NF}' | sort -r)
+    if ((${#snaps[@]} > 3)); then for s in "${snaps[@]:3}"; do run "timeshift --delete --snapshot '$s'"; done; fi
+  done
+}
+task_pkgbig() {
+  info "Top 30 installed packages by size"
+  command -v dpkg-query >/dev/null || {
+    warn "dpkg-query not found"
+    return 0
+  }
+  dpkg-query -Wf='${Installed-Size}\t${Package}\n' | sort -nr | head -30 |
+    awk '{printf "%8.1f MB  %s\n", $1/1024, $2}'
+}
+task_inode_scan() { inode_scan "$INODE_PATH" "$INODE_DEPTH" "$INODE_TOP"; }
+task_fshints() {
+  info "Filesystem hints (Btrfs/ZFS)"
+  if command -v btrfs >/dev/null 2>&1; then
+    echo "== Btrfs detected (READ-ONLY suggestions) =="
+    echo "  btrfs filesystem df /"
+    echo "  btrfs filesystem usage /"
+    echo "  sudo btrfs balance start -dusage=75 -musage=75 /"
+    echo "  sudo btrfs subvolume list / | grep snapshot"
+    echo
+  fi
+  if command -v zfs >/dev/null 2>&1; then
+    echo "== ZFS detected (READ-ONLY suggestions) =="
+    echo "  zpool list; zpool status"
+    echo "  zfs list -o space"
+    echo "  sudo zpool trim <pool>; sudo zpool scrub <pool>"
+    echo "  # Prune example: zfs destroy pool/dataset@old-snap"
+    echo
+  fi
+}
+task_all() {
+  task_apt
+  task_apt_residuals
+  task_journal
+  task_logs
+  task_tmp
+  task_tmpfiles
+  task_usercache
+  task_langcaches
+  task_snap
+  task_flatpak
+  task_docker
+  task_podman
+  task_containerd
+  task_kernels
+  task_coredumps
+  task_buildcache
+  task_browsers
+  task_timeshift
+  task_fshints
+}
+
+# ---------- Doctor / Config / Completions ----------
+print_config() {
+  cat <<CFG
+${TOOL_NAME} v${VERSION} effective configuration
+---------------------------------------------
+CHANNEL           = ${CHANNEL}
+JOURNAL_KEEP      = ${JOURNAL_KEEP}
+LOG_MAX_SIZE      = ${LOG_MAX_SIZE}
+TMP_DAYS          = ${TMP_DAYS}
+SNAP_RETAIN       = ${SNAP_RETAIN}
+TARGET_USER       = ${TARGET_USER}
+TARGET_HOME       = ${TARGET_HOME}
+AGGRESSIVE        = ${AGGRESSIVE}
+LOW_IMPACT        = ${LOW_IMPACT}
+SECURE_ERASE      = ${SECURE_ERASE}
+QUOTA_BYTES       = ${QUOTA_BYTES}
+INODE_PATH        = ${INODE_PATH}
+INODE_DEPTH       = ${INODE_DEPTH}
+INODE_TOP         = ${INODE_TOP}
+EXCLUDE_GLOBS     = ${EXCLUDE_GLOBS[*]:-}
+INCLUDE_GLOBS     = ${INCLUDE_GLOBS[*]:-}
+CFG
+}
+
+doctor() {
+  echo "== ${TOOL_NAME} doctor =="
+  local req=(find du sort awk xargs df)
+  local opt=(journalctl apt dpkg snap flatpak docker podman ctr lsof numfmt ccache timeshift btrfs zfs curl sha256sum shasum)
+  local missing=0
+  for c in "${req[@]}"; do command -v "$c" >/dev/null || {
+    echo "MISSING: $c (required)"
+    missing=1
+  }; done
+  for c in "${opt[@]}"; do command -v "$c" >/dev/null || echo "MISSING: $c (optional)"; done
+  df -hT -x squashfs -x tmpfs -x devtmpfs | sed 's/^/FS: /'
+  ((missing)) && return 1 || return 0
+}
+
+print_completions() {
+  local shell="${1:-bash}"
+  case "$shell" in
+  bash)
+    cat <<'BASHC'
+_cleanx()
+{
+  local cur prev opts tasks
+  COMPREPLY=()
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+  opts="--dry-run --yes --aggressive --low-impact --force --secure-erase --quota= --json --config= --journal-keep= --log-max= --tmp-days= --snap-retain= --user= --inode-path= --inode-depth= --inode-top= --exclude-glob= --include-glob= --help --version --check-update --update --channel= --print-config --doctor --completions="
+  tasks="report apt apt-residuals journal logs tmp tmpfiles usercache langcaches snap flatpak docker podman containerd kernels coredumps buildcache browsers timeshift pkgbig inode-scan fshints all"
+  if [[ $cur == --* ]]; then
+    COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+  else
+    COMPREPLY=( $(compgen -W "${tasks}" -- "${cur}") )
+  fi
+  return 0
+}
+complete -F _cleanx cleanx
+BASHC
+    ;;
+  zsh)
+    cat <<'ZSHC'
+# zsh completion for cleanx
+# put in: ~/.zsh/completions/_cleanx and `autoload -U compinit && compinit`
+# then: compdef _cleanx cleanx
+_arguments -s \
+  '--dry-run[show actions only]' \
+  '--yes[apply changes]' \
+  '--aggressive[stronger cleanup]' \
+  '--low-impact[ionice/nice]' \
+  '--force[ignore 98% rootfs guard]' \
+  '--secure-erase[use shred]' \
+  '--quota=[stop after SIZE]:SIZE:_files' \
+  '--json[JSON summary]' \
+  '--config=[config file]:file:_files' \
+  '--journal-keep=[e.g., 7d or 200M]' \
+  '--log-max=[truncate over SIZE]' \
+  '--tmp-days=[days]' \
+  '--snap-retain=[n]' \
+  '--user=[name]' \
+  '--inode-path=[path]:dir:_files -/' \
+  '--inode-depth=[n]' \
+  '--inode-top=[n]' \
+  '--exclude-glob=[glob]' \
+  '--include-glob=[glob]' \
+  '--version[print version]' \
+  '--check-update[compare with remote]' \
+  '--update[self update]' \
+  '--channel=[branch/tag]' \
+  '--print-config[show effective config]' \
+  '--doctor[env check]' \
+  '--completions=[bash|zsh]'
+ZSHC
+    ;;
+  *) die "Unsupported shell for completions: $shell" ;;
+  esac
+}
+
+# ---------- CLI parsing ----------
+usage() {
+  cat <<EOF
+${TOOL_NAME} v${VERSION} — Fast, safe disk & inode cleaner (Bash)
+Usage:
+  ${TOOL_NAME} [options] <tasks...>
+
+Tasks:
+  report apt apt-residuals journal logs tmp tmpfiles usercache langcaches snap flatpak
+  docker podman containerd kernels coredumps buildcache browsers timeshift
+  pkgbig inode-scan fshints all
+
+General Options:
+  --dry-run                 default; show actions only
+  --yes                     apply changes (disables dry-run)
+  --aggressive              stronger cleanup (e.g., Docker/Podman volumes)
+  --low-impact              run with ionice/nice to reduce pressure
+  --force                   run even if rootfs >= 98% used
+  --secure-erase            use shred on files before removal (slow)
+  --quota=SIZE              stop after reclaiming SIZE (e.g., 2G, 800M)
+  --json                    print a JSON summary at the end
+  --config=PATH             extra config file to source
+  --channel=NAME            update/check channel (default: main)
+
+Tuning:
+  --journal-keep=VAL        e.g., 7d or 200M (default: ${JOURNAL_KEEP})
+  --log-max=SIZE            truncate *.log bigger than SIZE (default: ${LOG_MAX_SIZE})
+  --tmp-days=N              delete /tmp entries older than N days (default: ${TMP_DAYS})
+  --snap-retain=N           keep N snap revisions (default: ${SNAP_RETAIN})
+  --user=NAME               target user's caches (default: ${TARGET_USER})
+  --inode-path=PATH         path for inode-scan (default: ${INODE_PATH})
+  --inode-depth=N           depth for inode-scan (default: ${INODE_DEPTH})
+  --inode-top=N             show top N for inode-scan (default: ${INODE_TOP})
+  --exclude-glob=GLOB       add a global exclusion (repeatable)
+  --include-glob=GLOB       add a name include filter (repeatable)
+
+Utility:
+  --version                 print version and exit
+  --check-update            compare local version with remote (uses --channel)
+  --update                  self-update to latest from --channel
+  --print-config            show effective configuration
+  --doctor                  environment/requirements check
+  --completions=bash|zsh    print shell completions to stdout
+  --help                    show this help
+
+Examples:
+  ${TOOL_NAME} --report
+  sudo ${TOOL_NAME} --yes --low-impact apt logs tmp tmpfiles usercache langcaches journal
+  sudo ${TOOL_NAME} --yes --aggressive docker podman containerd
+  sudo ${TOOL_NAME} --yes --secure-erase --quota=5G usercache tmp logs
+  ${TOOL_NAME} --report inode-scan --inode-path=/var --inode-depth=4 --inode-top=100
+EOF
+}
+
+# Config files (after defaults, before CLI args)
+[[ -f /etc/cleanfy.conf ]] && . /etc/cleanfy.conf
+[[ -f "$HOME/.config/cleanfy.conf" ]] && . "$HOME/.config/cleanfy.conf"
+
+TASKS=()
+# early pass for --config and --channel
+for arg in "$@"; do
+  case "$arg" in
+  --config=*) CONFIG_OVERRIDE_FILE="${arg#*=}" ;;
+  --channel=*) CHANNEL="${arg#*=}" ;;
+  esac
+done
+[[ -n "$CONFIG_OVERRIDE_FILE" && -f "$CONFIG_OVERRIDE_FILE" ]] && . "$CONFIG_OVERRIDE_FILE"
+
+# Now parse all args
+for arg in "$@"; do
+  case "$arg" in
+  --dry-run) DRY_RUN=1 ;;
+  --yes)
+    ASSUME_YES=1
+    DRY_RUN=0
+    ;;
+  --aggressive) AGGRESSIVE=1 ;;
+  --low-impact) LOW_IMPACT=1 ;;
+  --force) FORCE_RUN=1 ;;
+  --secure-erase) SECURE_ERASE=1 ;;
+  --json) JSON_REPORT=1 ;;
+  --quota=*) QUOTA_BYTES="$(parse_size "${arg#*=}")" ;;
+  --config=*) ;;  # handled
+  --channel=*) ;; # handled
+  --journal-keep=*) JOURNAL_KEEP="${arg#*=}" ;;
+  --log-max=*) LOG_MAX_SIZE="${arg#*=}" ;;
+  --tmp-days=*) TMP_DAYS="${arg#*=}" ;;
+  --snap-retain=*) SNAP_RETAIN="${arg#*=}" ;;
+  --user=*)
+    TARGET_USER="${arg#*=}"
+    TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6 || echo "$HOME")"
+    ;;
+  --inode-path=*) INODE_PATH="${arg#*=}" ;;
+  --inode-depth=*) INODE_DEPTH="${arg#*=}" ;;
+  --inode-top=*) INODE_TOP="${arg#*=}" ;;
+  --exclude-glob=*) EXCLUDE_GLOBS+=("${arg#*=}") ;;
+  --include-glob=*) INCLUDE_GLOBS+=("${arg#*=}") ;;
+  --version)
+    echo "${TOOL_NAME} ${VERSION}"
+    exit 0
+    ;;
+  --check-update)
+    self_check_update
+    exit $?
+    ;;
+  --update)
+    self_update
+    exit 0
+    ;;
+  --print-config)
+    print_config
+    exit 0
+    ;;
+  --doctor)
+    doctor
+    exit $?
+    ;;
+  --completions=*)
+    print_completions "${arg#*=}"
+    exit 0
+    ;;
+  --help | -h)
+    usage
+    exit 0
+    ;;
+  *) TASKS+=("$arg") ;;
+  esac
+done
+
+# ---------- Main ----------
+main() {
+  [[ ${#TASKS[@]} -eq 0 ]] && {
+    usage
+    exit 1
+  }
+
+  take_lock
+  need find
+  need du
+  need sort
+  need awk
+  need xargs
+  need df
+  command -v numfmt >/dev/null || true
+
+  info "Mode: $( ((DRY_RUN)) && echo 'dry-run' || echo 'apply') | aggressive: $AGGRESSIVE | low-impact: $LOW_IMPACT | secure-erase: $SECURE_ERASE | user: $TARGET_USER | channel: $CHANNEL"
+  ((QUOTA_BYTES > 0)) && info "Quota target: $(human "$QUOTA_BYTES")"
+  ((${#EXCLUDE_GLOBS[@]})) && info "Excludes: ${EXCLUDE_GLOBS[*]}"
+  ((${#INCLUDE_GLOBS[@]})) && info "Includes: ${INCLUDE_GLOBS[*]}"
+  info "Selected tasks: ${TASKS[*]}"
+  echo
+
+  # report first (read-only)
+  if printf '%s\n' "${TASKS[@]}" | grep -qx 'report'; then
+    report
+    tmp=()
+    for t in "${TASKS[@]}"; do [[ "$t" != "report" ]] && tmp+=("$t"); done
+    TASKS=("${tmp[@]}")
+  fi
+
+  # further tasks require root
+  if (("${#TASKS[@]}")); then
+    asroot
+    preflight
+    info "About to execute system changes."
+    confirm || die "Cancelled by user."
+  fi
+
+  BEFORE=$(root_used_bytes)
+  QUOTA_START_USED="$BEFORE"
+  QUOTA_REACHED=0
+
+  for t in "${TASKS[@]}"; do
+    case "$t" in
+    apt) task_apt ;;
+    apt-residuals) task_apt_residuals ;;
+    journal) task_journal ;;
+    logs) task_logs ;;
+    tmp) task_tmp ;;
+    tmpfiles) task_tmpfiles ;;
+    usercache) task_usercache ;;
+    langcaches) task_langcaches ;;
+    snap) task_snap ;;
+    flatpak) task_flatpak ;;
+    docker) task_docker ;;
+    podman) task_podman ;;
+    containerd) task_containerd ;;
+    kernels) task_kernels ;;
+    coredumps) task_coredumps ;;
+    buildcache) task_buildcache ;;
+    browsers) task_browsers ;;
+    timeshift) task_timeshift ;;
+    pkgbig) task_pkgbig ;;
+    inode-scan) task_inode_scan ;;
+    fshints) task_fshints ;;
+    all) task_all ;;
+    *) warn "Unknown task: $t" ;;
+    esac
+    ok "Task '$t' done."
+    echo
+    if ! maybe_stop_for_quota; then break; fi
+  done
+
+  AFTER=$(root_used_bytes)
+  RECLAIMED=$((BEFORE - AFTER))
+  if ((DRY_RUN)); then
+    info "Estimated reclaimable: $(human "${RECLAIMED#-}") (dry-run)"
+  else info "Freed: $(human "${RECLAIMED#-}")"; fi
+  ok "Completed."
+
+  if ((JSON_REPORT)); then
+    ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    cat <<JSON
+{
+  "tool": "${TOOL_NAME}",
+  "version": "${VERSION}",
+  "channel": "${CHANNEL}",
+  "timestamp": "${ts}",
+  "mode": "${DRY_RUN:+dry-run}${DRY_RUN:+" "}${DRY_RUN:-apply}",
+  "aggressive": ${AGGRESSIVE},
+  "low_impact": ${LOW_IMPACT},
+  "secure_erase": ${SECURE_ERASE},
+  "user": "$(printf %q "$TARGET_USER")",
+  "quota_bytes": ${QUOTA_BYTES},
+  "quota_reached": ${QUOTA_REACHED},
+  "before_used_bytes": ${BEFORE},
+  "after_used_bytes": ${AFTER},
+  "reclaimed_bytes": ${RECLAIMED},
+  "tasks": [$(printf '"%s",' "${TASKS[@]}" | sed 's/,$//')],
+  "excludes": [$(printf '"%s",' "${EXCLUDE_GLOBS[@]:-}" | sed 's/,$//')],
+  "includes": [$(printf '"%s",' "${INCLUDE_GLOBS[@]:-}" | sed 's/,$//')]
+}
+JSON
+  fi
+}
+
+main
