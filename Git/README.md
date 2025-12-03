@@ -2,12 +2,13 @@
 
 `gitx` is an opinionated Git helper focused on:
 
-- Branch workflows (`feature` / `bugfix` / `hotfix` / `release` / `docs` / `ci` / `experiment`)
-- Cleanup, pruning, and branch hygiene
-- Reporting / summaries / changelogs / worklogs
-- Stash & WIP management
-- Interactive commit helpers
-- Light repo “doctor” and hook bootstrap
+* Branch workflows (`feature` / `bugfix` / `hotfix` / `release` / `docs` / `ci` / `experiment`)
+* Cleanup, pruning, and branch hygiene
+* Reporting / summaries / changelogs / worklogs
+* Stash & WIP management
+* Interactive commit helpers
+* Light repo “doctor” and hook bootstrap
+* Author/code-level analytics (surviving code %, blame-heavy vs lite modes)
 
 It never hides Git – it just wires composable commands into practical workflows.
 
@@ -18,13 +19,15 @@ It never hides Git – it just wires composable commands into practical workflow
 ```bash
 sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Git/gitx" \
   -o /usr/local/bin/gitx && sudo chmod +x /usr/local/bin/gitx
-````
+```
 
 ## Usage
 
 ```bash
 gitx <command> [arguments]
 ```
+
+If you call `gitx` with no or unknown command, it prints a categorized help with all commands.
 
 ---
 
@@ -34,14 +37,14 @@ gitx <command> [arguments]
 
 | Command                       | Description                                                                              |
 | ----------------------------- | ---------------------------------------------------------------------------------------- |
-| `status`                      | Show repository status, tracking, and remote info                                        |
+| `status`                      | Show repository status, branch tracking info, and remotes                                |
 | `fetch`                       | Fetch remote branches and prune stale references                                         |
 | `sync`                        | Sync `alpha` / `develop` (and optional branches) from main branch                        |
 | `create <type> <name>`        | Create a new branch from main (`feature\|bugfix\|hotfix\|release\|docs\|ci\|experiment`) |
 | `merge <source> <target>`     | Merge source branch into target branch                                                   |
 | `reset-branch`                | Reset current branch to `origin/<branch>` (soft / hard / dry-run)                        |
-| `prune`                       | Prune remote branches and delete local tracking branches marked `gone`                   |
-| `cleanup`                     | Delete branches already merged into main (excludes core branches)                        |
+| `prune`                       | Prune remote branches and delete local branches tracking `: gone]` remotes               |
+| `cleanup`                     | Delete branches already merged into main (excluding core branches)                       |
 | `orphan-branches [days]`      | List and optionally delete unmerged branches older than N days (default 30)              |
 | `compare [branch1] [branch2]` | Compare two branches (commits + changed files)                                           |
 | `initial-commit`              | Show the initial commit hash                                                             |
@@ -51,15 +54,17 @@ gitx <command> [arguments]
 
 | Command                            | Description                                                       |
 | ---------------------------------- | ----------------------------------------------------------------- |
-| `commit`                           | Interactive commit helper (choose files by number, then commit)   |
+| `commit`                           | Interactive commit helper (numbered file selection + message)     |
 | `amend`                            | Amend last commit message (inline or interactive)                 |
-| `unstage`                          | Unstage all files in the index                                    |
+| `unstage`                          | Unstage all files in the index (with confirmation)                |
 | `cherry-pick`                      | Interactive cherry-pick by selecting commits from a numbered list |
-| `revert`                           | Interactive revert (select commits; revert individually or amend) |
+| `revert`                           | Interactive revert (select commits; per-commit or amend mode)     |
 | `diff [output_file]`               | Show staged diff or save it to a file                             |
 | `log-file <path>`                  | Show commit history or diffs for a specific file                  |
 | `count-changes <start> [end]`      | Show shortstat (files/insertions/deletions) between two commits   |
 | `list-changes <branch1> <branch2>` | List files changed between two branches                           |
+| `stage-deleted`                    | Stage all deleted files                                           |
+| `stage-deleted-dir <directory>`    | Stage deleted files under a specific directory                    |
 
 ### Reporting, Summary & Worklog
 
@@ -90,7 +95,7 @@ gitx <command> [arguments]
 | `clean [--force]`                     | Clean untracked files/dirs (interactive by default; `--force` to skip prompts) |
 | `large-files`                         | Show or save the largest Git-tracked blobs (by size)                           |
 
-### Configuration & Utilities
+### Configuration, Hooks & Utilities
 
 | Command                         | Description                                                                |
 | ------------------------------- | -------------------------------------------------------------------------- |
@@ -115,9 +120,13 @@ gitx <command> [arguments]
 gitx status
 ```
 
-* Shows `git status -sb --untracked-files=all`
-* Prints upstream ahead/behind counts (or “No upstream branch set”)
-* Lists remotes in a compact `remote -> URL` form
+Shows:
+
+* `git status -sb --untracked-files=all`
+* Upstream ahead/behind counts (`git rev-list --left-right --count @{upstream}...HEAD`) or a note if no upstream
+* Remotes in compact `remote -> URL` form
+
+---
 
 #### `fetch`
 
@@ -125,8 +134,24 @@ gitx status
 gitx fetch
 ```
 
-* Runs `git fetch --prune`
-* Good pre-step before pruning / cleanup / summary.
+* Ensures we’re in a Git repo
+* Runs: `git fetch --prune`
+* Good pre-step before prune/cleanup/summary.
+
+---
+
+#### Main-branch detection
+
+Several commands auto-detect the main branch using:
+
+1. `origin/HEAD` symbolic ref
+2. `origin/main`
+3. `origin/trunk`
+4. Fallback: `master`
+
+All “main” references below use that detection.
+
+---
 
 #### `sync`
 
@@ -134,14 +159,31 @@ gitx fetch
 gitx sync
 ```
 
-* Detects main branch (`origin/HEAD`, `origin/main`, `origin/trunk`, default `master`).
-* Updates main: `git checkout <main> && git pull origin <main>`.
+* Detects main branch.
+
+* Updates main:
+
+  ```bash
+  git checkout <main> && git pull origin <main>
+  ```
+
 * Merges main into:
 
     * `alpha`
     * `develop`
-    * Any extra comma-separated branches you specify interactively.
-* Pushes back updated branches.
+    * Additional comma-separated branches you optionally enter interactively.
+
+* For each branch:
+
+  ```bash
+  git checkout <branch>
+  git merge --no-ff <main>
+  git push origin <branch>
+  ```
+
+Branches that don’t exist locally are skipped with a message.
+
+---
 
 #### `create <type> <name>`
 
@@ -149,26 +191,44 @@ gitx sync
 gitx create feature merchant-fy-summary
 ```
 
-* Valid types: `feature`, `bugfix`, `hotfix`, `release`, `docs`, `ci`, `experiment`.
-* Branch name pattern: `<type>/<name>`, e.g. `feature/merchant-fy-summary`.
+* Types: `feature`, `bugfix`, `hotfix`, `release`, `docs`, `ci`, `experiment`.
+* Branch name: `<type>/<name>` (e.g., `feature/merchant-fy-summary`).
 * Steps:
 
-    * Detect main branch
-    * Checkout main and pull
-    * Create new branch from main
-    * Push to origin
+    1. Detect main branch.
+    2. Checkout main and pull latest.
+    3. Create new branch from main.
+    4. Push to origin.
+
+If the branch already exists locally, it aborts with an error.
+
+---
 
 #### `merge <source> <target>`
 
 ```bash
-gitx merge feature/xyz main
+gitx merge feature/fy-summary main
 ```
 
-* Confirms before merge.
-* Ensures target is up-to-date (`git checkout <target> && git pull origin <target>`).
-* Merges with `--no-ff`.
-* Pushes target branch on success.
-* If conflicts occur, it tells you to resolve manually and optionally run `git merge --abort`.
+* Validates both branches exist.
+
+* Confirms before merging.
+
+* Flow:
+
+  ```bash
+  git checkout <target>
+  git pull origin <target>
+  git merge --no-ff <source>
+  git push origin <target>
+  ```
+
+* On merge conflicts:
+
+    * Notifies you about conflicts
+    * Instructs you to resolve manually (`git status`, `git add`, `git commit`) or `git merge --abort`.
+
+---
 
 #### `reset-branch`
 
@@ -176,12 +236,32 @@ gitx merge feature/xyz main
 gitx reset-branch
 ```
 
-* Operates on current branch; requires `origin/<branch>` to exist.
-* Options:
+* Operates on **current** branch.
+* Requires `origin/<branch>` to exist.
+* Menu:
 
-    1. **Soft** reset: `git reset --soft origin/<branch>`
-    2. **Hard** reset: `git reset --hard origin/<branch>` (with confirmation)
-    3. **Dry-run**: shows diff vs `origin/<branch>` without changing anything.
+    1. **Soft reset** – keep local changes, reset only HEAD:
+
+       ```bash
+       git fetch origin
+       git reset --soft origin/<branch>
+       ```
+
+    2. **Hard reset** – discard all local changes (with confirmation):
+
+       ```bash
+       git fetch origin
+       git reset --hard origin/<branch>
+       ```
+
+    3. **Dry-run** – preview diff vs `origin/<branch>`:
+
+       ```bash
+       git fetch origin
+       git diff --stat origin/<branch>
+       ```
+
+---
 
 #### `prune`
 
@@ -189,12 +269,20 @@ gitx reset-branch
 gitx prune
 ```
 
-* Runs `git fetch --prune`.
-* Lists local branches whose remote is `gone` (deleted remotely).
-* Lets you:
+* Runs:
+
+  ```bash
+  git fetch --prune
+  ```
+
+* Detects local branches whose upstream shows `: gone]` in `git branch -vv`.
+
+* Offers:
 
     * Delete all such branches at once, or
-    * Confirm per-branch deletion.
+    * Confirm deletion per-branch.
+
+---
 
 #### `cleanup`
 
@@ -202,51 +290,82 @@ gitx prune
 gitx cleanup
 ```
 
-* Lists branches already merged into `main`/`master`/`develop`/`alpha` (excluding those core branches).
-* Lets you delete:
+* Lists branches merged into main (excluding `master`, `main`, `develop`, `alpha`).
+* Options:
 
-    * All merged branches
-    * Or confirm per-branch.
+    * Delete all merged branches at once.
+    * Or confirm deletion one by one.
+
+---
 
 #### `orphan-branches [days]`
 
 ```bash
-gitx orphan-branches         # default: 30 days
+gitx orphan-branches        # default: 30 days
 gitx orphan-branches 60
 ```
 
 * Detects main branch.
-* Finds local branches **not merged** into main whose **last commit is older than N days** (default 30).
-* Shows them with age in days and then offers to:
+* Scans all local branches:
 
-    * Delete all, or
-    * Delete selected branches.
+    * Skips core branches (`master`, `main`, `develop`, `alpha`, `trunk`).
+    * Skips branches already merged into main.
+    * Computes age (in days) from last commit timestamp.
+* Lists branches **not merged into main** and **older than N days**.
+* Then offers:
+
+    * Delete all of them, or
+    * Delete selected names.
+
+---
 
 #### `compare [branch1] [branch2]`
 
 ```bash
-gitx compare
+gitx compare            # current vs main
 gitx compare develop main
 ```
 
-* If no args:
+* If arguments omitted:
 
-    * `branch1` defaults to current branch
-    * `branch2` defaults to main branch
-* Prints:
+    * `branch1` → current branch
+    * `branch2` → main branch
+* Output:
 
-    * `git log --oneline branch1..branch2` (commits unique to branch2)
-    * `git diff --name-only branch1..branch2` (changed files)
+    * Commits unique to `branch2`:
 
-#### `initial-commit`, `latest-tag`
+      ```bash
+      git log --oneline branch1..branch2
+      ```
+
+    * Files changed between branches:
+
+      ```bash
+      git diff --name-only branch1..branch2
+      ```
+
+---
+
+#### `initial-commit` and `latest-tag`
 
 ```bash
 gitx initial-commit
 gitx latest-tag
 ```
 
-* `initial-commit`: uses `git rev-list --max-parents=0 HEAD`.
-* `latest-tag`: uses `git describe --tags --abbrev=0`.
+* `initial-commit`:
+
+  ```bash
+  git rev-list --max-parents=0 HEAD
+  ```
+
+* `latest-tag`:
+
+  ```bash
+  git describe --tags --abbrev=0
+  ```
+
+If no commits/tags exist, prints a friendly error.
 
 ---
 
@@ -258,13 +377,24 @@ gitx latest-tag
 gitx commit
 ```
 
-* Lists `git status -s` numbered.
-* You can:
+Workflow:
 
-    * Enter `a` to stage all
-    * Or specify `1,3,4` style selection.
-* Shows staged files.
-* Prompts for commit message and runs `git commit -m`.
+1. If no changes: prints “No changes to commit.”
+
+2. Shows `git status -s` with numbered lines.
+
+3. Prompt:
+
+    * `a` → stage all.
+    * Or e.g. `1,3,5` → stage selected files.
+
+4. Shows staged files (`git diff --cached --name-only`).
+
+5. Prompts for commit message.
+
+6. Runs `git commit -m`.
+
+---
 
 #### `amend`
 
@@ -272,10 +402,12 @@ gitx commit
 gitx amend
 ```
 
-* Prompts for new commit message:
+* Asks for a new commit message:
 
-    * If message is empty → `git commit --amend` (interactive editor).
-    * Otherwise → `git commit --amend -m "<message>"`.
+    * If blank: runs `git commit --amend` (opens editor).
+    * Otherwise: `git commit --amend -m "<new message>"`.
+
+---
 
 #### `unstage`
 
@@ -283,7 +415,15 @@ gitx amend
 gitx unstage
 ```
 
-* Confirms then runs `git reset --staged .`.
+* Warns this will unstage all files.
+* Asks for confirmation.
+* Runs:
+
+  ```bash
+  git reset --staged .
+  ```
+
+---
 
 #### `cherry-pick` (interactive)
 
@@ -291,12 +431,28 @@ gitx unstage
 gitx cherry-pick
 ```
 
-* Shows `git log --oneline` numbered.
-* You enter commit numbers (e.g. `1,5,6`).
-* Cherry-picks them one by one.
-* If conflict occurs:
+* Shows recent commits as:
 
-    * You can choose to `resolve` manually or `abort`.
+  ```text
+  1. <hash> <subject>
+  2. ...
+  ```
+
+* You enter a comma-separated list of numbers (`1,4,5`).
+
+* For each commit (in order):
+
+  ```bash
+  git cherry-pick <hash>
+  ```
+
+* On conflict:
+
+    * Asks if you want to `resolve` manually or `abort`:
+
+        * `abort` → `git cherry-pick --abort` and exit.
+
+---
 
 #### `revert` (interactive)
 
@@ -304,12 +460,26 @@ gitx cherry-pick
 gitx revert
 ```
 
-* Shows recent commits numbered.
-* You pick one or more by number.
-* Mode selection:
+* Same numbered list of recent commits.
+* You select commit numbers.
+* Then choose mode:
 
-    1. **Standard**: creates separate revert commits for each selected commit.
-    2. **Revert + amend**: reverts with `--no-commit` then amends last commit.
+    1. **Revert with normal commits**:
+
+       ```bash
+       git revert <commit>
+       ```
+
+       for each selected commit.
+
+    2. **Revert & amend last commit**:
+
+       ```bash
+       git revert --no-commit <commit1> ...
+       git commit --amend -m "Amended revert: <previous message>"
+       ```
+
+---
 
 #### `diff [output_file]`
 
@@ -318,32 +488,52 @@ gitx diff
 gitx diff staged.patch
 ```
 
-* If no file: prints `git diff --cached`.
-* If file specified:
+* No file: prints staged diff (`git diff --cached`).
+* With file:
 
-    * Confirms overwrite if file exists.
-    * Writes staged diff to file.
+    * Overwrite confirm if exists.
+    * Writes `git diff --cached` to file.
+
+---
 
 #### `log-file <path>`
 
 ```bash
-gitx log-file src/Feature/Service.php
+gitx log-file src/Service/Payment.php
 ```
 
-* Validates file exists.
-* Options:
+* Validates the file exists in the working tree.
+* Menu:
 
-    1. View commit history (`git log --follow`).
-    2. View diffs (`git log --follow -p`).
+    1. **Commit history**:
+
+       ```bash
+       git log --follow --pretty='%h - %s (%an, %ad)' --date=short -- <file>
+       ```
+
+    2. **Diffs**:
+
+       ```bash
+       git log --follow -p -- <file>
+       ```
+
+---
 
 #### `count-changes <start> [end]`
 
 ```bash
 gitx count-changes v1.0.0 v1.1.0
-gitx count-changes HEAD~20
+gitx count-changes HEAD~50
 ```
 
-* Calls `git diff --shortstat <start> <end>` and prints the summary.
+* Default `end` = `HEAD`.
+* Prints `git diff --shortstat <start> <end>` which includes:
+
+    * files changed
+    * insertions(+)
+    * deletions(-)
+
+---
 
 #### `list-changes <branch1> <branch2>`
 
@@ -351,7 +541,24 @@ gitx count-changes HEAD~20
 gitx list-changes main develop
 ```
 
-* Runs `git diff --name-only branch1 branch2`.
+* Prints `git diff --name-only branch1 branch2`.
+
+---
+
+#### `stage-deleted` & `stage-deleted-dir`
+
+```bash
+gitx stage-deleted
+gitx stage-deleted-dir src/
+```
+
+* `stage-deleted`:
+
+    * Finds all Git-deleted files (`git ls-files --deleted -z`) and stages them (`git add`).
+* `stage-deleted-dir <dir>`:
+
+    * Same, but scoped to the given directory.
+    * Validates directory exists.
 
 ---
 
@@ -360,8 +567,10 @@ gitx list-changes main develop
 #### `summary [range] [include-all] [mode]`
 
 ```bash
-# Heavy (default) blame over whole repo
+# Heavy (default) blame over current repo
 gitx summary
+
+# Specific range, include all text/* files, heavy mode
 gitx summary HEAD~50 include-all heavy
 
 # Lite mode (no blame, Surviving Code % = N/A)
@@ -369,28 +578,25 @@ gitx summary HEAD~200 lite
 gitx summary HEAD~50 include-all lite
 ```
 
-* Computes per-author metrics:
+* Range semantics:
 
-  | Column           | Meaning                                                |
-    | ---------------- | ------------------------------------------------------ |
-  | Author Name      | From `git log`                                         |
-  | Author Email     | From `git log`                                         |
-  | Commits          | Number of commits by this author in the range          |
-  | Files Changed    | Sum of files changed for their commits                 |
-  | Insertions       | Sum of insertions                                      |
-  | Deletions        | Sum of deletions                                       |
-  | Surviving Code % | Share of current blamed lines belonging to this author |
+    * If `range` provided (e.g., `HEAD~50`), it is used as `range..HEAD`.
+* `include-all`:
 
-* Arguments:
+    * Without it, only “code-ish” and config/text extensions are blamed.
+    * With it, all `text/*` files are included.
+* Modes:
 
-    * `range` (optional): e.g. `HEAD~50` (interpreted as `HEAD~50..HEAD`).
-    * `include-all` (optional): include all `text/*` files, not only code-ish extensions.
-    * `mode` (optional):
+    * `heavy` (default): runs `git blame` on all chosen files to compute **surviving code share** per author.
+    * `lite` / `fast` / `no-blame`: skips blame; Surviving Code % is `N/A`, but commit stats are still accurate.
 
-        * `heavy` (default): runs `git blame` across all relevant files for **accurate** surviving code.
-        * `lite` / `fast` / `no-blame`: skips blame; `Surviving Code %` becomes `N/A`, but all commit stats stay accurate.
+Output table:
 
-* Includes a final `TOTAL` row aggregating all authors.
+| Author Name | Author Email | Commits | Files Changed | Insertions | Deletions | Surviving Code % |
+
+Plus a `TOTAL` row for aggregate stats.
+
+---
 
 #### `summarize [short]`
 
@@ -399,78 +605,113 @@ gitx summarize
 gitx summarize short
 ```
 
-* Repo-level summary:
+Prints repository summary:
 
-    * Current branch
-    * Latest commit
-    * Total commits
-    * Number of tags
-    * Number of stashes
-    * `.git` directory size
-    * Remotes
-* If `short` is **not** provided:
+* Current branch
+* Latest commit (hash, subject, author, date)
+* Total commits
+* Number of tags
+* Number of stashes
+* `.git` directory size
+* Remotes
 
-    * Also prints branches and contributors (`git shortlog -sne`).
+If `short` is not specified:
+
+* Also prints:
+
+    * All branches (`git branch -a`)
+    * Contributors (`git shortlog -sne`).
+
+---
 
 #### `commit-report`
 
 ```bash
-# By commit range
+# Commit range
 gitx commit-report v1.0.0..v1.1.0
 
-# By date range
+# Date range
 gitx commit-report 2025-01-01 2025-01-31
 ```
 
-* Emits a Markdown report grouped by author:
+* For a **commit range** (`<start>..<end>`):
 
-    * Author name & email
-    * Number of commits
-    * Table per author:
+  ```bash
+  git log --no-merges <range>
+  ```
+
+* For a **date range**:
+
+    * Validates `YYYY-MM-DD` format.
+    * Uses:
+
+      ```bash
+      git log --no-merges \
+        --after="YYYY-MM-DD 00:00" \
+        --before="YYYY-MM-DD 23:59"
+      ```
+
+* Output: Markdown grouped by author, each with:
+
+    * Email, commit count
+    * Table:
 
       | Commit Id | Type | Subject & Body | Date & Time |
 
-* Detects `type` from Conventional Commit prefixes (`feat`, `fix`, `refactor`, `chore`, etc.), falls back to `misc`.
+* `Type` derived from Conventional Commit prefixes (`feat`, `fix`, `refactor`, `chore`, `ci`, `build`, `test`, etc.); otherwise `misc`.
+
+---
 
 #### `worklog`
 
 ```bash
-# Commit range
 gitx worklog v1.0.0..v1.1.0
-
-# Date range
-gitx worklog 2025-01-01 2025-01-31
+gitx worklog 2025-01-01 2025-01-31 >worklog-2025-01.csv
 ```
 
-* Outputs **CSV** to stdout:
+* Same range/date semantics as `commit-report`.
+
+* Outputs CSV:
 
   ```text
   Author,Email,CommitId,Type,DateTime,Subject,Body
   ...
   ```
 
-* Body is single-line (newlines stripped).
+* Bodies are flattened (newlines removed).
 
-* Designed to be piped into your PHP “Commit → Task Log” processor.
+* Designed to pipe into your own task-log generator.
+
+---
 
 #### `report <start> [end] [outfile]`
 
 ```bash
 gitx report v1.0.0 v1.1.0
-gitx report v1.0.0 v1.1.0 pr_report.txt
+gitx report v1.0.0 v1.1.0 pr_report_v1.0.0_to_v1.1.0.txt
 ```
 
-* Range: `<start>..[end]` (default `end=HEAD`).
+* Range: `<start>..[end]`, default `end=HEAD`.
 
-* Splits report into:
+* Sections:
 
-    1. **PRs** (`Merge pull request ...` merges)
-    2. **Non-PR merges**
-    3. **Standalone commits**
+    1. **PRs**:
 
-* For each merge, shows subcommits included.
+        * `git log --merges` with subjects containing `"Merge pull request"`.
+        * For each merge, list contained non-merge commits.
 
-* Writes to `outfile` (default `pr_report_<start>_to_<end>.txt`) and also `tee` to stdout.
+    2. **Non-PR merges**:
+
+        * `git log --merges` excluding PR merges.
+        * For each merge, list contained commits.
+
+    3. **Standalone commits**:
+
+        * Non-merge commits not part of any merge in the range.
+
+* Writes to `outfile` (default: `pr_report_<start>_to_<end>.txt`) and `tee`s to stdout.
+
+---
 
 #### `changelog <start> <end>`
 
@@ -478,26 +719,32 @@ gitx report v1.0.0 v1.1.0 pr_report.txt
 gitx changelog v1.0.0 v1.1.0
 ```
 
-* Saves a log file:
+* Prompts for refs if omitted.
+
+* Saves:
 
   ```text
   changelog_<start>_to_<end>.txt
   ```
 
-* Each line: `<hash> - <subject> (<author>, <date>)`.
+* Each line:
+
+  ```text
+  <hash> - <subject> (<author>, <date>)
+  ```
 
 ---
 
 ### Stash, WIP & Cleanup
 
-#### `stash` (interactive & CLI)
+#### `stash` (interactive + CLI)
 
 ```bash
 # Interactive menu
 gitx stash
 
 # Direct subcommands
-gitx stash save "Before big refactor"
+gitx stash save "Before refactor"
 gitx stash list
 gitx stash apply 0
 gitx stash pop 1
@@ -506,16 +753,27 @@ gitx stash rename 0 "WIP: dashboard refactor"
 gitx stash clear
 ```
 
-* Interactive mode lets you choose common operations via menu.
-* CLI subcommands map to:
+* Without subcommand: shows an interactive menu:
 
-    * `save`: `git stash push -m "<name>"`
-    * `list`: `git stash list`
-    * `apply`: `git stash apply stash@{n}`
-    * `pop`: `git stash pop stash@{n}`
-    * `drop`: `git stash drop stash@{n}`
-    * `rename`: `git stash store -m "<name>" stash@{n}`
-    * `clear`: `git stash clear`
+    1. Save
+    2. List
+    3. Apply
+    4. Pop
+    5. Drop
+    6. Rename
+    7. Clear all
+
+* Subcommands map to:
+
+    * `save` – `git stash push -m "<message>"`
+    * `list` – `git stash list`
+    * `apply` – `git stash apply stash@{n}`
+    * `pop` – `git stash pop stash@{n}`
+    * `drop` – `git stash drop stash@{n}`
+    * `rename` – `git stash store -m "<new name>" stash@{n}`
+    * `clear` – `git stash clear`
+
+---
 
 #### `wip`
 
@@ -527,26 +785,35 @@ gitx wip apply
 gitx wip clear
 ```
 
-* Convenience wrapper around stash for **Work-In-Progress**:
+* Wrapper around stash with WIP semantics:
 
-    * `save`: creates a `WIP: <branch> @ <timestamp> - <msg>` stash.
-    * `list`: shows only WIP-like stashes (filtering by `WIP:`).
-    * `pop` / `apply` / `clear`: operate on stashes, primarily WIP use-case.
+    * `save`: `WIP: <branch> @ <timestamp> - <msg>`
+    * `list`: filter `git stash list` by `WIP:`.
+    * `pop` / `apply` / `clear`: operate on stashes (especially WIP ones).
+
+---
 
 #### `clean [--force]`
 
 ```bash
-gitx clean              # interactive (dry-run or clean)
-gitx clean --force      # immediate git clean -fd
+gitx clean           # interactive
+gitx clean --force   # immediate clean
 ```
 
-* Interactive:
+* Interactive mode:
 
-    1. Preview untracked (`git clean -fdn`)
-    2. Clean untracked (`git clean -fd` with confirmation)
-* `--force`:
+    1. Preview untracked files/dirs (`git clean -fdn`).
+    2. Full clean (`git clean -fd`) with confirmation.
 
-    * Non-interactive `git clean -fd` (dangerous, but explicit).
+* `--force` / `force`:
+
+  ```bash
+  git clean -fd
+  ```
+
+Non-interactive, destructive.
+
+---
 
 #### `large-files`
 
@@ -554,16 +821,30 @@ gitx clean --force      # immediate git clean -fd
 gitx large-files
 ```
 
-* Prompts:
+Flow:
 
-    * How many files? (default 10)
-    * Inline vs save-to-file.
-* Scans Git object database (blobs) and sorts by size.
-* Output: `<size> bytes  <path>`.
+1. Ask how many files (default `10`).
+
+2. Ask:
+
+    * Display inline, or
+    * Save to a file (default `large_files.txt`).
+
+3. Computes via:
+
+   ```bash
+   git rev-list --objects --all |
+   git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' |
+   awk '$1=="blob" {print $3, $4}' |
+   sort -k1 -nr |
+   head -<count>
+   ```
+
+4. Prints `"<size> bytes  <path>"` per line.
 
 ---
 
-### Configuration & Utilities
+### Configuration, Hooks & Utilities
 
 #### `add-remote <name> <url>`
 
@@ -571,8 +852,10 @@ gitx large-files
 gitx add-remote origin git@github.com:org/repo.git
 ```
 
-* You can also run without args; it will prompt.
-* Runs `git remote add`.
+* Prompts if name or URL omitted.
+* Runs `git remote add <name> <url>`.
+
+---
 
 #### `push-remote <remote> <branch>`
 
@@ -580,8 +863,11 @@ gitx add-remote origin git@github.com:org/repo.git
 gitx push-remote origin feature/payment-flow
 ```
 
-* If args omitted, prompts for them.
+* Defaults remote to `origin` if omitted (prompt).
 * Validates branch exists locally.
+* Runs `git push <remote> <branch>`.
+
+---
 
 #### `pull-remote <remote> <branch>`
 
@@ -589,8 +875,11 @@ gitx push-remote origin feature/payment-flow
 gitx pull-remote origin develop
 ```
 
-* If args omitted, prompts.
+* Defaults remote to `origin` if omitted (prompt).
 * Validates remote exists.
+* Runs `git pull <remote> <branch>`.
+
+---
 
 #### `config`
 
@@ -599,10 +888,21 @@ gitx config
 ```
 
 * Shows `git config --list`.
-* Two options:
+* Menu:
 
-    1. Add/edit key (global)
-    2. Remove key (global)
+    1. Add/Edit a global key:
+
+       ```bash
+       git config --global <key> <value>
+       ```
+
+    2. Remove a global key:
+
+       ```bash
+       git config --global --unset <key>
+       ```
+
+---
 
 #### `set-lf`
 
@@ -610,7 +910,13 @@ gitx config
 gitx set-lf
 ```
 
-* Sets `core.autocrlf=false` globally.
+* Sets:
+
+  ```bash
+  git config --global core.autocrlf false
+  ```
+
+---
 
 #### `doctor`
 
@@ -618,16 +924,21 @@ gitx set-lf
 gitx doctor
 ```
 
-* Health snapshot:
+Repo health snapshot:
 
-    * Repo root
-    * Current vs main branch
-    * Upstream ahead/behind (if tracking)
-    * Count of working-tree changes and untracked files
-    * Number of stashes
-    * Branches merged into main but still present
-    * `.git` size
-    * Top 5 largest blobs (byte size + path)
+* Repo root
+* Current branch and detected main
+* Upstream ahead/behind (if tracking)
+* Working tree status:
+
+    * total changes
+    * untracked count
+* Stash count
+* Branches merged into main but still present
+* `.git` directory size
+* Top 5 largest blobs (size + path) from Git history
+
+---
 
 #### `hooks init`
 
@@ -635,12 +946,21 @@ gitx doctor
 gitx hooks init
 ```
 
-* Writes example hook templates into `.git/hooks`:
+Creates hook templates in `.git/hooks`:
 
-    * `prepare-commit-msg.gitx` – Conventional Commit hints appended as comments.
-    * `pre-commit.gitx` – fails commit if conflict markers (`<<<<<<<`) exist in staged diff.
-    * `pre-push.gitx` – runs `vendor/bin/pest` or `vendor/bin/phpunit` if present.
-* Optionally copies them to actual hook names (`prepare-commit-msg`, `pre-commit`, `pre-push`) and marks them executable.
+* `prepare-commit-msg.gitx` – appends Conventional Commit hints as comments.
+* `pre-commit.gitx` – fails if conflict markers (`<<<<<<< HEAD`) exist in staged changes.
+* `pre-push.gitx` – runs `vendor/bin/pest` or `vendor/bin/phpunit` if present, failing on test failure.
+
+Then asks whether to activate them by copying to real hook names:
+
+* `prepare-commit-msg`
+* `pre-commit`
+* `pre-push`
+
+All marked executable.
+
+---
 
 #### `self-update`
 
@@ -648,12 +968,17 @@ gitx hooks init
 gitx self-update
 ```
 
-* Downloads latest script from GitHub.
-* Compares SHA-256 of local vs remote:
+* Downloads latest script from GitHub into `/tmp/gitx_latest`.
+* Computes SHA-256 of remote file vs current `gitx`.
 
-    * If identical → “already up-to-date”.
-* Backs up existing `gitx` as `gitx.bak-<timestamp>`.
-* Replaces binary and sets executable.
+    * If equal → “already up-to-date.”
+* If different:
+
+    1. Backs up current script as `gitx.bak-<timestamp>`.
+    2. Moves new script into place.
+    3. Marks it executable.
+
+If the existing location is not writable, it warns you to rerun as sudo or install in a writable path.
 
 ---
 
@@ -675,7 +1000,7 @@ gitx create feature merchant-fy-summary
 # Merge feature into main
 gitx merge feature/merchant-fy-summary main
 
-# Reset current branch to remote (with menu)
+# Reset current branch to remote (soft/hard/dry-run menu)
 gitx reset-branch
 
 # Cleanup merged branches
@@ -690,8 +1015,15 @@ gitx compare main develop
 # Interactive commit
 gitx commit
 
-# Amend last commit
+# Amend last commit message
 gitx amend
+
+# Unstage everything
+gitx unstage
+
+# Stage deleted files
+gitx stage-deleted
+gitx stage-deleted-dir src/
 
 # Stash current work
 gitx stash save "Before big refactor"
@@ -723,4 +1055,6 @@ gitx hooks init
 # Update gitx itself
 gitx self-update
 
+# Show top 10 largest blobs
+gitx large-files
 ```

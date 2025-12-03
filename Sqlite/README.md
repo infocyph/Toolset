@@ -2,22 +2,35 @@
 
 `sqlitex` is a non-interactive, flag-based SQLite CLI:
 
-- CRUD operations
-- migrations + seeds
-- backup/reset helpers
-- CSV/JSON export
-- DB info / health checks / optimization
-- dry-run mode for safe mutations
-- simple tuning, explaining and sampling
+* CRUD operations
+* migrations + seeds
+* backup/reset helpers
+* CSV/JSON export
+* DB info / health checks / optimization
+* dry-run mode for safe mutations
+* simple tuning, explaining and sampling
+* optional timeout-based lock handling
 
 It’s ideal for scripts and CI where you want explicit flags instead of interactive shells.
+
+---
+
+## Requirements
+
+* `sqlite3` (required)
+* `jq` (optional, required **only** for JSON seed files)
+* `sqlite3` with `-json` support (optional, required for JSON exports & `-json` mode)
+
+---
 
 ## Installation
 
 ```bash
 sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Sqlite/sqlitex" \
   -o /usr/local/bin/sqlitex && sudo chmod +x /usr/local/bin/sqlitex
-````
+```
+
+---
 
 ## Usage
 
@@ -37,10 +50,12 @@ sqlitex [global options] <command> [command options]
 | `--seeds-path <path>`      | Seeds directory (default: `./seeds` or `./seeds/<env>` if that subdir exists)                     |
 | `--backup-path <path>`     | Backup directory (default: `./db_backups`)                                                        |
 | `--export-path <path>`     | Export directory (default: `./exports`)                                                           |
-| `--use-lock`               | Enable timeout-based lock handling (`.timeout 5000` ms) for sqlite3 CLI                           |
+| `--use-lock`               | Enable timeout-based lock handling (`.timeout 5000` ms) for `sqlite3` CLI                         |
 | `--dry-run`                | Print SQL / actions for mutating operations without applying changes or touching the DB           |
 
 > ℹ️ `--env` is also used in the migration tracking table name: `migrations_<ENV_SAFE>`.
+
+> 🔐 `--use-lock` makes all SQL use `.timeout 5000` ms (configurable in the script) to avoid “database is locked” errors in concurrent environments.
 
 ---
 
@@ -238,6 +253,8 @@ sqlitex --db my.db exec --file scripts/maintenance.sql
 
 > Note: With `--dry-run`, the SQL or file path is printed instead of executed.
 
+> Note: You must choose **either** `--sql` or `--file` (the CLI enforces this).
+
 ---
 
 ### tables
@@ -250,16 +267,22 @@ sqlitex --db my.db tables
 
 ---
 
-### Migrations
+## Migrations
 
 Migrations are simple `.sql` files in the migrations directory.
 
 * **Up** migrations: `*.sql`
 * **Down** migrations: matching `*.down.sql`
 
-Applied migrations are tracked in a table named `migrations_<ENV_SAFE>`.
+Applied migrations are tracked in a table named:
 
-#### migrate
+```text
+migrations_<ENV_SAFE>
+```
+
+Where `<ENV_SAFE>` is `ENV` with non-alphanumeric chars replaced by `_`.
+
+### migrate
 
 Apply all pending migrations:
 
@@ -273,9 +296,9 @@ Rollback the last migration:
 sqlitex --db my.db migrate --rollback
 ```
 
-With `--dry-run`, sqlitex prints which files would be applied or rolled back.
+With `--dry-run`, sqlitex prints which files would be applied or rolled back (and the insert/delete into the migration table) without executing anything.
 
-#### migrate-create
+### migrate-create
 
 Generate a timestamped up/down migration pair:
 
@@ -294,23 +317,27 @@ Creates (in `--migrations-path`):
 
 Both with minimal comment skeletons.
 
+With `--dry-run`, only the intended file paths are printed.
+
 ---
 
-### Seeds
+## Seeds
 
 Seed files live in `--seeds-path` and are handled by extension:
 
 * `*.sql` → executed as SQL
-* `*.csv` → imported as CSV into table name derived from filename (e.g. `users_seed.csv` → `users`)
-* `*.json` → imported as JSON (converted to CSV under the hood) into table derived similarly
+* `*.csv` → imported as CSV into table name derived from filename (e.g. `users_seed.csv` → table `users`)
+* `*.json` → imported via `jq` → CSV → `sqlite3 .import`, table derived similarly
 
-#### seed
+> JSON seeding requires `jq` to be installed.
+
+### seed
 
 ```bash
 sqlitex --db my.db seed
 ```
 
-This iterates over all files in the seeds directory and applies them.
+This iterates over all files in the seeds directory and applies them in filename order.
 
 ---
 
@@ -322,7 +349,16 @@ Full reset: backup, drop DB, recreate, migrate & seed.
 sqlitex --db my.db reset
 ```
 
-With `--dry-run`, nothing is touched — only the planned actions are printed.
+Steps:
+
+1. Ensure DB exists
+2. Backup DB file
+3. Delete DB file
+4. Create an empty DB file
+5. Run `migrate`
+6. Run `seed`
+
+With `--dry-run`, nothing is touched — only the planned actions (including backup path) are printed.
 
 ---
 
@@ -361,11 +397,13 @@ Export all user tables to CSV or JSON in `--export-path`:
 # All tables to CSV
 sqlitex --db my.db export-all --format csv
 
-# All tables to JSON
+# All tables to JSON (requires sqlite3 -json)
 sqlitex --db my.db export-all --format json
 ```
 
 Each table becomes `EXPORT_DIR/<table>.csv` or `EXPORT_DIR/<table>.json`.
+
+With `--dry-run`, it just prints the paths it would write.
 
 ---
 
@@ -404,7 +442,7 @@ Performs:
 
     * Migration table existing but no migration files
     * Missing seeds directory
-    * Large DB not in WAL mode (warns, does not auto-change)
+    * Large DB (> 100MB) not in WAL mode (recommends `tune --profile prod`)
 
 Returns non-zero exit code if integrity or FK checks fail.
 
@@ -468,12 +506,14 @@ Profiles:
     * `PRAGMA synchronous = NORMAL;`
     * `PRAGMA foreign_keys = ON;`
     * `PRAGMA temp_store = MEMORY;`
+
 * `prod`:
 
     * `PRAGMA journal_mode = WAL;`
     * `PRAGMA synchronous = FULL;`
     * `PRAGMA foreign_keys = ON;`
-* `safe`:
+
+* `safe` (default / fallback):
 
     * `PRAGMA foreign_keys = ON;`
 
@@ -508,8 +548,8 @@ sqlitex --db app.db optimize
 # See how a query will run
 sqlitex --db app.db explain --sql "SELECT * FROM users WHERE email = 'x@y.com';"
 
-# Tune for dev
-sqlitex --db app.db tune --profile dev
+# Tune for dev, with lock handling enabled
+sqlitex --db app.db --use-lock tune --profile dev
 
 # Dry-run a dangerous update to see the SQL only
 sqlitex --db app.db --dry-run update \
