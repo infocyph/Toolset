@@ -1,113 +1,154 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Show usage information
+# --------------------- dependencies --------------------- #
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "Error: Required command '$1' not found in PATH." >&2
+    exit 1
+  }
+}
+
+require_cmd docker
+require_cmd jq
+require_cmd awk
+
+# ---------------------- usage --------------------------- #
 show_usage() {
   echo "Usage: dockex <command> [container_name] [options]"
   echo
   echo "Available commands:"
-  echo "  info | stats | inspect - Show detailed information about the container including:"
-  echo "                * Resource usage (CPU, Memory, Network I/O, Disk I/O)"
-  echo "                * Container IP, Uptime, Timezone, Health Status"
-  echo "                * CPU Shares, Memory Limit, Mounted Volumes"
-  echo "                * Environment Variables and Exposed Ports"
-  echo "                * Network details (CIDR range, Gateway, connected containers)"
-  echo "                * OS in use and container command"
+  echo "  info|inspect <container>          - Show detailed information about the container:"
+  echo "      * Container IP, Health Status, OS, Command"
+  echo "      * CPU shares, Memory limit, Volumes, Env vars, Ports, Network"
   echo
-  echo "  logs         - Show container logs with an optional number of lines."
-  echo "                Usage: dockex <container_name> logs [number_of_lines]"
-  echo "                * Default: 10 lines if not specified."
+  echo "  ps [name_pattern]                 - Summarize all containers (CPU/MEM/health/restart)."
   echo
-  echo "  start        - Start a stopped container."
+  echo "  logs <container> [lines]          - Show container logs (default: 10 lines)."
+  echo "  logs-errors <container> [lines]   - Show only error-like log lines (default: 500)."
+  echo "  stream_logs <container>           - Stream container logs in real-time."
   echo
-  echo "  stop         - Stop a running container."
+  echo "  start <container>                 - Start a stopped container."
+  echo "  stop <container>                  - Stop a running container."
+  echo "  restart <container>               - Restart a container."
   echo
-  echo "  restart      - Restart a container (stops and starts the container)."
+  echo "  shell <container>                 - Exec into a container (bash, fallback sh)."
+  echo "  top <container>                   - Show processes running inside container."
   echo
-  echo "  benchmark    - Perform a stress test (benchmark) on the container using Apache Benchmark (ab)."
-  echo "                Usage: dockex <container_name> benchmark [instances] [requests] [concurrency]"
-  echo "                * instances: Number of instances for multi-node benchmark (default: 3)"
-  echo "                * requests: Number of requests per instance (default: 100)"
-  echo "                * concurrency: Number of concurrent requests (default: 10)"
+  echo "  update_resources <container>      - Update container's CPU and memory limits."
   echo
-  echo "  update_resources - Update container's CPU and memory limits dynamically."
-  echo "                    Usage: dockex <container_name> update_resources"
+  echo "  backup <container>                - Backup a selected volume to a zip file."
+  echo "  restore <container> <zip>         - Restore container data from a backup zip."
   echo
-  echo "  stream_logs  - Stream container logs in real-time."
-  echo "                Usage: dockex <container_name> stream_logs"
+  echo "  benchmark <container> [instances] [requests] [concurrency]"
+  echo "      * instances:   default 3"
+  echo "      * requests:    default 100"
+  echo "      * concurrency: default 10"
   echo
-  echo "  backup       - Backup a selected volume from the container and compress it into a zip file."
-  echo "                Usage: dockex <container_name> backup"
+  echo "  stats <container> [duration] [interval]"
+  echo "      * duration:    seconds to profile (default: 30)"
+  echo "      * interval:    seconds between samples (default: 2)"
   echo
-  echo "  restore      - Restore container data from a backup (zip file)."
-  echo "                Usage: dockex <container_name> restore <backup_zip_file>"
+  echo "  doctor [container]                - Doctor check for Docker host or a container."
+  echo "      * No container: host + fleet health summary"
+  echo "      * With container: deep health/logs/limits snapshot"
   echo
-  echo "  list         - Show all locally available Docker images, containers, networks, and volumes."
-  echo "                Usage: dockex list"
+  echo "  list                              - Show images, containers, networks, volumes."
+  echo "  create <image> [name]             - Interactively create a new container."
   echo
-  echo "  create       - Interactively create a new Docker container from an image."
-  echo "                Usage: dockex create <image_name> [container_name]"
-  echo
-  echo "  cleanup      - Clean up Docker containers, images, volumes, and networks."
-  echo "                Usage: dockex cleanup [unused|aggressive|all]"
-  echo "                - unused: Safe cleanup of unused resources (default)."
-  echo "                - aggressive: Removes all unused resources, including unreferenced images."
-  echo "                - all: Removes all Docker resources (containers, images, volumes, networks)."
+  echo "  cleanup [unused|aggressive|all]   - Clean up Docker resources (default: unused)."
+  echo "      unused:       Safe cleanup of unused resources."
+  echo "      aggressive:   Remove all unused resources, including unreferenced images."
+  echo "      all:          Remove ALL containers/images/volumes/networks (destructive)."
   echo
   echo "Examples:"
-  echo "  dockex my_container info         # Show detailed container info and resource usage"
-  echo "  dockex my_container logs 50      # Show the last 50 lines of logs"
-  echo "  dockex my_container start        # Start a stopped container"
-  echo "  dockex my_container benchmark 5  # Run a multi-node benchmark with 5 instances"
-  echo "  dockex my_container backup       # Backup data from a selected container volume"
-  echo "  dockex create nginx my_nginx_container # Interactively create a new container using the nginx image"
+  echo "  dockex info my_container"
+  echo "  dockex ps"
+  echo "  dockex logs my_container 50"
+  echo "  dockex logs-errors my_container 1000"
+  echo "  dockex benchmark my_container 5 500 50"
+  echo "  dockex stats my_container 60 5"
+  echo "  dockex doctor my_container"
+  echo "  dockex backup my_container"
+  echo "  dockex create nginx my_nginx"
+  echo "  dockex shell my_container"
 }
 
-# Function to check if the container exists and is running
+# ------------------ container helpers ------------------- #
+
+# Check if the container exists and (optionally) is running
 validate_container() {
   local container_name=$1
-  local running=$2
+  local requirement=${2:-any} # any|running
 
-  if ! docker ps -a --format "{{.Names}}" | grep -wq "$container_name"; then
+  if ! docker ps -a --format '{{.Names}}' | grep -wq "$container_name"; then
     echo "Error: Container '$container_name' doesn't exist."
     exit 1
   fi
 
-  if [ "$running" == "running" ] && ! docker ps --format "{{.Names}}" | grep -wq "$container_name"; then
+  if [ "$requirement" = "running" ] &&
+    ! docker ps --format '{{.Names}}' | grep -wq "$container_name"; then
     echo "Error: Container '$container_name' is not running."
     exit 1
   fi
 }
 
-# Function to display container information
+# Display container information
 view_container_info() {
   local container_name=$1
 
   validate_container "$container_name" "running"
 
-  local container_info=$(docker inspect "$container_name")
+  local container_info
+  container_info=$(docker inspect "$container_name")
 
-  local container_id=$(echo "$container_info" | jq -r '.[0].Id')
-  local container_image=$(echo "$container_info" | jq -r '.[0].Config.Image')
-  local container_created=$(echo "$container_info" | jq -r '.[0].Created')
-  local container_state=$(echo "$container_info" | jq -r '.[0].State.Status')
-  local container_health=$(echo "$container_info" | jq -r '.[0].State.Health.Status // "No Healthcheck"')
-  local container_ip=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks[].IPAddress')
-  local container_hostname=$(echo "$container_info" | jq -r '.[0].Config.Hostname')
-  local container_command=$(echo "$container_info" | jq -r '.[0].Config.Cmd[]')
-  local container_os=$(echo "$container_info" | jq -r '.[0].Os')
+  local container_id
+  container_id=$(echo "$container_info" | jq -r '.[0].Id')
+  local container_image
+  container_image=$(echo "$container_info" | jq -r '.[0].Config.Image')
+  local container_created
+  container_created=$(echo "$container_info" | jq -r '.[0].Created')
+  local container_state
+  container_state=$(echo "$container_info" | jq -r '.[0].State.Status')
+  local container_health
+  container_health=$(echo "$container_info" | jq -r '.[0].State.Health.Status // "No Healthcheck"')
+  local container_ip
+  container_ip=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks[].IPAddress')
+  local container_hostname
+  container_hostname=$(echo "$container_info" | jq -r '.[0].Config.Hostname')
+  local container_command
+  container_command=$(echo "$container_info" | jq -r '.[0].Config.Cmd[]?')
+  local container_os
+  container_os=$(echo "$container_info" | jq -r '.[0].Os')
 
-  local network_name=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks | keys[]')
-  local container_cidr=$(echo "$container_info" | jq -r ".[0].NetworkSettings.Networks.$network_name.IPAMConfig.Subnet // \"Not available\"")
-  local container_gateway=$(echo "$container_info" | jq -r ".[0].NetworkSettings.Networks.$network_name.Gateway")
+  local network_name
+  network_name=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks | keys[]?')
+  local container_cidr
+  container_cidr=$(echo "$container_info" | jq -r ".[0].NetworkSettings.Networks.$network_name.IPAMConfig.Subnet // \"Not available\"")
+  local container_gateway
+  container_gateway=$(echo "$container_info" | jq -r ".[0].NetworkSettings.Networks.$network_name.Gateway")
 
-  local container_ports=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Ports')
-  local container_connected_containers=$(echo "$container_info" | jq -r ".[0].NetworkSettings.Networks.$network_name.Links[]? // \"None\"")
+  local container_ports
+  container_ports=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Ports')
+  local container_connected_containers
+  container_connected_containers=$(echo "$container_info" | jq -r ".[0].NetworkSettings.Networks.$network_name.Links[]? // \"None\"")
 
-  local cpu_shares=$(echo "$container_info" | jq -r '.[0].HostConfig.CpuShares')
-  local memory_limit=$(echo "$container_info" | jq -r '.[0].HostConfig.Memory' | awk '{print $1/1024/1024 " MB"}')
+  local cpu_shares
+  cpu_shares=$(echo "$container_info" | jq -r '.[0].HostConfig.CpuShares')
 
-  local container_env=$(echo "$container_info" | jq -r '.[0].Config.Env[]')
-  local container_mounts=$(echo "$container_info" | jq -r '.[0].Mounts[]? | "\(.Source) -> \(.Destination)"')
+  local raw_mem
+  raw_mem=$(echo "$container_info" | jq -r '.[0].HostConfig.Memory')
+  local memory_limit
+  if [ "$raw_mem" -eq 0 ] 2>/dev/null; then
+    memory_limit="Unlimited"
+  else
+    memory_limit="$(awk "BEGIN {print $raw_mem/1024/1024}") MB"
+  fi
+
+  local container_env
+  container_env=$(echo "$container_info" | jq -r '.[0].Config.Env[]?')
+  local container_mounts
+  container_mounts=$(echo "$container_info" | jq -r '.[0].Mounts[]? | "\(.Source) -> \(.Destination)"')
 
   echo "=== Detailed Information for Container '$container_name' ==="
   echo "Container ID:        $container_id"
@@ -119,26 +160,30 @@ view_container_info() {
   echo "IP Address:          $container_ip"
   echo "Hostname:            $container_hostname"
   echo "Command:             $container_command"
-  echo "Network:             $network_name"
+  echo "Network:             ${network_name:-N/A}"
   echo "CIDR Range:          $container_cidr"
   echo "Gateway:             $container_gateway"
-
+  echo
   echo "=== Ports ==="
   echo "$container_ports"
   echo
   echo "=== Connected Containers ==="
-  if [ "$container_connected_containers" == "None" ]; then
+  if [ "$container_connected_containers" = "None" ] || [ -z "$container_connected_containers" ]; then
     echo "No connected containers."
   else
     echo "$container_connected_containers"
   fi
   echo
   echo "=== CPU and Memory ==="
-  echo "CPU Shares:          ${cpu_shares:-"Not Set"}"
-  echo "Memory Limit:        ${memory_limit:-"Unlimited"}"
+  echo "CPU Shares:          ${cpu_shares:-Not Set}"
+  echo "Memory Limit:        $memory_limit"
   echo
   echo "=== Environment Variables ==="
-  echo "$container_env"
+  if [ -n "$container_env" ]; then
+    echo "$container_env"
+  else
+    echo "No environment variables."
+  fi
   echo
   echo "=== Mounted Volumes ==="
   if [ -z "$container_mounts" ]; then
@@ -148,7 +193,7 @@ view_container_info() {
   fi
 }
 
-# Function to show logs
+# Show logs
 view_logs() {
   local container_name=$1
   local lines=${2:-10} # Default to showing last 10 lines
@@ -157,7 +202,35 @@ view_logs() {
   docker logs --tail "$lines" "$container_name"
 }
 
-# Function to start container
+# Error-focused logs
+logs_errors() {
+  local container_name=$1
+  local lines=${2:-500}
+
+  validate_container "$container_name" "any"
+
+  local tmp
+  tmp=$(mktemp)
+  docker logs --tail "$lines" "$container_name" >"$tmp" 2>&1 || true
+
+  echo "=== Error-like log lines for '$container_name' (last $lines lines) ==="
+  local pattern='error|exception|panic|critical|failed|oom-kill'
+  local matches
+  matches=$(grep -Ei "$pattern" "$tmp" || true)
+
+  if [ -z "$matches" ]; then
+    echo "No error-like lines found in last $lines lines."
+  else
+    local count
+    count=$(printf '%s\n' "$matches" | wc -l | tr -d ' ')
+    echo "Found $count error-like lines:"
+    echo "$matches"
+  fi
+
+  rm -f "$tmp"
+}
+
+# Start container
 start_container() {
   local container_name=$1
   validate_container "$container_name" "any"
@@ -165,7 +238,7 @@ start_container() {
   echo "Container '$container_name' started."
 }
 
-# Function to stop container
+# Stop container
 stop_container() {
   local container_name=$1
   validate_container "$container_name" "running"
@@ -173,7 +246,7 @@ stop_container() {
   echo "Container '$container_name' stopped."
 }
 
-# Function to restart container
+# Restart container
 restart_container() {
   local container_name=$1
   validate_container "$container_name" "any"
@@ -181,20 +254,48 @@ restart_container() {
   echo "Container '$container_name' restarted."
 }
 
-# Function to stream logs in real-time
+# Stream logs in real-time
 stream_logs() {
   local container_name=$1
   validate_container "$container_name" "any"
   docker logs -f "$container_name"
 }
 
-# Function to update container resources (CPU and memory limits)
+# Exec into container
+shell_into_container() {
+  local container_name=$1
+  validate_container "$container_name" "running"
+
+  if docker exec "$container_name" bash -c 'exit 0' >/dev/null 2>&1; then
+    docker exec -it "$container_name" bash
+  else
+    docker exec -it "$container_name" sh
+  fi
+}
+
+# Show top inside container
+top_container() {
+  local container_name=$1
+  validate_container "$container_name" "running"
+  docker top "$container_name"
+}
+
+# Update container resources (CPU and memory limits)
 update_container_resources() {
   local container_name=$1
+  validate_container "$container_name" "any"
 
-  # Get current CPU shares and memory allocation
-  local current_cpu_shares=$(docker inspect -f '{{.HostConfig.CpuShares}}' "$container_name")
-  local current_memory_limit=$(docker inspect -f '{{.HostConfig.Memory}}' "$container_name" | awk '{print $1/1024/1024 " MB"}')
+  local current_cpu_shares
+  current_cpu_shares=$(docker inspect -f '{{.HostConfig.CpuShares}}' "$container_name")
+  local current_mem_raw
+  current_mem_raw=$(docker inspect -f '{{.HostConfig.Memory}}' "$container_name")
+
+  local current_memory_limit
+  if [ "$current_mem_raw" -eq 0 ] 2>/dev/null; then
+    current_memory_limit="Unlimited"
+  else
+    current_memory_limit="$(awk "BEGIN {print $current_mem_raw/1024/1024}") MB"
+  fi
 
   echo "Current CPU shares: $current_cpu_shares"
   echo "Current memory limit: $current_memory_limit"
@@ -208,12 +309,16 @@ update_container_resources() {
   echo "Updated resources for container '$container_name'."
 }
 
-# Function to backup container volume data and zip it
+# Backup container volume data and zip it
 backup_container_data() {
   local container_name=$1
 
-  # Get list of mounted volumes
-  local volumes=($(docker inspect -f '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' "$container_name"))
+  validate_container "$container_name" "any"
+
+  local volumes=()
+  while IFS= read -r line; do
+    [ -n "$line" ] && volumes+=("$line")
+  done < <(docker inspect -f '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' "$container_name")
 
   if [ ${#volumes[@]} -eq 0 ]; then
     echo "No mounted volumes found for container '$container_name'."
@@ -221,43 +326,63 @@ backup_container_data() {
   fi
 
   echo "Mounted Volumes:"
+  local i
   for i in "${!volumes[@]}"; do
-    echo "$((i + 1)). ${volumes[$i]}"
+    printf '%d) %s\n' "$((i + 1))" "${volumes[$i]}"
   done
 
   echo "Select a volume to backup (enter the number):"
   read -r volume_choice
 
-  if [ "$volume_choice" -lt 1 ] || [ "$volume_choice" -gt "${#volumes[@]}" ]; then
+  if ! [[ "$volume_choice" =~ ^[0-9]+$ ]] ||
+    [ "$volume_choice" -lt 1 ] ||
+    [ "$volume_choice" -gt "${#volumes[@]}" ]; then
     echo "Invalid choice."
     exit 1
   fi
 
   local selected_volume=${volumes[$((volume_choice - 1))]}
-  local destination_volume=$(echo "$selected_volume" | awk -F ' -> ' '{print $2}')
+  local destination_volume
+  destination_volume=$(echo "$selected_volume" | awk -F ' -> ' '{print $2}')
 
-  # Create a backup zip file in the current working directory
-  local backup_file="$(pwd)/${container_name}-backup-$(date +%F).zip"
-  docker run --rm --volumes-from "$container_name" -v $(pwd):/backup alpine zip -r "/backup/${container_name}-backup.zip" "$destination_volume"
+  local backup_file="${container_name}-backup-$(date +%F).zip"
 
-  echo "Backup completed. Data saved to $backup_file"
+  docker run --rm --volumes-from "$container_name" \
+    -v "$(pwd)":/backup alpine sh -c "
+      apk add --no-cache zip >/dev/null 2>&1 || true
+      cd / && zip -r \"/backup/$backup_file\" \"$destination_volume\"
+    "
+
+  echo "Backup completed. Data saved to $(pwd)/$backup_file"
 }
 
-# Function to restore container data from backup
+# Restore container data from backup
 restore_container_data() {
   local container_name=$1
   local backup_zip_file=$2
 
-  # Extract zip file and restore to container
+  validate_container "$container_name" "any"
+
+  if [ -z "${backup_zip_file:-}" ]; then
+    echo "Error: Backup zip file is required."
+    exit 1
+  fi
+
   if [ ! -f "$backup_zip_file" ]; then
     echo "Error: Backup file '$backup_zip_file' not found."
     exit 1
   fi
 
-  docker run --rm --volumes-from "$container_name" -v $(pwd):/backup alpine unzip /backup/"$(basename $backup_zip_file)" -d /
+  docker run --rm --volumes-from "$container_name" \
+    -v "$(pwd)":/backup alpine sh -c "
+      apk add --no-cache unzip >/dev/null 2>&1 || true
+      unzip -o \"/backup/$(basename "$backup_zip_file")\" -d /
+    "
+
   echo "Restore completed. Data restored from $backup_zip_file"
 }
 
+# ---------------- docker listings ----------------- #
 show_docker_listings() {
   echo "=== Locally Available Images ==="
   docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}"
@@ -279,54 +404,52 @@ show_docker_listings() {
   docker volume ls --format "table {{.Name}}\t{{.Driver}}"
 }
 
+# --------------- create container ----------------- #
 create_new_container() {
-  local image_name=$2
-  local container_name=$1
+  local image_name=$1
+  local container_name=${2:-""}
 
   echo "=== Starting Docker Container Creation ==="
 
-  # Ask for container name if not provided
   if [ -z "$container_name" ]; then
     echo "Enter the name for the new container:"
     read -r container_name
   fi
 
-  # Ask for port mappings (host:container format)
   echo "Do you want to map any ports? (y/n)"
   read -r map_ports
+  local port_mappings=""
   if [[ "$map_ports" == "y" || "$map_ports" == "Y" ]]; then
     echo "Enter port mappings in the format host_port:container_port (comma-separated for multiple ports):"
     read -r port_mappings
   fi
 
-  # Ask for environment variables
   echo "Do you want to add any environment variables? (y/n)"
   read -r add_env
+  local env_vars=""
   if [[ "$add_env" == "y" || "$add_env" == "Y" ]]; then
     echo "Enter environment variables in the format key=value (comma-separated for multiple variables):"
     read -r env_vars
   fi
 
-  # Ask for volume mappings (host:container format)
   echo "Do you want to mount any volumes? (y/n)"
   read -r map_volumes
+  local volume_mappings=""
   if [[ "$map_volumes" == "y" || "$map_volumes" == "Y" ]]; then
     echo "Enter volume mappings in the format host_path:container_path (comma-separated for multiple volumes):"
     read -r volume_mappings
   fi
 
-  # Ask for network configuration
   echo "Do you want to connect the container to a specific Docker network? (y/n)"
   read -r connect_network
+  local network_name=""
   if [[ "$connect_network" == "y" || "$connect_network" == "Y" ]]; then
     echo "Enter the Docker network name (or leave empty for default bridge network):"
     read -r network_name
   fi
 
-  # Building the Docker run command
   local run_command="docker run -d --name $container_name"
 
-  # Add port mappings if provided
   if [ -n "$port_mappings" ]; then
     IFS=',' read -r -a ports <<<"$port_mappings"
     for port in "${ports[@]}"; do
@@ -334,7 +457,6 @@ create_new_container() {
     done
   fi
 
-  # Add environment variables if provided
   if [ -n "$env_vars" ]; then
     IFS=',' read -r -a envs <<<"$env_vars"
     for env in "${envs[@]}"; do
@@ -342,7 +464,6 @@ create_new_container() {
     done
   fi
 
-  # Add volume mappings if provided
   if [ -n "$volume_mappings" ]; then
     IFS=',' read -r -a volumes <<<"$volume_mappings"
     for volume in "${volumes[@]}"; do
@@ -350,28 +471,22 @@ create_new_container() {
     done
   fi
 
-  # Add network configuration if provided
   if [ -n "$network_name" ]; then
     run_command="$run_command --network $network_name"
   fi
 
-  # Add the image name
   run_command="$run_command $image_name"
 
-  # Execute the Docker run command
   echo "Running the following Docker command:"
   echo "$run_command"
-  $run_command
-
-  # Check if the container was created successfully
-  if [ $? -eq 0 ]; then
+  if $run_command; then
     echo "Container '$container_name' created successfully."
   else
     echo "Error: Failed to create the container."
   fi
 }
 
-# Benchmark function
+# ---------------- benchmark ------------------------ #
 benchmark() {
   local container_name=$1
   local instances=${2:-3}
@@ -380,146 +495,388 @@ benchmark() {
 
   validate_container "$container_name" "running"
 
-  local container_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_name")
-  local container_port=$(docker inspect -f '{{(index (index .NetworkSettings.Ports "80/tcp") 0).HostPort}}' "$container_name")
+  if ! command -v ab >/dev/null 2>&1; then
+    echo "Error: 'ab' (ApacheBench) is not installed."
+    exit 1
+  fi
+
+  local container_ip
+  container_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_name")
+  local container_port
+  container_port=$(docker inspect -f '{{(index (index .NetworkSettings.Ports "80/tcp") 0).HostPort}}' "$container_name" 2>/dev/null || echo "")
 
   if [ -z "$container_ip" ] || [ -z "$container_port" ]; then
-    echo "Error: Could not retrieve IP address or port for container '$container_name'."
+    echo "Error: Could not retrieve IP address or port (80/tcp) for container '$container_name'."
     exit 1
   fi
 
   echo "Performing benchmark on http://$container_ip:$container_port"
-
+  echo
   echo "Running single-node benchmark..."
-  local ab_result=$(ab -n "$requests" -c "$concurrency" "http://$container_ip:$container_port/" 2>&1)
-  echo "$ab_result"
+  ab -n "$requests" -c "$concurrency" "http://$container_ip:$container_port/" 2>&1
 
+  echo
   echo "Running multi-node benchmark with $instances instances..."
 
-  declare -a multi_node_results
+  local tmp_dir
+  tmp_dir=$(mktemp -d)
 
+  local i
   for i in $(seq 1 "$instances"); do
-    multi_node_results[$i]=$(ab -n "$requests" -c "$concurrency" "http://$container_ip:$container_port/" 2>&1 &)
+    ab -n "$requests" -c "$concurrency" "http://$container_ip:$container_port/" \
+      >"$tmp_dir/node_$i.out" 2>&1 &
   done
   wait
 
   for i in $(seq 1 "$instances"); do
-    echo "Result from benchmark_node_$i:"
-    echo "${multi_node_results[$i]}"
+    echo
+    echo "=== Result from benchmark_node_$i ==="
+    cat "$tmp_dir/node_$i.out"
   done
 
+  rm -rf "$tmp_dir"
+
+  echo
   echo "Benchmark summary:"
-  echo "  Single-node benchmark: $requests requests with concurrency of $concurrency."
-  echo "  Multi-node benchmark: $instances instances, each performing $requests requests with concurrency of $concurrency."
+  echo "  Single-node: $requests requests, concurrency $concurrency."
+  echo "  Multi-node:  $instances instances × $requests requests, concurrency $concurrency each."
 }
 
+# ---------------- ps summary ------------------------ #
+ps_summary() {
+  local pattern=${1:-}
+
+  echo "=== Container summary ==="
+
+  local stats_out
+  stats_out=$(docker stats --no-stream --format '{{.Name}}||{{.CPUPerc}}||{{.MemPerc}}||{{.MemUsage}}' 2>/dev/null || true)
+
+  declare -A CPU_MAP MEM_PCT_MAP MEM_USAGE_MAP
+
+  local line name cpu mem_pct mem_usage
+  while IFS='||' read -r name cpu mem_pct mem_usage; do
+    [ -z "${name:-}" ] && continue
+    CPU_MAP["$name"]=$cpu
+    MEM_PCT_MAP["$name"]=$mem_pct
+    MEM_USAGE_MAP["$name"]=$mem_usage
+  done <<<"$stats_out"
+
+  printf '%-22s %-18s %-18s %-10s %-22s %-10s %-s\n' \
+    "NAME" "IMAGE" "STATUS" "CPU" "MEM" "RESTART" "HEALTH"
+
+  local cname image status ports id health restart
+  while IFS='||' read -r cname image status ports id; do
+    [ -z "${cname:-}" ] && continue
+
+    if [ -n "$pattern" ] && ! [[ "$cname" == *"$pattern"* ]]; then
+      continue
+    fi
+
+    local insp
+    insp=$(docker inspect "$cname" 2>/dev/null || echo "")
+    if [ -n "$insp" ]; then
+      health=$(echo "$insp" | jq -r '.[0].State.Health.Status // "n/a"' 2>/dev/null || echo "n/a")
+      restart=$(echo "$insp" | jq -r '.[0].HostConfig.RestartPolicy.Name // "none"' 2>/dev/null || echo "none")
+    else
+      health="n/a"
+      restart="none"
+    fi
+
+    cpu="${CPU_MAP["$cname"]:-"-"}"
+    mem="${MEM_USAGE_MAP["$cname"]:-"-"}"
+    mem_pct="${MEM_PCT_MAP["$cname"]:-""}"
+    if [ "$mem" != "-" ] && [ -n "$mem_pct" ]; then
+      mem="$mem ($mem_pct)"
+    fi
+
+    printf '%-22s %-18s %-18s %-10s %-22s %-10s %-s\n' \
+      "$cname" "${image:0:17}" "$status" "$cpu" "$mem" "$restart" "$health"
+  done < <(docker ps -a --format '{{.Names}}||{{.Image}}||{{.Status}}||{{.Ports}}||{{.ID}}')
+}
+
+# ---------------- stats profile --------------------- #
+stats_profile() {
+  local container_name=$1
+  local duration=${2:-30}
+  local interval=${3:-2}
+
+  validate_container "$container_name" "running"
+
+  if [ "$duration" -le 0 ] 2>/dev/null; then
+    duration=30
+  fi
+  if [ "$interval" -le 0 ] 2>/dev/null; then
+    interval=2
+  fi
+
+  local samples=$((duration / interval))
+  if [ "$samples" -lt 1 ]; then
+    samples=1
+  fi
+
+  echo "Profiling '$container_name' for ${duration}s (interval ${interval}s, ${samples} samples)..."
+
+  local cpu_sum=0 cpu_max=0 mem_sum=0 mem_max=0 count=0
+  local mem_last=""
+
+  local i
+  for ((i = 1; i <= samples; i++)); do
+    local line
+    line=$(docker stats --no-stream --format '{{.CPUPerc}}||{{.MemUsage}}||{{.MemPerc}}' "$container_name" 2>/dev/null || true)
+    if [ -z "$line" ]; then
+      echo "docker stats returned no data; container may have stopped."
+      break
+    fi
+
+    local cpu mem_usage mem_perc
+    IFS='||' read -r cpu mem_usage mem_perc <<<"$line"
+
+    cpu=${cpu%%%}
+    mem_perc=${mem_perc%%%}
+    cpu=${cpu//,/}
+    mem_perc=${mem_perc//,/}
+
+    local cpu_i mem_i
+    cpu_i=$(awk "BEGIN {printf \"%d\", $cpu*100}")
+    mem_i=$(awk "BEGIN {printf \"%d\", $mem_perc*100}")
+
+    cpu_sum=$((cpu_sum + cpu_i))
+    mem_sum=$((mem_sum + mem_i))
+    [ "$cpu_i" -gt "$cpu_max" ] && cpu_max=$cpu_i
+    [ "$mem_i" -gt "$mem_max" ] && mem_max=$mem_i
+    mem_last="$mem_usage"
+    count=$((count + 1))
+
+    printf 'Sample %d/%d: CPU=%s%%, MEM=%s (%s%%)\n' "$i" "$samples" "$cpu" "$mem_usage" "$mem_perc"
+    sleep "$interval"
+  done
+
+  if [ "$count" -eq 0 ]; then
+    echo "No samples collected."
+    return
+  fi
+
+  local cpu_avg mem_avg cpu_max_f mem_max_f
+  cpu_avg=$(awk "BEGIN {printf \"%.2f\", $cpu_sum/($count*100.0)}")
+  mem_avg=$(awk "BEGIN {printf \"%.2f\", $mem_sum/($count*100.0)}")
+  cpu_max_f=$(awk "BEGIN {printf \"%.2f\", $cpu_max/100.0}")
+  mem_max_f=$(awk "BEGIN {printf \"%.2f\", $mem_max/100.0}")
+
+  echo
+  echo "=== Stats summary for '$container_name' ==="
+  echo "Samples:          $count"
+  echo "CPU avg/max:      ${cpu_avg}% / ${cpu_max_f}%"
+  echo "MEM avg/max:      ${mem_avg}% / ${mem_max_f}%"
+  echo "Last MEM usage:   $mem_last"
+}
+
+# ---------------- doctor ----------------------------- #
+doctor() {
+  local target=${1:-}
+
+  echo "=== dockex doctor ==="
+
+  if [ -z "$target" ]; then
+    echo "-- Docker info summary --"
+    docker info --format 'Server Version: {{.ServerVersion}}
+Storage Driver: {{.Driver}}
+Cgroup Driver: {{.CgroupDriver}}
+Docker Root Dir: {{.DockerRootDir}}
+Logging Driver: {{.LoggingDriver}}' || true
+
+    local root
+    root=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo "")
+    if [ -n "$root" ] && command -v df >/dev/null 2>&1; then
+      echo
+      echo "-- Disk usage for Docker root ($root) --"
+      df -h "$root" || true
+    fi
+
+    echo
+    echo "-- Docker system df --"
+    docker system df || true
+
+    echo
+    echo "-- Containers health summary --"
+    docker ps -a --format '  {{.Names}}  {{.Status}}' || true
+    echo
+    echo "Tip: run 'dockex doctor <container>' for a detailed container health check."
+    return
+  fi
+
+  local container_name=$target
+  validate_container "$container_name" "any"
+
+  echo "-- Basic status --"
+  docker ps -a --filter "name=^${container_name}$" --format 'Name: {{.Names}}
+Image: {{.Image}}
+Status: {{.Status}}
+Ports: {{.Ports}}'
+
+  echo
+  echo "-- Inspect (health, restart policy, limits) --"
+  local inspect
+  inspect=$(docker inspect "$container_name")
+
+  local restart_policy
+  restart_policy=$(echo "$inspect" | jq -r '.[0].HostConfig.RestartPolicy.Name // "none"')
+  local health_status
+  health_status=$(echo "$inspect" | jq -r '.[0].State.Health.Status // "none"')
+  local health_log
+  health_log=$(echo "$inspect" | jq -r '.[0].State.Health.Log[-1].Output // ""')
+
+  local mem_raw cpu_shares
+  mem_raw=$(echo "$inspect" | jq -r '.[0].HostConfig.Memory')
+  cpu_shares=$(echo "$inspect" | jq -r '.[0].HostConfig.CpuShares')
+  local mem_text
+  if [ "$mem_raw" -eq 0 ] 2>/dev/null; then
+    mem_text="Unlimited (no memory limit set)"
+  else
+    mem_text="$(awk "BEGIN {print $mem_raw/1024/1024}") MB"
+  fi
+
+  echo "Restart policy:      ${restart_policy:-none}"
+  echo "Health status:       $health_status"
+  if [ "$health_status" != "none" ] && [ -n "$health_log" ]; then
+    echo "Last health output:  $health_log"
+  fi
+  echo "CPU shares:          ${cpu_shares:-0}"
+  echo "Memory limit:        $mem_text"
+
+  echo
+  echo "-- Runtime usage snapshot --"
+  docker stats --no-stream --format 'Name: {{.Name}}
+CPU: {{.CPUPerc}}
+Mem: {{.MemUsage}} ({{.MemPerc}})' "$container_name" 2>/dev/null || echo "docker stats not available."
+
+  echo
+  echo "-- Recent error-like logs (last 500 lines) --"
+  logs_errors "$container_name" 500
+
+  echo
+  echo "-- Suggestions --"
+  if [ "$restart_policy" = "no" ] || [ "$restart_policy" = "none" ]; then
+    echo "- Consider setting a restart policy, e.g.: docker update --restart=unless-stopped $container_name"
+  fi
+  if [ "$mem_raw" -eq 0 ] 2>/dev/null; then
+    echo "- Consider setting a memory limit to avoid host OOM: dockex update_resources $container_name"
+  fi
+  if [ "$health_status" = "none" ]; then
+    echo "- No healthcheck defined; consider adding one to your Dockerfile or compose."
+  elif [ "$health_status" != "healthy" ]; then
+    echo "- Container health is '$health_status'; check logs and the health command."
+  fi
+}
+
+# ---------------- cleanup -------------------------- #
 cleanup() {
   echo "Starting cleanup..."
-  local cleanup_type=${1:-"unused"}  # Default to "unused" cleanup
+  local cleanup_type=${1:-"unused"} # Default to "unused" cleanup
 
   case $cleanup_type in
-    unused)
-      echo "Warning: This will perform a safe cleanup of unused resources."
-      echo "The following resources will be removed if unused:"
+  unused)
+    echo "Warning: This will perform a safe cleanup of unused resources."
+    echo "The following resources will be removed if unused:"
 
-      echo "Containers:"
-      docker container ls -f "status=exited" --format "  - {{.ID}}: {{.Names}}"
+    echo "Containers:"
+    docker container ls -f "status=exited" --format "  - {{.ID}}: {{.Names}}"
 
-      echo "Dangling Images:"
-      docker images -f "dangling=true" --format "  - {{.ID}}: {{.Repository}}:{{.Tag}}"
+    echo "Dangling Images:"
+    docker images -f "dangling=true" --format "  - {{.ID}}: {{.Repository}}:{{.Tag}}"
 
-      echo "Volumes:"
-      docker volume ls -f "dangling=true" --format "  - {{.Name}}"
+    echo "Volumes:"
+    docker volume ls -f "dangling=true" --format "  - {{.Name}}"
 
-      echo "Networks:"
-      docker network ls -f "type=custom" -f "dangling=true" --format "  - {{.Name}}"
+    echo "Networks:"
+    docker network ls -f "type=custom" -f "dangling=true" --format "  - {{.Name}}"
 
-      read -r -p "Proceed with safe cleanup? (y/N): " confirm
-      if [[ "$confirm" != [yY] ]]; then
-        echo "Cleanup aborted."
-        return
-      fi
+    read -r -p "Proceed with safe cleanup? (y/N): " confirm
+    if [[ "$confirm" != [yY] ]]; then
+      echo "Cleanup aborted."
+      return
+    fi
 
-      docker container prune -f
-      docker image prune -f
-      docker volume prune -f
-      docker network prune -f
-      docker system prune -f
-      ;;
+    docker container prune -f
+    docker image prune -f
+    docker volume prune -f
+    docker network prune -f
+    docker system prune -f
+    ;;
 
-    aggressive)
-      echo "Warning: This will perform an aggressive cleanup, removing all unused resources."
-      echo "The following resources will be removed if unused:"
+  aggressive)
+    echo "Warning: This will perform an aggressive cleanup, removing all unused resources."
+    echo "The following resources will be removed if unused:"
 
-      echo "Containers:"
-      docker container ls -a --format "  - {{.ID}}: {{.Names}}"
+    echo "Containers:"
+    docker container ls -a --format "  - {{.ID}}: {{.Names}}"
 
-      echo "Images:"
-      docker images --format "  - {{.ID}}: {{.Repository}}:{{.Tag}}"
+    echo "Images:"
+    docker images --format "  - {{.ID}}: {{.Repository}}:{{.Tag}}"
 
-      echo "Volumes:"
-      docker volume ls --format "  - {{.Name}}"
+    echo "Volumes:"
+    docker volume ls --format "  - {{.Name}}"
 
-      echo "Networks:"
-      docker network ls -f "type=custom" --format "  - {{.Name}}"
+    echo "Networks:"
+    docker network ls -f "type=custom" --format "  - {{.Name}}"
 
-      read -r -p "Proceed with aggressive cleanup? (y/N): " confirm
-      if [[ "$confirm" != [yY] ]]; then
-        echo "Cleanup aborted."
-        return
-      fi
+    read -r -p "Proceed with aggressive cleanup? (y/N): " confirm
+    if [[ "$confirm" != [yY] ]]; then
+      echo "Cleanup aborted."
+      return
+    fi
 
-      docker container prune -f
-      docker image prune -a -f
-      docker volume prune -f
-      docker network prune -f
-      docker system prune -f
-      ;;
+    docker container prune -f
+    docker image prune -a -f
+    docker volume prune -f
+    docker network prune -f
+    docker system prune -f
+    ;;
 
-    all)
-      echo "Warning: This will remove all Docker resources, including the following:"
+  all)
+    echo "Warning: This will remove all Docker resources, including the following:"
 
-      echo "Running Containers:"
-      docker ps --format "  - {{.ID}}: {{.Names}}"
+    echo "Running Containers:"
+    docker ps --format "  - {{.ID}}: {{.Names}}"
 
-      echo "All Containers:"
-      docker container ls -a --format "  - {{.ID}}: {{.Names}}"
+    echo "All Containers:"
+    docker container ls -a --format "  - {{.ID}}: {{.Names}}"
 
-      echo "All Images:"
-      docker images --format "  - {{.ID}}: {{.Repository}}:{{.Tag}}"
+    echo "All Images:"
+    docker images --format "  - {{.ID}}: {{.Repository}}:{{.Tag}}"
 
-      echo "All Volumes:"
-      docker volume ls --format "  - {{.Name}}"
+    echo "All Volumes:"
+    docker volume ls --format "  - {{.Name}}"
 
-      echo "User-Defined Networks:"
-      docker network ls -f "type=custom" --format "  - {{.Name}}"
+    echo "User-Defined Networks:"
+    docker network ls -f "type=custom" --format "  - {{.Name}}"
 
-      read -r -p "Proceed with complete removal of all Docker resources? (y/N): " confirm
-      if [[ "$confirm" != [yY] ]]; then
-        echo "Cleanup aborted."
-        return
-      fi
+    read -r -p "Proceed with complete removal of all Docker resources? (y/N): " confirm
+    if [[ "$confirm" != [yY] ]]; then
+      echo "Cleanup aborted."
+      return
+    fi
 
-      echo "Stopping all running containers..."
-      docker stop "$(docker ps -q)" 2>/dev/null
+    echo "Stopping all running containers..."
+    docker stop "$(docker ps -q)" 2>/dev/null || true
 
-      echo "Removing all containers, images, volumes, and user-defined networks..."
-      docker container rm -f "$(docker ps -aq)" 2>/dev/null
-      docker rmi -f "$(docker images -q)" 2>/dev/null
-      docker volume rm -f "$(docker volume ls -q)" 2>/dev/null
-      docker network rm "$(docker network ls -q | grep -vE 'bridge|host|none')" 2>/dev/null
-      ;;
+    echo "Removing all containers, images, volumes, and user-defined networks..."
+    docker container rm -f "$(docker ps -aq)" 2>/dev/null || true
+    docker rmi -f "$(docker images -q)" 2>/dev/null || true
+    docker volume rm -f "$(docker volume ls -q)" 2>/dev/null || true
+    docker network rm "$(docker network ls -q | grep -vE 'bridge|host|none')" 2>/dev/null || true
+    ;;
 
-    *)
-      echo "Invalid option. Usage: cleanup [unused|aggressive|all]"
-      return 1
-      ;;
+  *)
+    echo "Invalid option. Usage: cleanup [unused|aggressive|all]"
+    return 1
+    ;;
   esac
 
   echo "Cleanup complete."
 }
 
-# Parse command-line arguments and call appropriate function
+# ---------------- main dispatch -------------------- #
+
 if [ "$#" -lt 1 ]; then
   echo "Error: Missing arguments."
   show_usage
@@ -527,9 +884,9 @@ if [ "$#" -lt 1 ]; then
 fi
 
 command=$1
-container_name=$2
+container_name=${2:-}
 
-case $command in
+case "$command" in
 list)
   show_docker_listings
   ;;
@@ -539,9 +896,9 @@ create)
     show_usage
     exit 1
   fi
-  create_new_container "$container_name" "$3"
+  create_new_container "$container_name" "${3:-}"
   ;;
-info | stats | inspect)
+info | inspect)
   if [ -z "$container_name" ]; then
     echo "Error: Container name is required."
     show_usage
@@ -549,13 +906,24 @@ info | stats | inspect)
   fi
   view_container_info "$container_name"
   ;;
+ps)
+  ps_summary "${2:-}"
+  ;;
 logs)
   if [ -z "$container_name" ]; then
     echo "Error: Container name is required."
     show_usage
     exit 1
   fi
-  view_logs "$container_name" "$3"
+  view_logs "$container_name" "${3:-10}"
+  ;;
+logs-errors)
+  if [ -z "$container_name" ]; then
+    echo "Error: Container name is required."
+    show_usage
+    exit 1
+  fi
+  logs_errors "$container_name" "${3:-500}"
   ;;
 start)
   if [ -z "$container_name" ]; then
@@ -581,13 +949,29 @@ restart)
   fi
   restart_container "$container_name"
   ;;
-benchmark)
+stream_logs)
   if [ -z "$container_name" ]; then
     echo "Error: Container name is required."
     show_usage
     exit 1
   fi
-  benchmark "$container_name" "${@:3}"
+  stream_logs "$container_name"
+  ;;
+shell)
+  if [ -z "$container_name" ]; then
+    echo "Error: Container name is required."
+    show_usage
+    exit 1
+  fi
+  shell_into_container "$container_name"
+  ;;
+top)
+  if [ -z "$container_name" ]; then
+    echo "Error: Container name is required."
+    show_usage
+    exit 1
+  fi
+  top_container "$container_name"
   ;;
 update_resources)
   if [ -z "$container_name" ]; then
@@ -596,14 +980,6 @@ update_resources)
     exit 1
   fi
   update_container_resources "$container_name"
-  ;;
-stream_logs)
-  if [ -z "$container_name" ]; then
-    echo "Error: Container name is required."
-    show_usage
-    exit 1
-  fi
-  stream_logs "$container_name"
   ;;
 backup)
   if [ -z "$container_name" ]; then
@@ -619,7 +995,26 @@ restore)
     show_usage
     exit 1
   fi
-  restore_container_data "$container_name" "$3"
+  restore_container_data "$container_name" "${3:-}"
+  ;;
+benchmark)
+  if [ -z "$container_name" ]; then
+    echo "Error: Container name is required."
+    show_usage
+    exit 1
+  fi
+  benchmark "$container_name" "${3:-3}" "${4:-100}" "${5:-10}"
+  ;;
+stats)
+  if [ -z "$container_name" ]; then
+    echo "Error: Container name is required."
+    show_usage
+    exit 1
+  fi
+  stats_profile "$container_name" "${3:-30}" "${4:-2}"
+  ;;
+doctor)
+  doctor "${2:-}"
   ;;
 cleanup)
   cleanup "${2:-unused}"
