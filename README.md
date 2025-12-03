@@ -6,21 +6,23 @@ All tools are standalone bash scripts and can be installed with a single `curl +
 
 ## Tools at a Glance
 
-| Tool        | Area            | Quick Summary                                                 | Docs                             |
-|-------------|-----------------|---------------------------------------------------------------|----------------------------------|
-| `dockex`    | Docker          | Inspect, benchmark, backup/restore and clean Docker resources | [Docker](Docker/README.md)       |
-| `phpx`      | PHP             | PHP version/extension manager, FPM/webserver config, doctor   | [PHP](PHP/README.md)             |
-| `gitx`      | Git             | Opinionated Git workflow, reporting & cleanup helper          | [Git](Git/README.md)             |
-| `chromacat` | Terminal output | Colourful / animated text & ASCII art in the terminal         | [ChromaCat](ChromaCat/README.md) |
-| `sqlitex`   | SQLite          | Non-interactive, flag-driven SQLite admin & migrations        | [Sqlite](Sqlite/README.md)       |
+| Tool        | Area             | Quick Summary                                                                 | Docs                             |
+|-------------|------------------|-------------------------------------------------------------------------------|----------------------------------|
+| `dockex`    | Docker           | Inspect, benchmark, backup/restore and clean Docker resources                 | [Docker](Docker/README.md)       |
+| `phpx`      | PHP              | PHP version/extension manager, FPM/webserver config, doctor                   | [PHP](PHP/README.md)             |
+| `gitx`      | Git              | Opinionated Git workflow, reporting & cleanup helper                          | [Git](Git/README.md)             |
+| `chromacat` | Terminal output  | Colourful / animated text & ASCII art in the terminal                         | [ChromaCat](ChromaCat/README.md) |
+| `sqlitex`   | SQLite           | Non-interactive, flag-driven SQLite admin & migrations                        | [Sqlite](Sqlite/README.md)       |
+| `cleanx`    | Cleanup & Inodes | Safe, modular disk & inode cleaner; **dry-run by default**; quota/JSON/update | [Clean](Clean/README.md)         |
 
 ### Tool Documentation
 
-- **dockex** – Docker helper: [Docker](Docker/README.md)
-- **phpx** – PHP manager / doctor: [PHP](PHP/README.md)
-- **gitx** – Git workflow helper: [Git](Git/README.md)
-- **chromacat** – colourful terminal text: [ChromaCat](ChromaCat/README.md)
-- **sqlitex** – SQLite CLI: [Sqlite](Sqlite/README.md)
+- **dockex** – Docker helper: [Docker](Docker/README.md)  
+- **phpx** – PHP manager / doctor: [PHP](PHP/README.md)  
+- **gitx** – Git workflow helper: [Git](Git/README.md)  
+- **chromacat** – colourful terminal text: [ChromaCat](ChromaCat/README.md)  
+- **sqlitex** – SQLite CLI: [Sqlite](Sqlite/README.md)  
+- **cleanx** – disk & inode cleaner: [Clean](Clean/README.md)
 
 ---
 
@@ -56,6 +58,12 @@ sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/ChromaC
 # sqlitex – SQLite CLI
 sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Sqlite/sqlitex" \
   -o /usr/local/bin/sqlitex && sudo chmod +x /usr/local/bin/sqlitex
+```
+
+```bash
+# cleanx – disk & inode cleaner (dry-run by default; use --yes to apply)
+sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Clean/cleanx" \
+  -o /usr/local/bin/cleanx && sudo chmod +x /usr/local/bin/cleanx
 ```
 
 See each tool’s README (linked above) for full command reference and examples.
