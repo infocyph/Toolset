@@ -97,7 +97,7 @@ validate_container() {
 view_container_info() {
   local container_name=$1
 
-  validate_container "$container_name" "running"
+  validate_container "$container_name" "any"
 
   local container_info
   container_info=$(docker inspect "$container_name")
@@ -113,25 +113,25 @@ view_container_info() {
   local container_health
   container_health=$(echo "$container_info" | jq -r '.[0].State.Health.Status // "No Healthcheck"')
   local container_ip
-  container_ip=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks[].IPAddress')
+  container_ip=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks[]?.IPAddress' | paste -sd',' -)
   local container_hostname
   container_hostname=$(echo "$container_info" | jq -r '.[0].Config.Hostname')
   local container_command
-  container_command=$(echo "$container_info" | jq -r '.[0].Config.Cmd[]?')
+  container_command=$(echo "$container_info" | jq -r '.[0].Config.Cmd[]?' | paste -sd' ' -)
   local container_os
   container_os=$(echo "$container_info" | jq -r '.[0].Os')
 
   local network_name
-  network_name=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks | keys[]?')
+  network_name=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks | keys[0] // empty')
   local container_cidr
-  container_cidr=$(echo "$container_info" | jq -r ".[0].NetworkSettings.Networks.$network_name.IPAMConfig.Subnet // \"Not available\"")
+  container_cidr=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.IPAMConfig.Subnet // "Not available"' 2>/dev/null || echo "Not available")
   local container_gateway
-  container_gateway=$(echo "$container_info" | jq -r ".[0].NetworkSettings.Networks.$network_name.Gateway")
+  container_gateway=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.Gateway // "Not available"' 2>/dev/null || echo "Not available")
 
   local container_ports
-  container_ports=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Ports')
+  container_ports=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Ports // {}')
   local container_connected_containers
-  container_connected_containers=$(echo "$container_info" | jq -r ".[0].NetworkSettings.Networks.$network_name.Links[]? // \"None\"")
+  container_connected_containers=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.Links[]? // empty' | paste -sd',' -)
 
   local cpu_shares
   cpu_shares=$(echo "$container_info" | jq -r '.[0].HostConfig.CpuShares')
@@ -146,9 +146,9 @@ view_container_info() {
   fi
 
   local container_env
-  container_env=$(echo "$container_info" | jq -r '.[0].Config.Env[]?')
+  container_env=$(echo "$container_info" | jq -r '.[0].Config.Env[]?' || true)
   local container_mounts
-  container_mounts=$(echo "$container_info" | jq -r '.[0].Mounts[]? | "\(.Source) -> \(.Destination)"')
+  container_mounts=$(echo "$container_info" | jq -r '.[0].Mounts[]? | "\(.Source) -> \(.Destination)"' || true)
 
   echo "=== Detailed Information for Container '$container_name' ==="
   echo "Container ID:        $container_id"
@@ -157,9 +157,9 @@ view_container_info() {
   echo "State:               $container_state"
   echo "Health:              $container_health"
   echo "OS:                  $container_os"
-  echo "IP Address:          $container_ip"
+  echo "IP Address:          ${container_ip:-N/A}"
   echo "Hostname:            $container_hostname"
-  echo "Command:             $container_command"
+  echo "Command:             ${container_command:-N/A}"
   echo "Network:             ${network_name:-N/A}"
   echo "CIDR Range:          $container_cidr"
   echo "Gateway:             $container_gateway"
@@ -168,7 +168,7 @@ view_container_info() {
   echo "$container_ports"
   echo
   echo "=== Connected Containers ==="
-  if [ "$container_connected_containers" = "None" ] || [ -z "$container_connected_containers" ]; then
+  if [ -z "${container_connected_containers:-}" ]; then
     echo "No connected containers."
   else
     echo "$container_connected_containers"
@@ -179,14 +179,14 @@ view_container_info() {
   echo "Memory Limit:        $memory_limit"
   echo
   echo "=== Environment Variables ==="
-  if [ -n "$container_env" ]; then
+  if [ -n "${container_env:-}" ]; then
     echo "$container_env"
   else
     echo "No environment variables."
   fi
   echo
   echo "=== Mounted Volumes ==="
-  if [ -z "$container_mounts" ]; then
+  if [ -z "${container_mounts:-}" ]; then
     echo "No volumes mounted."
   else
     echo "$container_mounts"
@@ -299,13 +299,60 @@ update_container_resources() {
 
   echo "Current CPU shares: $current_cpu_shares"
   echo "Current memory limit: $current_memory_limit"
-
-  echo "Enter new CPU shares (e.g., 512 for half a CPU core):"
-  read -r cpu_shares
-  echo "Enter new memory limit (e.g., 500m for 500MB, 1g for 1GB):"
+  echo
+  echo "CPU shares input:"
+  echo "  - empty: keep current"
+  echo "  - N:     raw shares (integer)"
+  echo "  - N%:    percentage of default 1024 (e.g. 50% -> 512)"
+  echo "  - Nc:    N CPU cores equivalent (e.g. 2c -> 2048)"
+  echo
+  echo "Enter new CPU shares:"
+  read -r cpu_input
+  echo "Enter new memory limit (e.g., 500m for 500MB, 1g for 1GB; empty to keep current):"
   read -r memory_limit
 
-  docker update --cpu-shares "$cpu_shares" --memory "$memory_limit" "$container_name"
+  local cpu_flag=()
+  if [ -n "$cpu_input" ]; then
+    local shares=""
+    if [[ "$cpu_input" =~ %$ ]]; then
+      # percentage of 1024
+      local pct=${cpu_input%%%}
+      if [[ "$pct" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        shares=$(awk "BEGIN {printf \"%d\", 1024*$pct/100.0}")
+      else
+        echo "Invalid CPU percentage: $cpu_input"
+        exit 1
+      fi
+    elif [[ "$cpu_input" =~ c$ ]]; then
+      # cores -> cores*1024
+      local cores=${cpu_input%c}
+      if [[ "$cores" =~ ^[0-9]+$ ]]; then
+        shares=$((cores * 1024))
+      else
+        echo "Invalid CPU core value: $cpu_input"
+        exit 1
+      fi
+    else
+      if ! [[ "$cpu_input" =~ ^[0-9]+$ ]]; then
+        echo "Invalid CPU shares value: $cpu_input"
+        exit 1
+      fi
+      shares=$cpu_input
+    fi
+    cpu_flag=(--cpu-shares "$shares")
+  fi
+
+  local mem_flag=()
+  if [ -n "$memory_limit" ]; then
+    mem_flag=(--memory "$memory_limit")
+  fi
+
+  if [ "${#cpu_flag[@]}" -eq 0 ] && [ "${#mem_flag[@]}" -eq 0 ]; then
+    echo "Nothing to update."
+    return
+  fi
+
+  docker update "${cpu_flag[@]}" "${mem_flag[@]}" "$container_name"
   echo "Updated resources for container '$container_name'."
 }
 
@@ -496,24 +543,30 @@ benchmark() {
   validate_container "$container_name" "running"
 
   if ! command -v ab >/dev/null 2>&1; then
-    echo "Error: 'ab' (ApacheBench) is not installed."
+    echo "Error: 'ab' (ApacheBench) is not installed on the host."
     exit 1
   fi
 
-  local container_ip
-  container_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_name")
-  local container_port
-  container_port=$(docker inspect -f '{{(index (index .NetworkSettings.Ports "80/tcp") 0).HostPort}}' "$container_name" 2>/dev/null || echo "")
+  # Prefer 80/tcp mapping; fall back to first exposed host port
+  local host_port
+  host_port=$(docker inspect -f '{{range $p, $arr := .NetworkSettings.Ports}}{{if and $arr (eq $p "80/tcp")}}{{(index $arr 0).HostPort}}{{"\n"}}{{end}}{{end}}' "$container_name" 2>/dev/null | head -n1 || true)
 
-  if [ -z "$container_ip" ] || [ -z "$container_port" ]; then
-    echo "Error: Could not retrieve IP address or port (80/tcp) for container '$container_name'."
+  if [ -z "$host_port" ]; then
+    host_port=$(docker inspect -f '{{range $p, $arr := .NetworkSettings.Ports}}{{if $arr}}{{(index $arr 0).HostPort}}{{"\n"}}{{end}}{{end}}' "$container_name" 2>/dev/null | head -n1 || true)
+  fi
+
+  if [ -z "$host_port" ]; then
+    echo "Error: Could not find any published host port for container '$container_name'."
+    echo "Make sure the container exposes an HTTP port (e.g., -p 8080:80) before benchmarking."
     exit 1
   fi
 
-  echo "Performing benchmark on http://$container_ip:$container_port"
+  local url="http://127.0.0.1:${host_port}/"
+
+  echo "Performing benchmark on $url"
   echo
   echo "Running single-node benchmark..."
-  ab -n "$requests" -c "$concurrency" "http://$container_ip:$container_port/" 2>&1
+  ab -n "$requests" -c "$concurrency" "$url" 2>&1
 
   echo
   echo "Running multi-node benchmark with $instances instances..."
@@ -523,7 +576,7 @@ benchmark() {
 
   local i
   for i in $(seq 1 "$instances"); do
-    ab -n "$requests" -c "$concurrency" "http://$container_ip:$container_port/" \
+    ab -n "$requests" -c "$concurrency" "$url" \
       >"$tmp_dir/node_$i.out" 2>&1 &
   done
   wait
@@ -549,22 +602,22 @@ ps_summary() {
   echo "=== Container summary ==="
 
   local stats_out
-  stats_out=$(docker stats --no-stream --format '{{.Name}}||{{.CPUPerc}}||{{.MemPerc}}||{{.MemUsage}}' 2>/dev/null || true)
+  stats_out=$(docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemPerc}}\t{{.MemUsage}}' 2>/dev/null || true)
 
   declare -A CPU_MAP MEM_PCT_MAP MEM_USAGE_MAP
 
   local line name cpu mem_pct mem_usage
-  while IFS='||' read -r name cpu mem_pct mem_usage; do
+  while IFS=$'\t' read -r name cpu mem_pct mem_usage; do
     [ -z "${name:-}" ] && continue
     CPU_MAP["$name"]=$cpu
     MEM_PCT_MAP["$name"]=$mem_pct
     MEM_USAGE_MAP["$name"]=$mem_usage
   done <<<"$stats_out"
 
-  printf '%-22s %-18s %-18s %-10s %-22s %-10s %-s\n' \
+  printf '%-22s %-22s %-20s %-10s %-30s %-14s %-s\n' \
     "NAME" "IMAGE" "STATUS" "CPU" "MEM" "RESTART" "HEALTH"
 
-  local cname image status ports id health restart
+  local cname image status ports id health restart mem mem_pct_val cpu_val
   while IFS='||' read -r cname image status ports id; do
     [ -z "${cname:-}" ] && continue
 
@@ -582,15 +635,15 @@ ps_summary() {
       restart="none"
     fi
 
-    cpu="${CPU_MAP["$cname"]:-"-"}"
+    cpu_val="${CPU_MAP["$cname"]:-"-"}"
     mem="${MEM_USAGE_MAP["$cname"]:-"-"}"
-    mem_pct="${MEM_PCT_MAP["$cname"]:-""}"
-    if [ "$mem" != "-" ] && [ -n "$mem_pct" ]; then
-      mem="$mem ($mem_pct)"
+    mem_pct_val="${MEM_PCT_MAP["$cname"]:-""}"
+    if [ "$mem" != "-" ] && [ -n "$mem_pct_val" ]; then
+      mem="$mem ($mem_pct_val)"
     fi
 
-    printf '%-22s %-18s %-18s %-10s %-22s %-10s %-s\n' \
-      "$cname" "${image:0:17}" "$status" "$cpu" "$mem" "$restart" "$health"
+    printf '%-22s %-22s %-20s %-10s %-30s %-14s %-s\n' \
+      "$cname" "${image:0:21}" "$status" "$cpu_val" "$mem" "$restart" "$health"
   done < <(docker ps -a --format '{{.Names}}||{{.Image}}||{{.Status}}||{{.Ports}}||{{.ID}}')
 }
 
@@ -622,14 +675,14 @@ stats_profile() {
   local i
   for ((i = 1; i <= samples; i++)); do
     local line
-    line=$(docker stats --no-stream --format '{{.CPUPerc}}||{{.MemUsage}}||{{.MemPerc}}' "$container_name" 2>/dev/null || true)
+    line=$(docker stats --no-stream --format '{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}' "$container_name" 2>/dev/null || true)
     if [ -z "$line" ]; then
       echo "docker stats returned no data; container may have stopped."
       break
     fi
 
     local cpu mem_usage mem_perc
-    IFS='||' read -r cpu mem_usage mem_perc <<<"$line"
+    IFS=$'\t' read -r cpu mem_usage mem_perc <<<"$line"
 
     cpu=${cpu%%%}
     mem_perc=${mem_perc%%%}
