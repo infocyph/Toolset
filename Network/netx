@@ -2,14 +2,83 @@
 # netx - Network toolbox for diagnostics, security and benchmarks
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.3.0"
 
-# -------------------- Helpers --------------------
+# -------------------- Capability & Color Setup --------------------
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-err()  { printf 'netx: %s\n' "$*" >&2; }
-die()  { err "$@"; exit 1; }
+# Time helpers (no python dependency, safe on busybox too)
+now_ns() {
+  local ns
+  if ns=$(date +%s%N 2>/dev/null); then
+    printf '%s\n' "$ns"
+  else
+    # fallback: seconds -> ns
+    printf '%s000000000\n' "$(date +%s)"
+  fi
+}
+
+now_ms() {
+  local ns
+  ns=$(now_ns)
+  printf '%s\n' "$((ns / 1000000))"
+}
+
+# Color detection (NETX_COLOR=never|auto|always)
+NETX_COLOR="${NETX_COLOR:-auto}"
+
+_supports_color() {
+  [[ ! -t 1 ]] && [[ "$NETX_COLOR" != "always" ]] && return 1
+  [[ "$NETX_COLOR" == "never" ]] && return 1
+  return 0
+}
+
+if _supports_color; then
+  if tput setaf 1 >/dev/null 2>&1; then
+    c_bold=$(tput bold)
+    c_dim=$(tput dim)
+    c_red=$(tput setaf 1)
+    c_green=$(tput setaf 2)
+    c_yellow=$(tput setaf 3)
+    c_blue=$(tput setaf 4)
+    c_magenta=$(tput setaf 5)
+    c_cyan=$(tput setaf 6)
+    c_reset=$(tput sgr0)
+  else
+    c_bold=$'\033[1m'
+    c_dim=$'\033[2m'
+    c_red=$'\033[31m'
+    c_green=$'\033[32m'
+    c_yellow=$'\033[33m'
+    c_blue=$'\033[34m'
+    c_magenta=$'\033[35m'
+    c_cyan=$'\033[36m'
+    c_reset=$'\033[0m'
+  fi
+else
+  c_bold= c_dim= c_red= c_green= c_yellow= c_blue= c_magenta= c_cyan= c_reset=
+fi
+
+c_header="${c_bold}${c_cyan}"
+c_ok="${c_green}"
+c_warn="${c_yellow}"
+c_err="${c_red}"
+c_muted="${c_dim}"
+
+err() { printf '%snetx:%s %s\n' "${c_err}" "${c_reset}" "$*" >&2; }
+die() {
+  err "$@"
+  exit 1
+}
+
+section() {
+  printf '\n%s== %s ==%s\n' "${c_header}" "$*" "${c_reset}"
+}
+
+kv() {
+  printf '  %s%-14s%s %s\n' "${c_muted}" "$1:" "${c_reset}" "$2"
+}
 
 usage() {
   cat <<'EOF'
@@ -34,7 +103,7 @@ HTTP / Proxy:
   netx proxy env
   netx proxy test <url>
 
-Benchmark (curl only):
+Benchmark (curl-only):
   netx bench http <url> [--requests N] [--concurrency N] [--timeout N]
   netx bench ping <host> [--count N]
 
@@ -71,12 +140,12 @@ IP / Interfaces / Routes:
   netx route show
 
 Watchers / Waiters:
-  netx watch ping <host> [--interval N] [--loss-threshold PCT]
+  netx watch ping <host> [--interval N]
   netx watch http <url> [--interval N] [--expect-status CODE]
   netx wait port <host> <port> [--timeout N]
 
 Stacks:
-  netx stack check <name>
+  netx stack check <name> [--config /custom/path]
 
 Namespaces:
   netx ns ls
@@ -92,17 +161,28 @@ Path / Firewall / Report:
 EOF
 }
 
-# Default config paths
 NETX_DIR="${HOME}/.netx"
 mkdir -p "$NETX_DIR"
 
-# -------------------- Low-level utility helpers --------------------
+split_csv() { tr ',' '\n' <<<"$1"; }
 
+is_private_ip() {
+  local ip="$1"
+  case "$ip" in
+  10.* | 192.168.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[0-1].* | 127.*) return 0 ;;
+  ::1 | fc* | fd* | fe80:*) return 0 ;;
+  esac
+  return 1
+}
+
+# Heuristics config
+SAFE_REMOTE_PORTS="22 53 80 123 443 587 993 995"
+SUSPICIOUS_COMM_REGEX='(bash|sh|zsh|fish|python[0-9]*|perl|php|ruby|node|nodejs|nc|ncat|socat|telnet|nmap|ssh|scp|sftp|curl|wget)'
+
+# Normalizer for ss/netstat lines used by guard/conn security features
 normalize_conn_ss_line() {
-  # Input: full ss -tunp line
-  # Output key: proto|local|remote|pid|comm|user
-  # shellcheck disable=SC2016
   awk '
+    NR==1 {next}
     {
       proto=$1
       local=$5
@@ -110,52 +190,72 @@ normalize_conn_ss_line() {
       pid="?"
       comm="?"
       user="?"
-      # users:((("pid","program"))), but format can vary
-      for (i=1;i<=NF;i++) {
-        if ($i ~ /users:\(\(".*.*/ ) {
-          gsub(/users:\(\("/, "", $i)
-          gsub(/"\)\)/, "", $i)
-          split($i, a, ",")
-          comm=a[1]
-          # pid=... is often separate field
-        }
-        if ($i ~ /pid=/) {
-          sub(/pid=/, "", $i)
-          pid=$i
-        }
-        if ($i ~ /uid=/) {
-          # we could map uid->user via getent, but too heavy here
-          # leave uid as-is or try id -nu
-          sub(/uid=/,"",$i)
-          uid=$i
-        }
+      if (match($0,/users:\(\("([^"]+)",pid=([0-9]+)/,m)) {
+        comm=m[1]; pid=m[2]
       }
       print proto"|"local"|"remote"|"pid"|"comm"|"user
     }
   '
 }
 
-is_private_ip() {
-  local ip="$1"
-  case "$ip" in
-    10.*|192.168.*|172.16.*|172.17.*|172.18.*|172.19.*|172.2[0-9].*|172.3[0-1].*)
-      return 0 ;;
-    127.*) return 0 ;;
-    ::1|fc*|fd*|fe80:*) return 0 ;;
-  esac
-  return 1
-}
+# Suspicious outbound scoring
+suspicious_score() {
+  local proto="$1" state="$2" local_addr="$3" remote_addr="$4" pid="$5" comm="$6"
+  local score=0
 
-split_csv() { # split "a,b,c" to lines
-  tr ',' '\n' <<<"$1"
-}
+  # Only care about established connections
+  [[ "$state" != "ESTAB" && "$state" != "ESTABLISHED" ]] && { echo 0; return; }
 
-now_ms() {
-  # Needs date +%s%3N
-  date +%s%3N 2>/dev/null || python - "$@" <<'PY'
-import time,sys
-print(int(time.time()*1000))
-PY
+  local remote_ip remote_port
+  remote_ip=${remote_addr%:*}
+  remote_port=${remote_addr##*:}
+
+  # Public destination
+  if ! is_private_ip "$remote_ip"; then
+    score=$((score + 1))
+  fi
+
+  # High remote ports not in "common safe" set
+  local safe=0 p
+  for p in $SAFE_REMOTE_PORTS; do
+    if [[ "$remote_port" == "$p" ]]; then
+      safe=1
+      break
+    fi
+  done
+  if [[ "$remote_port" -ge 1024 && "$safe" -eq 0 ]]; then
+    score=$((score + 1))
+  fi
+
+  # Suspicious process names
+  if [[ "$comm" =~ $SUSPICIOUS_COMM_REGEX ]]; then
+    score=$((score + 1))
+  fi
+
+  # Binary in temp-ish dirs
+  local exe_path=""
+  if [[ -n "${pid:-}" && -e "/proc/$pid/exe" ]]; then
+    exe_path=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+    case "$exe_path" in
+    /tmp/*|/dev/shm/*|/var/tmp/*)
+      score=$((score + 2))
+      ;;
+    esac
+  fi
+
+  # Non-root user + public dest + odd port
+  if [[ -n "${pid:-}" && -r "/proc/$pid/status" ]]; then
+    local uid uid_name
+    uid=$(awk '/^Uid:/{print $2}' "/proc/$pid/status" 2>/dev/null || echo "")
+    if [[ -n "$uid" ]]; then
+      uid_name=$(getent passwd "$uid" 2>/dev/null | cut -d: -f1 || echo "")
+      if [[ -n "$uid_name" && "$uid_name" != "root" ]] && ! is_private_ip "$remote_ip" && [[ "$safe" -eq 0 ]]; then
+        score=$((score + 1))
+      fi
+    fi
+  fi
+
+  echo "$score"
 }
 
 # -------------------- 1. Doctor --------------------
@@ -164,19 +264,20 @@ doctor_cmd() {
   local host="" port=443 do_http=0 do_tls=0 raw=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --port) port="$2"; shift;;
-      --http) do_http=1;;
-      --tls)  do_tls=1;;
-      --raw)  raw=1;;
-      *)
-        if [[ -z "$host" ]]; then host="$1"; else die "Unexpected arg: $1"; fi
-        ;;
+    --port)
+      port="$2"
+      shift
+      ;;
+    --http) do_http=1 ;;
+    --tls) do_tls=1 ;;
+    --raw) raw=1 ;;
+    *) [[ -z "$host" ]] && host="$1" || die "Unexpected arg: $1" ;;
     esac
     shift || true
   done
   [[ -z "$host" ]] && die "doctor: host required"
 
-  echo "== netx doctor: $host:$port =="
+  section "netx doctor: $host:$port"
 
   # DNS
   local dns_start dns_end dns_ms
@@ -184,89 +285,138 @@ doctor_cmd() {
   local dns_out="" dns_tool=""
   if have dig; then
     dns_tool="dig"
-    dns_out=$(dig +short "$host" A 2>/dev/null | head -n 3)
+    dns_out=$(dig +short "$host" A 2>/dev/null | head -n 5)
+    # fallback to NSS (/etc/hosts, etc.) if pure DNS returns nothing (e.g. localhost)
+    if [[ -z "$dns_out" ]] && have getent; then
+      dns_tool="getent"
+      dns_out=$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | head -n 5)
+      [[ -z "$dns_out" ]] && dns_out=$(getent hosts "$host" 2>/dev/null | awk '{print $1}' | head -n 5)
+    fi
   elif have getent; then
     dns_tool="getent"
-    dns_out=$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | head -n 3)
+    dns_out=$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | head -n 5)
+    [[ -z "$dns_out" ]] && dns_out=$(getent hosts "$host" 2>/dev/null | awk '{print $1}' | head -n 5)
   else
-    dns_tool="getent"
-    dns_out=$(getent hosts "$host" 2>/dev/null | awk '{print $1}' | head -n 3)
+    dns_tool="n/a"
+    dns_out=""
   fi
   dns_end=$(now_ms)
   dns_ms=$((dns_end - dns_start))
+
+  section "DNS"
+  kv "Resolver" "$dns_tool"
+  kv "Lookup ms" "$dns_ms"
   if [[ -n "$dns_out" ]]; then
-    echo "[DNS] ($dns_tool, ${dns_ms}ms):"
-    echo "$dns_out"
+    echo "  Answers:"
+    echo "$dns_out" | sed 's/^/    - /'
   else
-    echo "[DNS] FAILED ($dns_tool, ${dns_ms}ms)"
+    echo "  ${c_err}FAILED (no DNS/NSS answer)${c_reset}"
   fi
 
-  # Ping (best-effort)
+  # Ping (summary only)
+  section "Ping"
   if have ping; then
-    local ping_line
-    ping_line=$(ping -c 3 -W 2 "$host" 2>/dev/null | tail -n 1)
-    echo "[PING] $ping_line"
+    local rtt
+    rtt=$(ping -c 3 -W 2 "$host" 2>/dev/null | tail -n 1)
+    # Match both:
+    #   rtt min/avg/max/mdev = 1.24/1.37/1.73/0.13 ms
+    #   round-trip min/avg/max/stddev = ...
+    if [[ "$rtt" =~ =[[:space:]]*([0-9.]+)/([0-9.]+)/([0-9.]+)/([0-9.]+)[[:space:]]ms ]]; then
+      local min avg max mdev
+      min="${BASH_REMATCH[1]}"
+      avg="${BASH_REMATCH[2]}"
+      max="${BASH_REMATCH[3]}"
+      mdev="${BASH_REMATCH[4]}"
+      kv "Min" "${min} ms"
+      kv "Avg" "${avg} ms"
+      kv "Max" "${max} ms"
+      kv "Jitter" "${mdev} ms"
+    else
+      echo "  (no RTT summary)"
+    fi
   else
-    echo "[PING] ping not available"
+    echo "  ping not available"
   fi
 
-  # Route (traceroute minimal)
+  # Route
+  section "Route (first 5 hops)"
   if have traceroute; then
-    echo "[ROUTE] (first 3 hops)"
-    traceroute -n -m 10 "$host" 2>/dev/null | head -n 4
+    traceroute -n -m 20 "$host" 2>/dev/null | head -n 6
+  elif have mtr; then
+    mtr -n -c 2 -r -m 10 "$host" 2>/dev/null
   else
-    echo "[ROUTE] traceroute not available"
+    echo "  traceroute/mtr not available"
   fi
 
   # Port check
+  section "Port check"
   if have nc; then
     if nc -z -w 3 "$host" "$port" 2>/dev/null; then
-      echo "[PORT] $host:$port reachable"
+      echo "  ${c_ok}$host:$port reachable${c_reset}"
     else
-      echo "[PORT] $host:$port NOT reachable"
+      echo "  ${c_err}$host:$port NOT reachable${c_reset}"
     fi
   else
-    echo "[PORT] nc not available"
+    echo "  nc not available"
   fi
 
   # HTTP
-  if (( do_http )); then
+  if ((do_http)); then
+    section "HTTP"
     if ! have curl; then
-      echo "[HTTP] curl not available"
+      echo "  curl not available"
     else
-      echo "[HTTP]"
-      curl -sS -o /dev/null -w '  status=%{http_code} time_total=%{time_total}s size=%{size_download}B redirect=%{num_redirects}\n' \
-        --max-time 10 "http://$host:$port" || echo "  HTTP request failed"
+      local status time_total size redirect
+      read -r status time_total size redirect < <(
+        curl -sS -o /dev/null --max-time 10 \
+          -w '%{http_code} %{time_total} %{size_download} %{num_redirects}' \
+          "http://$host:$port" || echo "000 0 0 0"
+      )
+      kv "Status" "$status"
+      kv "Total time" "${time_total}s"
+      kv "Size" "${size}B"
+      kv "Redirects" "$redirect"
     fi
   fi
 
   # TLS
-  if (( do_tls )) || [[ "$port" -eq 443 ]]; then
+  if ((do_tls)) || [[ "$port" -eq 443 ]]; then
+    section "TLS"
     if have openssl; then
-      echo "[TLS]"
-      echo | openssl s_client -servername "$host" -connect "$host:$port" 2>/dev/null \
-        | openssl x509 -noout -subject -issuer -dates || echo "  TLS info failed"
+      local tmp
+      tmp=$(mktemp)
+      local cmd="openssl s_client -servername $host -connect $host:$port"
+      if have timeout; then
+        cmd="timeout 5 $cmd"
+      fi
+      if echo | eval "$cmd" 2>/dev/null | openssl x509 -noout -subject -issuer -dates >"$tmp"; then
+        sed 's/^/  /' "$tmp"
+      else
+        echo "  failed to fetch certificate"
+      fi
+      rm -f "$tmp"
     else
-      echo "[TLS] openssl not available"
+      echo "  openssl not available"
     fi
   fi
 
-  (( raw )) && echo "[RAW] doctor completed"
+  ((raw)) && echo -e "\n[RAW] doctor completed"
 }
 
 # -------------------- 2. DNS --------------------
 
 dns_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    resolve) dns_resolve "$@";;
-    dump)    dns_dump "$@";;
-    compare) dns_compare "$@";;
-    trace)   dns_trace "$@";;
-    reverse) dns_reverse "$@";;
-    system)  dns_system;;
-    hosts)   dns_hosts "$@";;
-    *) die "dns: unknown subcommand '$sub'";;
+  resolve) dns_resolve "$@" ;;
+  dump) dns_dump "$@" ;;
+  compare) dns_compare "$@" ;;
+  trace) dns_trace "$@" ;;
+  reverse) dns_reverse "$@" ;;
+  system) dns_system ;;
+  hosts) dns_hosts "$@" ;;
+  *) die "dns: unknown subcommand '$sub'" ;;
   esac
 }
 
@@ -274,9 +424,15 @@ dns_resolve() {
   local name="" type="A" resolver=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --type) type="$2"; shift;;
-      --resolver) resolver="$2"; shift;;
-      *) name="$1";;
+    --type)
+      type="$2"
+      shift
+      ;;
+    --resolver)
+      resolver="$2"
+      shift
+      ;;
+    *) name="$1" ;;
     esac
     shift || true
   done
@@ -298,18 +454,17 @@ dns_dump() {
   local name="" full=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --full) full=1;;
-      *) name="$1";;
+    --full) full=1 ;;
+    *) name="$1" ;;
     esac
     shift || true
   done
   [[ -z "$name" ]] && die "dns dump: name required"
   local types="A AAAA CNAME MX NS TXT"
-  [[ $full -eq 1 ]] && types="A AAAA CNAME MX NS TXT SRV"
+  ((full)) && types="A AAAA CNAME MX NS TXT SRV"
   for t in $types; do
-    echo "[$t]"
+    section "[$t]"
     dns_resolve "$name" --type "$t" || true
-    echo
   done
 }
 
@@ -317,18 +472,23 @@ dns_compare() {
   local name="" type="A" resolvers=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --type) type="$2"; shift;;
-      --resolver) resolvers="$2"; shift;;
-      *) name="$1";;
+    --type)
+      type="$2"
+      shift
+      ;;
+    --resolver)
+      resolvers="$2"
+      shift
+      ;;
+    *) name="$1" ;;
     esac
     shift || true
   done
   [[ -z "$name" ]] && die "dns compare: name required"
   [[ -z "$resolvers" ]] && resolvers="1.1.1.1,8.8.8.8,9.9.9.9"
   for r in $(split_csv "$resolvers"); do
-    echo "Resolver $r:"
+    section "Resolver $r"
     dns_resolve "$name" --type "$type" --resolver "$r" || echo "  (failed)"
-    echo
   done
 }
 
@@ -336,17 +496,17 @@ dns_trace() {
   local name="" type="A"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --type) type="$2"; shift;;
-      *) name="$1";;
+    --type)
+      type="$2"
+      shift
+      ;;
+    *) name="$1" ;;
     esac
     shift || true
   done
   [[ -z "$name" ]] && die "dns trace: name required"
-  if have dig; then
-    dig "$name" "$type" +trace
-  else
-    die "dns trace: dig required"
-  fi
+  have dig || die "dns trace: dig required"
+  dig "$name" "$type" +trace
 }
 
 dns_reverse() {
@@ -362,11 +522,14 @@ dns_reverse() {
 }
 
 dns_system() {
-  echo "[/etc/resolv.conf]"
-  [[ -f /etc/resolv.conf ]] && sed 's/^/  /' /etc/resolv.conf || echo "  not found"
+  section "/etc/resolv.conf"
+  if [[ -f /etc/resolv.conf ]]; then
+    sed 's/^/  /' /etc/resolv.conf
+  else
+    echo "  not found"
+  fi
   if have systemd-resolve; then
-    echo
-    echo "[systemd-resolve --status]"
+    section "systemd-resolve --status"
     systemd-resolve --status 2>/dev/null | sed 's/^/  /'
   fi
 }
@@ -374,49 +537,70 @@ dns_system() {
 dns_hosts() {
   local host="${1:-}"
   [[ -z "$host" ]] && die "dns hosts: host required"
+  section "/etc/hosts"
   if [[ -f /etc/hosts ]]; then
-    grep -iE "[[:space:]]$host([[:space:]]|\$)" /etc/hosts || echo "No entry for $host"
+    if ! grep -iE "[[:space:]]$host([[:space:]]|\$)" /etc/hosts; then
+      echo "  No entry for $host"
+    fi
   else
-    echo "/etc/hosts not found"
+    echo "  /etc/hosts not found"
   fi
 }
 
 # -------------------- 3. HTTP / Proxy --------------------
 
+require_curl() { have curl || die "curl required"; }
+
 http_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    get)   http_get "$@";;
-    head)  http_head "$@";;
-    trace) http_trace "$@";;
-    *) die "http: unknown subcommand '$sub'";;
+  get) http_get "$@" ;;
+  head) http_head "$@" ;;
+  trace) http_trace "$@" ;;
+  *) die "http: unknown subcommand '$sub'" ;;
   esac
 }
-
-require_curl() { have curl || die "curl required"; }
 
 http_get() {
   require_curl
   local url="" headers=0 body=0 json=0 timeout=5
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --headers) headers=1;;
-      --body)    body=1;;
-      --json)    json=1;;
-      --timeout) timeout="$2"; shift;;
-      *) url="$1";;
+    --headers) headers=1 ;;
+    --body) body=1 ;;
+    --json) json=1 ;;
+    --timeout)
+      timeout="$2"
+      shift
+      ;;
+    *) url="$1" ;;
     esac
     shift || true
   done
   [[ -z "$url" ]] && die "http get: url required"
 
+  section "HTTP GET"
+  kv "URL" "$url"
+  kv "Timeout" "${timeout}s"
+
   local curl_args=(-sS --max-time "$timeout")
-  (( headers )) && curl_args+=(-D -)
-  (( json )) && curl_args+=(-H 'Accept: application/json')
-  if (( body )); then
-    curl "${curl_args[@]}" "$url"
+  ((json)) && curl_args+=(-H 'Accept: application/json')
+
+  if ((body || headers)); then
+    ((headers)) && curl "${curl_args[@]}" -D - "$url" || true
+    ((body)) && curl "${curl_args[@]}" "$url"
   else
-    curl "${curl_args[@]}" -o /dev/null -w 'status=%{http_code} time_total=%{time_total}s size=%{size_download}B redirect=%{num_redirects}\n' "$url"
+    local status time_total size redirects
+    read -r status time_total size redirects < <(
+      curl "${curl_args[@]}" -o /dev/null \
+        -w '%{http_code} %{time_total} %{size_download} %{num_redirects}' \
+        "$url" || echo "000 0 0 0"
+    )
+    kv "Status" "$status"
+    kv "Total time" "${time_total}s"
+    kv "Size" "${size}B"
+    kv "Redirects" "$redirects"
   fi
 }
 
@@ -425,12 +609,16 @@ http_head() {
   local url="" timeout=5
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --timeout) timeout="$2"; shift;;
-      *) url="$1";;
+    --timeout)
+      timeout="$2"
+      shift
+      ;;
+    *) url="$1" ;;
     esac
     shift || true
   done
   [[ -z "$url" ]] && die "http head: url required"
+  section "HTTP HEAD $url"
   curl -sS -I --max-time "$timeout" "$url"
 }
 
@@ -439,52 +627,78 @@ http_trace() {
   local url="" timeout=5
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --timeout) timeout="$2"; shift;;
-      *) url="$1";;
+    --timeout)
+      timeout="$2"
+      shift
+      ;;
+    *) url="$1" ;;
     esac
     shift || true
   done
   [[ -z "$url" ]] && die "http trace: url required"
 
-  curl -sS -o /dev/null --max-time "$timeout" \
-    -w 'dns=%{time_namelookup}s connect=%{time_connect}s tls=%{time_appconnect}s ttfb=%{time_starttransfer}s total=%{time_total}s status=%{http_code} size=%{size_download}B redirect=%{num_redirects}\n' \
-    "$url"
+  section "HTTP TRACE"
+  kv "URL" "$url"
+  kv "Timeout" "${timeout}s"
+
+  local out
+  read -r out < <(
+    curl -sS -o /dev/null --max-time "$timeout" \
+      -w 'dns=%{time_namelookup}s connect=%{time_connect}s tls=%{time_appconnect}s ttfb=%{time_starttransfer}s total=%{time_total}s status=%{http_code} size=%{size_download}B redirects=%{num_redirects}' \
+      "$url" || echo "dns=0 connect=0 tls=0 ttfb=0 total=0 status=000 size=0 redirects=0"
+  )
+  for tok in $out; do
+    k=${tok%%=*}
+    v=${tok#*=}
+    case "$k" in
+    dns) kv "DNS" "$v" ;;
+    connect) kv "Connect" "$v" ;;
+    tls) kv "TLS" "$v" ;;
+    ttfb) kv "TTFB" "$v" ;;
+    total) kv "Total" "$v" ;;
+    status) kv "Status" "$v" ;;
+    size) kv "Size" "$v" ;;
+    redirects) kv "Redirects" "$v" ;;
+    esac
+  done
 }
 
 proxy_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    env) proxy_env;;
-    test) proxy_test "$@";;
-    *) die "proxy: unknown subcommand '$sub'";;
+  env) proxy_env ;;
+  test) proxy_test "$@" ;;
+  *) die "proxy: unknown subcommand '$sub'" ;;
   esac
 }
 
 proxy_env() {
-  echo "HTTP_PROXY=${HTTP_PROXY:-}"
-  echo "HTTPS_PROXY=${HTTPS_PROXY:-}"
-  echo "NO_PROXY=${NO_PROXY:-${no_proxy:-}}"
+  section "Proxy env"
+  kv "HTTP_PROXY" "${HTTP_PROXY:-}"
+  kv "HTTPS_PROXY" "${HTTPS_PROXY:-}"
+  kv "NO_PROXY" "${NO_PROXY:-${no_proxy:-}}"
 }
 
 proxy_test() {
   require_curl
   local url="${1:-}"
   [[ -z "$url" ]] && die "proxy test: url required"
-  echo "[Direct]"
+  section "Proxy test (direct)"
   NO_PROXY="*" no_proxy="*" curl -sS -o /dev/null -w 'status=%{http_code} time=%{time_total}s\n' "$url" || echo "  failed"
-  echo
-  echo "[Proxy env]"
+  section "Proxy test (env)"
   curl -sS -o /dev/null -w 'status=%{http_code} time=%{time_total}s\n' "$url" || echo "  failed"
 }
 
-# -------------------- 4. Benchmarks (curl only) --------------------
+# -------------------- 4. Benchmarks (curl-only) --------------------
 
 bench_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    http) bench_http "$@";;
-    ping) bench_ping "$@";;
-    *) die "bench: unknown subcommand '$sub'";;
+  http) bench_http "$@" ;;
+  ping) bench_ping "$@" ;;
+  *) die "bench: unknown subcommand '$sub'" ;;
   esac
 }
 
@@ -493,114 +707,152 @@ bench_http() {
   local url="" requests=50 concurrency=5 timeout=5
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --requests) requests="$2"; shift;;
-      --concurrency) concurrency="$2"; shift;;
-      --timeout) timeout="$2"; shift;;
-      *) url="$1";;
+    --requests)
+      requests="$2"
+      shift
+      ;;
+    --concurrency)
+      concurrency="$2"
+      shift
+      ;;
+    --timeout)
+      timeout="$2"
+      shift
+      ;;
+    *) url="$1" ;;
     esac
     shift || true
   done
   [[ -z "$url" ]] && die "bench http: url required"
 
-  # Build tasks: each line is a curl invocation
+  section "HTTP Benchmark"
+  kv "URL" "$url"
+  kv "Requests" "$requests"
+  kv "Concurrency" "$concurrency"
+  kv "Timeout" "${timeout}s"
+
   local tmp_times
   tmp_times=$(mktemp)
-  trap 'rm -f "$tmp_times"' EXIT
 
-  # Generate N jobs and run with xargs -P (multi-curl)
+  # Multi-curl using xargs -P
   seq 1 "$requests" | xargs -I{} -P "$concurrency" bash -c '
-    url="$0"; timeout="$1";
-    start=$(date +%s%N 2>/dev/null || python - <<PY
-import time; print(int(time.time()*1e9))
-PY
-)
-    code=$(curl -sS -o /dev/null --max-time "$timeout" -w "%{http_code}" "$url" || echo 0)
-    end=$(date +%s%N 2>/dev/null || python - <<PY
-import time; print(int(time.time()*1e9))
-PY
-)
+    url="$0"; timeout="$1"
+    start=$(date +%s%N 2>/dev/null || echo "$(date +%s)000000000")
+    code=$(curl -sS -o /dev/null --max-time "$timeout" -w "%{http_code}" "$url" 2>/dev/null || echo 0)
+    end=$(date +%s%N 2>/dev/null || echo "$(date +%s)000000000")
     dur_ns=$((end-start))
-    echo "$code $dur_ns"
-  ' "$url" "$timeout" >"$tmp_times"
+    printf "%s %s\n" "$code" "$dur_ns"
+  ' "$url" "$timeout" >"$tmp_times" || true
 
-  # Aggregate
-  local total=0 ok=0 codes=() durations=()
-  while read -r code ns; do
-    (( total++ ))
-    (( code >= 200 && code < 400 )) && (( ok++ ))
-    codes+=("$code")
-    durations+=("$ns")
+  local total=0 ok=0
+  while read -r code _; do
+    ((total++))
+    ((code >= 200 && code < 400)) && ((ok++))
   done <"$tmp_times"
 
-  if (( total == 0 )); then
-    echo "No successful measurements"
+  if ((total == 0)); then
+    echo "  No measurements"
+    rm -f "$tmp_times"
     return 1
   fi
 
-  # Convert ns to ms floats in awk and compute stats
   awk -v total="$total" -v ok="$ok" '
     {
-      code=$1; ns=$2;
-      ms=ns/1000000.0;
-      times[count++]=ms;
+      ns=$2
+      ms=ns/1000000.0
+      times[count++]=ms
     }
     END {
-      n=count;
-      if (n==0) { print "No data"; exit }
-      # sort
+      n=count
+      if (n==0) { print "  No data"; exit }
       for (i=0;i<n;i++) {
         for (j=i+1;j<n;j++) {
           if (times[j]<times[i]) {
-            tmp=times[i]; times[i]=times[j]; times[j]=tmp;
+            tmp=times[i]; times[i]=times[j]; times[j]=tmp
           }
         }
       }
-      min=times[0]; max=times[n-1];
-      sum=0;
-      for (i=0;i<n;i++) sum+=times[i];
-      avg=sum/n;
-      # p95 and p99 indices
-      p95_idx=int(0.95*(n-1)+0.5);
-      p99_idx=int(0.99*(n-1)+0.5);
-      p95=times[p95_idx];
-      p99=times[p99_idx];
-      rps = total>0 ? (total / (sum/1000.0)) : 0;
-      print "Requests:", total;
-      print "Success :", ok;
-      print "Min(ms) :", min;
-      print "Avg(ms) :", avg;
-      print "P95(ms) :", p95;
-      print "P99(ms) :", p99;
-      print "Max(ms) :", max;
-      print "Req/s   :", rps;
+      min=times[0]; max=times[n-1]
+      sum=0
+      for (i=0;i<n;i++) sum+=times[i]
+      avg=sum/n
+      p95=times[int(0.95*(n-1)+0.5)]
+      p99=times[int(0.99*(n-1)+0.5)]
+      rps = total>0 ? (total / (sum/1000.0)) : 0
+      printf "  Requests : %d\n", total
+      printf "  Success  : %d\n", ok
+      printf "  Min(ms)  : %.2f\n", min
+      printf "  Avg(ms)  : %.2f\n", avg
+      printf "  P95(ms)  : %.2f\n", p95
+      printf "  P99(ms)  : %.2f\n", p99
+      printf "  Max(ms)  : %.2f\n", max
+      printf "  Req/s    : %.2f\n", rps
     }
   ' "$tmp_times"
+
+  rm -f "$tmp_times"
 }
 
 bench_ping() {
   local host="" count=50
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --count) count="$2"; shift;;
-      *) host="$1";;
+    --count)
+      count="$2"
+      shift
+      ;;
+    *) host="$1" ;;
     esac
     shift || true
   done
   [[ -z "$host" ]] && die "bench ping: host required"
   have ping || die "ping required"
+
+  section "Ping Benchmark"
+  kv "Host" "$host"
+  kv "Count" "$count"
+
   ping -c "$count" "$host"
+  local rtt
+  rtt=$(ping -c "$count" -W 2 "$host" 2>/dev/null | tail -n 1)
+  if [[ "$rtt" =~ =[[:space:]]*([0-9.]+)/([0-9.]+)/([0-9.]+)/([0-9.]+)[[:space:]]ms ]]; then
+    local min avg max mdev
+    min="${BASH_REMATCH[1]}"
+    avg="${BASH_REMATCH[2]}"
+    max="${BASH_REMATCH[3]}"
+    mdev="${BASH_REMATCH[4]}"
+    section "RTT Summary"
+    kv "Min" "${min} ms"
+    kv "Avg" "${avg} ms"
+    kv "Max" "${max} ms"
+    kv "Jitter" "${mdev} ms"
+  fi
 }
 
 # -------------------- 5. TLS --------------------
 
 tls_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    info)   tls_info "$@";;
-    verify) tls_verify "$@";;
-    chain)  tls_chain "$@";;
-    *) die "tls: unknown subcommand '$sub'";;
+  info) tls_info "$@" ;;
+  verify) tls_verify "$@" ;;
+  chain) tls_chain "$@" ;;
+  *) die "tls: unknown subcommand '$sub'" ;;
   esac
+}
+
+_tls_s_client() {
+  local host="$1" port="$2"; shift 2
+  local extra=("$@")
+  local cmd="openssl s_client -servername $host -connect $host:$port"
+  if ((${#extra[@]})); then
+    cmd+=" ${extra[*]}"
+  fi
+  if have timeout; then
+    cmd="timeout 5 $cmd"
+  fi
+  echo | eval "$cmd" 2>/dev/null
 }
 
 tls_info() {
@@ -608,14 +860,36 @@ tls_info() {
   local host="" port=443
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --port) port="$2"; shift;;
-      *) host="$1";;
+    --port)
+      port="$2"
+      shift
+      ;;
+    *) host="$1" ;;
     esac
     shift || true
   done
   [[ -z "$host" ]] && die "tls info: host required"
-  echo | openssl s_client -servername "$host" -connect "$host:$port" 2>/dev/null \
-    | openssl x509 -noout -subject -issuer -dates
+
+  section "TLS Info"
+  kv "Host" "$host"
+  kv "Port" "$port"
+
+  local tmp
+  tmp=$(mktemp)
+  if _tls_s_client "$host" "$port" | openssl x509 -noout -subject -issuer -dates >"$tmp"; then
+    local subject issuer notBefore notAfter
+    subject=$(grep '^subject=' "$tmp" | sed 's/^subject= *//')
+    issuer=$(grep '^issuer=' "$tmp" | sed 's/^issuer= *//')
+    notBefore=$(grep '^notBefore=' "$tmp" | sed 's/^notBefore=//')
+    notAfter=$(grep '^notAfter=' "$tmp" | sed 's/^notAfter=//')
+    kv "Subject" "$subject"
+    kv "Issuer" "$issuer"
+    kv "Valid from" "$notBefore"
+    kv "Valid to" "$notAfter"
+  else
+    echo "  Failed to retrieve certificate (no TLS or port closed)"
+  fi
+  rm -f "$tmp"
 }
 
 tls_verify() {
@@ -623,41 +897,46 @@ tls_verify() {
   local host="" port=443 strict=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --port) port="$2"; shift;;
-      --strict) strict=1;;
-      *) host="$1";;
+    --port)
+      port="$2"
+      shift
+      ;;
+    --strict) strict=1 ;; # reserved for future, currently unused
+    *) host="$1" ;;
     esac
     shift || true
   done
   [[ -z "$host" ]] && die "tls verify: host required"
 
-  local cert tmp
-  tmp=$(mktemp)
-  echo | openssl s_client -servername "$host" -connect "$host:$port" 2>/dev/null \
-    | openssl x509 -noout -dates -issuer -subject >"$tmp" || true
-  [[ ! -s "$tmp" ]] && { echo "TLS: FAILED to retrieve cert"; rm -f "$tmp"; return 1; }
+  section "TLS Verify"
+  kv "Host" "$host"
+  kv "Port" "$port"
 
-  echo "[CERT]"
-  cat "$tmp"
+  local tmp
+  tmp=$(mktemp)
+  if ! _tls_s_client "$host" "$port" | openssl x509 -noout -dates -issuer -subject >"$tmp"; then
+    echo "  Failed to retrieve certificate"
+    rm -f "$tmp"
+    return 1
+  fi
 
   local notafter
   notafter=$(grep notAfter "$tmp" | sed 's/^notAfter=//')
-  if [[ -n "$notafter" ]]; then
-    local end_epoch now
-    end_epoch=$(date -d "$notafter" +%s 2>/dev/null || echo 0)
-    now=$(date +%s)
-    local days_left=$(( (end_epoch - now) / 86400 ))
-    echo
-    echo "Days remaining: $days_left"
-    if (( days_left < 0 )); then
-      echo "Status: EXPIRED"
-    elif (( days_left < 30 )); then
-      echo "Status: WARN (expiring soon)"
-    else
-      echo "Status: OK"
-    fi
-  fi
+  local end_epoch now days_left
+  end_epoch=$(date -d "$notafter" +%s 2>/dev/null || echo 0)
+  now=$(date +%s)
+  days_left=$(((end_epoch - now) / 86400))
 
+  kv "Not after" "$notafter"
+  kv "Days left" "$days_left"
+
+  if ((days_left < 0)); then
+    kv "Status" "${c_err}EXPIRED${c_reset}"
+  elif ((days_left < 30)); then
+    kv "Status" "${c_warn}WARN (expiring soon)${c_reset}"
+  else
+    kv "Status" "${c_ok}OK${c_reset}"
+  fi
   rm -f "$tmp"
 }
 
@@ -666,41 +945,41 @@ tls_chain() {
   local host="" port=443
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --port) port="$2"; shift;;
-      *) host="$1";;
+    --port)
+      port="$2"
+      shift
+      ;;
+    *) host="$1" ;;
     esac
     shift || true
   done
   [[ -z "$host" ]] && die "tls chain: host required"
-  echo | openssl s_client -servername "$host" -connect "$host:$port" -showcerts 2>/dev/null \
-    | awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/ {print} /END CERTIFICATE/ {print "---"}' \
-    | awk '
-      /BEGIN CERTIFICATE/ {buf=""; next}
-      /END CERTIFICATE/ {
-        print "[CERT]"
-        print buf | "openssl x509 -noout -subject -issuer"
-        close("openssl x509 -noout -subject -issuer")
-        next
-      }
-      {buf = buf $0 ORS}
-    '
+
+  section "TLS Chain"
+  kv "Host" "$host"
+  kv "Port" "$port"
+
+  _tls_s_client "$host" "$port" -showcerts |
+    awk '
+      /^subject=/ {sub(/^subject= */,""); s=$0}
+      /^issuer=/  {sub(/^issuer= */,""); i=$0; print "[CERT]"; print "  Subject: "s; print "  Issuer : "i; print ""}
+    ' || echo "  failed or no chain"
 }
 
 # -------------------- 6. Ports / Connections --------------------
 
-port_cmd() {
-  local sub="$1"; shift || true
-  case "$sub" in
-    ls)   port_ls "$@";;
-    find) port_find "$@";;
-    check) port_check "$@";;
-    scan) port_scan "$@";;
-    *) die "port: unknown subcommand '$sub'";;
-  esac
-}
+require_ss_or_netstat() { have ss || have netstat || die "need ss or netstat"; }
 
-require_ss_or_netstat() {
-  have ss || have netstat || die "need ss or netstat"
+port_cmd() {
+  local sub="$1"
+  shift || true
+  case "$sub" in
+  ls) port_ls "$@" ;;
+  find) port_find "$@" ;;
+  check) port_check "$@" ;;
+  scan) port_scan "$@" ;;
+  *) die "port: unknown subcommand '$sub'" ;;
+  esac
 }
 
 port_ls() {
@@ -708,23 +987,29 @@ port_ls() {
   local listening=0 tcp=0 udp=0 process=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --listening) listening=1;;
-      --tcp) tcp=1;;
-      --udp) udp=1;;
-      --process) process=1;;
+    --listening) listening=1 ;;
+    --tcp) tcp=1 ;;
+    --udp) udp=1 ;;
+    --process) process=1 ;;
     esac
     shift || true
   done
+  section "Listening ports"
+  printf '%-5s %-24s %-24s %-6s %-s\n' "Proto" "Local" "Peer" "PID" "Process"
   if have ss; then
-    local args=" -n"
-    (( listening )) && args+=" -l"
-    (( tcp )) && args+=" -t"
-    (( udp )) && args+=" -u"
-    (( process )) && args+=" -p"
-    # shellcheck disable=SC2086
-    ss$args
+    local ss_args=(-nH)
+    ((listening)) && ss_args+=(-l)
+    ((tcp)) && ss_args+=(-t)
+    ((udp)) && ss_args+=(-u)
+    ((process)) && ss_args+=(-p)
+    ss "${ss_args[@]}" 2>/dev/null | while read -r netid state recvq sendq local_addr peer_addr rest; do
+      local pid="" comm=""
+      if [[ "$rest" =~ pid=([0-9]+) ]]; then pid="${BASH_REMATCH[1]}"; fi
+      if [[ "$rest" =~ \"([^\"]+)\" ]]; then comm="${BASH_REMATCH[1]}"; fi
+      printf '%-5s %-24s %-24s %-6s %-s\n' "$netid" "$local_addr" "$peer_addr" "${pid:-?}" "${comm:-}"
+    done
   else
-    netstat -anp
+    netstat -lntup
   fi
 }
 
@@ -733,18 +1018,18 @@ port_find() {
   local port="${1:-}" process=0
   [[ -z "$port" ]] && die "port find: port required"
   [[ "${2:-}" == "--process" ]] && process=1
+  section "Port find :$port"
+  printf '%-5s %-24s %-24s %-6s %-s\n' "Proto" "Local" "Peer" "PID" "Process"
   if have ss; then
-    if (( process )); then
-      ss -lntup | grep ":$port " || true
-    else
-      ss -lnt | grep ":$port " || true
-    fi
+    ss -nH -lntup 2>/dev/null | grep -E ":$port[[:space:]]" | \
+      while read -r netid state recvq sendq local_addr peer_addr rest; do
+        local pid="" comm=""
+        if [[ "$rest" =~ pid=([0-9]+) ]]; then pid="${BASH_REMATCH[1]}"; fi
+        if [[ "$rest" =~ \"([^\"]+)\" ]]; then comm="${BASH_REMATCH[1]}"; fi
+        printf '%-5s %-24s %-24s %-6s %-s\n' "$netid" "$local_addr" "$peer_addr" "${pid:-?}" "${comm:-}"
+      done
   else
-    if (( process )); then
-      netstat -lntup | grep ":$port " || true
-    else
-      netstat -lnt | grep ":$port " || true
-    fi
+    netstat -lntup | grep ":$port " || true
   fi
 }
 
@@ -752,23 +1037,35 @@ port_check() {
   local host="" port="" timeout=3 udp=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --timeout) timeout="$2"; shift;;
-      --udp) udp=1;;
-      *)
-        if [[ -z "$host" ]]; then host="$1"
-        elif [[ -z "$port" ]]; then port="$1"
-        else die "Unexpected arg: $1"
-        fi
-        ;;
+    --timeout)
+      timeout="$2"
+      shift
+      ;;
+    --udp) udp=1 ;;
+    *)
+      if [[ -z "$host" ]]; then
+        host="$1"
+      elif [[ -z "$port" ]]; then
+        port="$1"
+      else
+        die "Unexpected arg: $1"
+      fi
+      ;;
     esac
     shift || true
   done
   [[ -z "$host" || -z "$port" ]] && die "port check: host and port required"
   have nc || die "nc required"
-  if (( udp )); then
-    nc -z -u -w "$timeout" "$host" "$port" && echo "OK" || { echo "FAIL"; return 1; }
+  if ((udp)); then
+    nc -z -u -w "$timeout" "$host" "$port" >/dev/null 2>&1 && echo "${c_ok}OK${c_reset}" || {
+      echo "${c_err}FAIL${c_reset}"
+      return 1
+    }
   else
-    nc -z -w "$timeout" "$host" "$port" && echo "OK" || { echo "FAIL"; return 1; }
+    nc -z -w "$timeout" "$host" "$port" >/dev/null 2>&1 && echo "${c_ok}OK${c_reset}" || {
+      echo "${c_err}FAIL${c_reset}"
+      return 1
+    }
   fi
 }
 
@@ -776,31 +1073,36 @@ port_scan() {
   local host="" ports="80,443,3306"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --ports) ports="$2"; shift;;
-      *) host="$1";;
+    --ports)
+      ports="$2"
+      shift
+      ;;
+    *) host="$1" ;;
     esac
     shift || true
   done
   [[ -z "$host" ]] && die "port scan: host required"
+  section "Port scan $host"
   for p in $(split_csv "$ports"); do
-    printf "%s:%s " "$host" "$p"
+    printf '%-22s ' "$host:$p"
     if port_check "$host" "$p" --timeout 2 >/dev/null 2>&1; then
-      echo "OPEN"
+      echo "${c_ok}OPEN${c_reset}"
     else
-      echo "CLOSED"
+      echo "${c_err}CLOSED${c_reset}"
     fi
   done
 }
 
-# Connection inspector
+# Connections (with security-centric view)
 
 conn_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    ls)      conn_ls "$@";;
-    record)  conn_record "$@";;
-    summary) conn_summary "$@";;
-    *) die "conn: unknown subcommand '$sub'";;
+  ls) conn_ls "$@" ;;
+  record) conn_record "$@" ;;
+  summary) conn_summary "$@" ;;
+  *) die "conn: unknown subcommand '$sub'" ;;
   esac
 }
 
@@ -809,39 +1111,51 @@ conn_ls() {
   local all=0 outbound=0 listening=0 suspicious=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --all) all=1;;
-      --outbound) outbound=1;;
-      --listening) listening=1;;
-      --suspicious-only) suspicious=1;;
+    --all) all=1 ;;
+    --outbound) outbound=1 ;;
+    --listening) listening=1 ;;
+    --suspicious-only) suspicious=1 ;;
     esac
     shift || true
   done
+  section "Connections"
+  printf '%-3s %-5s %-22s %-22s %-10s %-6s %-8s %-s\n' "!" "Proto" "Local" "Remote" "State" "PID" "Risk" "Process"
   if have ss; then
-    local args="-tunp"
-    (( listening )) && args="-lntup"
-    ss $args | awk 'NR==1 {next} {print}' | while read -r line; do
-      proto=$(awk '{print $1}' <<<"$line")
-      local_addr=$(awk '{print $5}' <<<"$line")
-      remote_addr=$(awk '{print $6}' <<<"$line")
-      state=$(awk '{print $2}' <<<"$line")
-      # Extract pid/program
-      pid=""; comm=""; user=""
-      if [[ "$line" =~ pid=([0-9]+) ]]; then pid="${BASH_REMATCH[1]}"; fi
-      if [[ "$line" =~ \"([^\"]+)\" ]]; then comm="${BASH_REMATCH[1]}"; fi
+    local args=(-nH -tunp)
+    ((listening)) && args=(-nH -lntup)
+    ss "${args[@]}" 2>/dev/null | while read -r netid state recvq sendq local_addr peer_addr rest; do
+      local pid="" comm=""
+      if [[ "$rest" =~ pid=([0-9]+) ]]; then pid="${BASH_REMATCH[1]}"; fi
+      if [[ "$rest" =~ \"([^\"]+)\" ]]; then comm="${BASH_REMATCH[1]}"; fi
 
-      if (( outbound )) && [[ "$state" != "ESTAB" ]]; then
+      if ((outbound)) && [[ "$state" != "ESTAB" && "$state" != "ESTABLISHED" ]]; then
         continue
       fi
-      if (( suspicious )); then
-        # Very rough heuristic: remote non-private and proc under /tmp or name odd (not implemented deeply)
-        remote_ip=${remote_addr%:*}
-        if is_private_ip "$remote_ip"; then
-          continue
+
+      local score suspicious_flag=0 risk_tag=""
+      score=$(suspicious_score "$netid" "$state" "$local_addr" "$peer_addr" "${pid:-}" "${comm:-}" 2>/dev/null || echo 0)
+      if [[ "$score" =~ ^[0-9]+$ ]] && (( score >= 2 )); then
+        suspicious_flag=1
+        if (( score >= 3 )); then
+          risk_tag="${c_err}HIGH${c_reset}"
+        else
+          risk_tag="${c_warn}MED${c_reset}"
         fi
       fi
 
-      printf "%-5s %-20s %-22s %-10s pid=%-6s proc=%s\n" \
-        "$proto" "$local_addr" "$remote_addr" "$state" "${pid:-?}" "${comm:-?}"
+      if ((suspicious)) && ((!suspicious_flag)); then
+        continue
+      fi
+
+      local marker=" "
+      local color=""
+      if ((suspicious_flag)); then
+        marker="${c_warn}*${c_reset}"
+        color="${c_warn}"
+      fi
+
+      printf '%s %-5s %s%-22s %-22s %-10s %-6s %-8s %-s%s\n' \
+        "$marker" "$netid" "$color" "$local_addr" "$peer_addr" "$state" "${pid:-?}" "$risk_tag" "${comm:-}" "${c_reset}"
     done
   else
     netstat -tunp
@@ -853,15 +1167,24 @@ conn_record() {
   local interval=5 duration=120 out="$NETX_DIR/connections.log"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --interval) interval="$2"; shift;;
-      --duration) duration="$2"; shift;;
-      --out) out="$2"; shift;;
+    --interval)
+      interval="$2"
+      shift
+      ;;
+    --duration)
+      duration="$2"
+      shift
+      ;;
+    --out)
+      out="$2"
+      shift
+      ;;
     esac
     shift || true
   done
   local end=$((SECONDS + duration))
   : >"$out"
-  while (( SECONDS < end )); do
+  while ((SECONDS < end)); do
     echo "### $(date -Is)" >>"$out"
     if have ss; then
       ss -tunp >>"$out" 2>/dev/null || true
@@ -874,25 +1197,33 @@ conn_record() {
 }
 
 conn_summary() {
-  local file="${1:-}"
-  if [[ "$file" == "--file" ]]; then
-    file="$2"
-  fi
+  local file=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --file)
+      file="$2"
+      shift
+      ;;
+    esac
+    shift || true
+  done
   [[ -z "$file" ]] && die "conn summary: --file path required"
   [[ -f "$file" ]] || die "File not found: $file"
+  section "Connection summary ($file)"
   echo "Unique remote endpoints:"
-  grep -E 'ESTAB|ESTABLISHED' "$file" | awk '{print $6}' | sort -u | sed 's/^/  /'
+  grep -E 'ESTAB|ESTABLISHED' "$file" | awk '{print $6}' | sort -u | sed 's/^/  - /'
 }
 
-# -------------------- 7. Outbound Guard --------------------
+# -------------------- 7. Outbound Guard (security-focused) --------------------
 
 guard_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    snapshot) guard_snapshot "$@";;
-    diff)     guard_diff "$@";;
-    watch)    guard_watch "$@";;
-    *) die "guard: unknown subcommand '$sub'";;
+  snapshot) guard_snapshot "$@" ;;
+  diff) guard_diff "$@" ;;
+  watch) guard_watch "$@" ;;
+  *) die "guard: unknown subcommand '$sub'" ;;
   esac
 }
 
@@ -903,16 +1234,25 @@ guard_snapshot() {
   local file="$guard_file_default"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --file) file="$2"; shift;;
+    --file)
+      file="$2"
+      shift
+      ;;
     esac
     shift || true
   done
   if have ss; then
-    ss -tunp | awk 'NR>1' | normalize_conn_ss_line | sort -u >"$file"
+    ss -tunp | normalize_conn_ss_line | sort -u >"$file"
   else
-    netstat -tunp | awk 'NR>2' | normalize_conn_ss_line | sort -u >"$file"
+    netstat -tunp | normalize_conn_ss_line | sort -u >"$file"
   fi
   echo "Baseline saved to $file"
+}
+
+_guard_pretty_line() {
+  local line="$1"
+  IFS='|' read -r proto local remote pid comm user <<<"$line"
+  printf '  %-5s %-22s -> %-22s %-6s %-s\n' "$proto" "$local" "$remote" "$pid" "$comm"
 }
 
 guard_diff() {
@@ -920,7 +1260,10 @@ guard_diff() {
   local file="$guard_file_default"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --file) file="$2"; shift;;
+    --file)
+      file="$2"
+      shift
+      ;;
     esac
     shift || true
   done
@@ -928,12 +1271,17 @@ guard_diff() {
   local tmp
   tmp=$(mktemp)
   if have ss; then
-    ss -tunp | awk 'NR>1' | normalize_conn_ss_line | sort -u >"$tmp"
+    ss -tunp | normalize_conn_ss_line | sort -u >"$tmp"
   else
-    netstat -tunp | awk 'NR>2' | normalize_conn_ss_line | sort -u >"$tmp"
+    netstat -tunp | normalize_conn_ss_line | sort -u >"$tmp"
   fi
-  echo "New outbound connections since baseline:"
-  comm -13 "$file" "$tmp" || true
+  section "New outbound connections since baseline (at $(date -Is))"
+  local any=0
+  while read -r line; do
+    any=1
+    _guard_pretty_line "$line"
+  done < <(comm -13 "$file" "$tmp" || true)
+  ((any == 0)) && echo "  (none)"
   rm -f "$tmp"
 }
 
@@ -943,12 +1291,30 @@ guard_watch() {
   local exclude_user="" exclude_port="" exclude_cidr=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --file) file="$2"; shift;;
-      --interval) interval="$2"; shift;;
-      --exclude-user) exclude_user="$2"; shift;;
-      --exclude-port) exclude_port="$2"; shift;;
-      --exclude-cidr) exclude_cidr="$2"; shift;;
-      --exec) exec_cmd="$2"; shift;;
+    --file)
+      file="$2"
+      shift
+      ;;
+    --interval)
+      interval="$2"
+      shift
+      ;;
+    --exclude-user)
+      exclude_user="$2"
+      shift
+      ;;
+    --exclude-port)
+      exclude_port="$2"
+      shift
+      ;;
+    --exclude-cidr)
+      exclude_cidr="$2"
+      shift
+      ;;
+    --exec)
+      exec_cmd="$2"
+      shift
+      ;;
     esac
     shift || true
   done
@@ -958,19 +1324,51 @@ guard_watch() {
     local tmp
     tmp=$(mktemp)
     if have ss; then
-      ss -tunp | awk 'NR>1' | normalize_conn_ss_line | sort -u >"$tmp"
+      ss -tunp | normalize_conn_ss_line | sort -u >"$tmp"
     else
-      netstat -tunp | awk 'NR>2' | normalize_conn_ss_line | sort -u >"$tmp"
+      netstat -tunp | normalize_conn_ss_line | sort -u >"$tmp"
     fi
-    local new
+
     new=$(comm -13 "$file" "$tmp" || true)
     if [[ -n "$new" ]]; then
-      echo "[ALERT] New outbound connection(s):"
-      echo "$new"
+      section "${c_err}ALERT${c_reset} at $(date -Is)"
+
+      while read -r line; do
+        [[ -z "$line" ]] && continue
+        IFS='|' read -r proto local remote pid comm user <<<"$line"
+        local_port=${local##*:}
+        remote_ip=${remote%:*}
+        remote_port=${remote##*:}
+
+        # Exclude by pseudo-user (really process name)
+        if [[ -n "$exclude_user" ]]; then
+          for e in $(split_csv "$exclude_user"); do
+            [[ "$comm" == "$e" ]] && continue 2
+          done
+        fi
+        # Exclude by port (local or remote)
+        if [[ -n "$exclude_port" ]]; then
+          for p in $(split_csv "$exclude_port"); do
+            [[ "$local_port" == "$p" || "$remote_port" == "$p" ]] && continue 2
+          done
+        fi
+        # Simple prefix-based CIDR-ish exclude (e.g. 10.,192.168.,172.16.)
+        if [[ -n "$exclude_cidr" ]]; then
+          for c in $(split_csv "$exclude_cidr"); do
+            case "$remote_ip" in
+            "$c"*) continue 2 ;;
+            esac
+          done
+        fi
+
+        _guard_pretty_line "$line"
+      done <<<"$new"
+
       if [[ -n "$exec_cmd" ]]; then
         echo "$new" | eval "$exec_cmd" || true
       fi
     fi
+
     mv "$tmp" "$file"
     sleep "$interval"
   done
@@ -979,10 +1377,11 @@ guard_watch() {
 # -------------------- 8. Security / Suspicious listeners --------------------
 
 sec_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    listeners) sec_listeners "$@";;
-    *) die "sec: unknown subcommand '$sub'";;
+  listeners) sec_listeners "$@" ;;
+  *) die "sec: unknown subcommand '$sub'" ;;
   esac
 }
 
@@ -991,19 +1390,24 @@ sec_listeners() {
   local ex_users="" ex_ports=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --exclude-user) ex_users="$2"; shift;;
-      --exclude-port) ex_ports="$2"; shift;;
+    --exclude-user)
+      ex_users="$2"
+      shift
+      ;;
+    --exclude-port)
+      ex_ports="$2"
+      shift
+      ;;
     esac
     shift || true
   done
+  section "Suspicious listeners"
   if have ss; then
-    ss -lntup | awk 'NR>1' | while read -r line; do
-      local_addr=$(awk '{print $5}' <<<"$line")
-      proto=$(awk '{print $1}' <<<"$line")
+    ss -nH -lntup 2>/dev/null | while read -r netid state recvq sendq local_addr peer_addr rest; do
+      local port pid="" comm=""
       port="${local_addr##*:}"
-      pid=""; comm=""
-      if [[ "$line" =~ pid=([0-9]+) ]]; then pid="${BASHREMATCH[1]}"; fi
-      if [[ "$line" =~ \"([^\"]+)\" ]]; then comm="${BASHREMATCH[1]}"; fi
+      if [[ "$rest" =~ pid=([0-9]+) ]]; then pid="${BASH_REMATCH[1]}"; fi
+      if [[ "$rest" =~ \"([^\"]+)\" ]]; then comm="${BASH_REMATCH[1]}"; fi
 
       # skip excluded ports
       if [[ -n "$ex_ports" ]]; then
@@ -1011,20 +1415,26 @@ sec_listeners() {
           [[ "$p" == "$port" ]] && continue 2
         done
       fi
+      # skip excluded "users" (actually process names)
+      if [[ -n "$ex_users" ]]; then
+        for u in $(split_csv "$ex_users"); do
+          [[ "$comm" == "$u" ]] && continue 2
+        done
+      fi
 
-      # try to get exe path
-      path=""
+      local path=""
       if [[ -n "$pid" && -e "/proc/$pid/exe" ]]; then
         path=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
       fi
 
-      warn=0
-      [[ "$local_addr" == "0.0.0.0"* ]] && warn=1
+      local warn=0
+      [[ "$local_addr" == "0.0.0.0"* || "$local_addr" == "[::]"* || "$local_addr" == "*:"* ]] && warn=1
       [[ "$port" -gt 1024 ]] && warn=1
       [[ "$path" == /tmp/* || "$path" == /dev/shm/* ]] && warn=1
 
-      (( warn )) || continue
-      echo "[WARN] $proto $local_addr pid=$pid proc=$comm path=$path"
+      ((warn)) || continue
+      printf '%s[WARN]%s %-5s %-22s pid=%-6s proc=%-15s path=%s\n' \
+        "$c_warn" "$c_reset" "$netid" "$local_addr" "${pid:-?}" "${comm:-?}" "${path:-?}"
     done
   else
     netstat -lntup
@@ -1034,23 +1444,38 @@ sec_listeners() {
 # -------------------- 9. IP / Interface / Routes --------------------
 
 ip_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    info) ip_info;;
-    public) ip_public "$@";;
-    *) die "ip: unknown subcommand '$sub'";;
+  info) ip_info ;;
+  public) ip_public "$@" ;;
+  *) die "ip: unknown subcommand '$sub'" ;;
   esac
 }
 
 ip_info() {
   have ip || die "ip command required"
-  echo "[Interfaces]"
-  ip -o addr show | awk '{print $2,$3,$4}' | sed 's/^/  /'
-  echo
-  echo "[Default route]"
+  section "Interfaces"
+  ip -o addr show | awk '
+    {
+      iface=$2; fam=$3; addr=$4;
+      sub(/\/.*/,"",addr);
+      if (fam=="inet")  ipv4[iface]=(ipv4[iface] ? ipv4[iface]", "addr : addr);
+      if (fam=="inet6") ipv6[iface]=(ipv6[iface] ? ipv6[iface]", "addr : addr);
+    }
+    END {
+      printf "%-15s %-30s %-40s\n", "Interface","IPv4","IPv6";
+      for (i in ipv4) {
+        printf "%-15s %-30s %-40s\n", i, ipv4[i], ipv6[i];
+      }
+      for (i in ipv6) if (!(i in ipv4)) {
+        printf "%-15s %-30s %-40s\n", i, "", ipv6[i];
+      }
+    }
+  '
+  section "Default route"
   ip route show default | sed 's/^/  /'
-  echo
-  echo "[DNS]"
+  section "DNS"
   dns_system
 }
 
@@ -1059,75 +1484,129 @@ ip_public() {
   local want4=0 want6=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --ipv4) want4=1;;
-      --ipv6) want6=1;;
+    --ipv4) want4=1 ;;
+    --ipv6) want6=1 ;;
     esac
     shift || true
   done
-  if (( !want4 && !want6 )); then want4=1; want6=1; fi
-  (( want4 )) && { echo -n "IPv4: "; curl -sS https://ipv4.icanhazip.com || echo "failed"; }
-  (( want6 )) && { echo -n "IPv6: "; curl -sS https://ipv6.icanhazip.com || echo "failed"; }
+  ((!want4 && !want6)) && {
+    want4=1
+    want6=1
+  }
+  section "Public IP"
+  if ((want4)); then
+    local ip4
+    ip4=$(curl -s https://api.seeip.org/jsonip 2>/dev/null | sed -n 's/.*"ip":"\([^"]*\)".*/\1/p')
+    [[ -z "$ip4" ]] && ip4=$(curl -s https://ipv4.icanhazip.com 2>/dev/null)
+    kv "IPv4" "${ip4:-failed}"
+  fi
+  if ((want6)); then
+    local ip6
+    ip6=$(curl -s "https://api.seeip.org/jsonip?format=json" 2>/dev/null | sed -n 's/.*"ip":"\([^"]*\)".*/\1/p')
+    [[ -z "$ip6" ]] && ip6=$(curl -s https://ipv6.icanhazip.com 2>/dev/null)
+    kv "IPv6" "${ip6:-failed}"
+  fi
 }
 
 if_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    ls) if_ls;;
-    stats) if_stats "$@";;
-    *) die "if: unknown subcommand '$sub'";;
+  ls) if_ls ;;
+  stats) if_stats "$@" ;;
+  *) die "if: unknown subcommand '$sub'" ;;
   esac
 }
 
 if_ls() {
   have ip || die "ip required"
-  ip -o link show | awk -F': ' '{print $1, $2}' | sed 's/^/  /'
+  section "Interfaces"
+  printf '%-6s %-20s %-25s\n' "Index" "Name" "IPv4 (primary)"
+
+  # Build IPv4 map: primary CIDR + extra count per interface
+  declare -A primary_ipv4
+  declare -A extra_ipv4
+
+  while read -r _ ifname fam addr _; do
+    [[ "$fam" != "inet" ]] && continue
+    cidr="$addr"
+    if [[ -z "${primary_ipv4[$ifname]:-}" ]]; then
+      primary_ipv4[$ifname]="$cidr"
+      extra_ipv4[$ifname]=0
+    else
+      extra_ipv4[$ifname]=$(( ${extra_ipv4[$ifname]} + 1 ))
+    fi
+  done < <(ip -o -4 addr show 2>/dev/null)
+
+  # Print all interfaces with primary IPv4 (if any)
+  while read -r idx name; do
+    local p extra=""
+    p="${primary_ipv4[$name]:-}"
+    if [[ -n "${extra_ipv4[$name]:-}" && ${extra_ipv4[$name]} -gt 0 ]]; then
+      extra=" (+${extra_ipv4[$name]})"
+    fi
+    printf '  %-6s %-20s %-25s\n' "$idx" "$name" "${p}${extra}"
+  done < <(ip -o link show | awk -F': ' '{gsub(/@.*/,"",$2); print $1, $2}')
 }
 
 if_stats() {
   have ip || die "ip required"
   local iface="${1:-}"
   [[ -z "$iface" ]] && die "if stats: iface required"
+  section "Interface stats: $iface"
   ip -s link show "$iface"
 }
 
 route_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    show) route_show;;
-    *) die "route: unknown subcommand '$sub'";;
+  show) route_show ;;
+  *) die "route: unknown subcommand '$sub'" ;;
   esac
 }
 
 route_show() {
   have ip || die "ip required"
-  ip route show | sed 's/^/  /'
+  section "Routes"
+  printf '%-8s %-20s %-12s %-s\n' "Type" "Destination" "Dev" "Extra"
+  ip route show | while read -r dst rest; do
+    dev=$(grep -o 'dev [^ ]*' <<<"$rest" | awk '{print $2}')
+    extra=$(sed "s/.*dev $dev//" <<<"$rest")
+    typ="other"
+    [[ "$dst" == "default" ]] && typ="default"
+    printf '%-8s %-20s %-12s %-s\n' "$typ" "$dst" "$dev" "$extra"
+  done
 }
 
 # -------------------- 10. Watchers / Waiters --------------------
 
 watch_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    ping) watch_ping "$@";;
-    http) watch_http "$@";;
-    *) die "watch: unknown subcommand '$sub'";;
+  ping) watch_ping "$@" ;;
+  http) watch_http "$@" ;;
+  *) die "watch: unknown subcommand '$sub'" ;;
   esac
 }
 
 watch_ping() {
   have ping || die "ping required"
-  local host="" interval=1 loss_threshold=10
+  local host="" interval=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --interval) interval="$2"; shift;;
-      --loss-threshold) loss_threshold="$2"; shift;;
-      *) host="$1";;
+    --interval)
+      interval="$2"
+      shift
+      ;;
+    *) host="$1" ;;
     esac
     shift || true
   done
   [[ -z "$host" ]] && die "watch ping: host required"
   while :; do
-    echo "== $(date -Is) =="
+    section "Ping $(date -Is) -> $host"
     ping -c 3 -W 2 "$host" || true
     sleep "$interval"
   done
@@ -1138,9 +1617,15 @@ watch_http() {
   local url="" interval=5 expect=200
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --interval) interval="$2"; shift;;
-      --expect-status) expect="$2"; shift;;
-      *) url="$1";;
+    --interval)
+      interval="$2"
+      shift
+      ;;
+    --expect-status)
+      expect="$2"
+      shift
+      ;;
+    *) url="$1" ;;
     esac
     shift || true
   done
@@ -1148,16 +1633,17 @@ watch_http() {
   while :; do
     local code
     code=$(curl -sS -o /dev/null -w '%{http_code}' "$url" || echo 0)
-    echo "$(date -Is) status=$code"
+    printf '%s status=%s (expect %s)\n' "$(date -Is)" "$code" "$expect"
     sleep "$interval"
   done
 }
 
 wait_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    port) wait_port "$@";;
-    *) die "wait: unknown subcommand '$sub'";;
+  port) wait_port "$@" ;;
+  *) die "wait: unknown subcommand '$sub'" ;;
   esac
 }
 
@@ -1165,22 +1651,28 @@ wait_port() {
   local host="" port="" timeout=60
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --timeout) timeout="$2"; shift;;
-      *)
-        if [[ -z "$host" ]]; then host="$1"
-        elif [[ -z "$port" ]]; then port="$1"
-        else die "Unexpected arg: $1"
-        fi
-        ;;
+    --timeout)
+      timeout="$2"
+      shift
+      ;;
+    *)
+      if [[ -z "$host" ]]; then
+        host="$1"
+      elif [[ -z "$port" ]]; then
+        port="$1"
+      else
+        die "Unexpected arg: $1"
+      fi
+      ;;
     esac
     shift || true
   done
   [[ -z "$host" || -z "$port" ]] && die "wait port: host and port required"
   have nc || die "nc required"
   local end=$((SECONDS + timeout))
-  while (( SECONDS < end )); do
+  while ((SECONDS < end)); do
     if nc -z -w 2 "$host" "$port" >/dev/null 2>&1; then
-      echo "Port $host:$port is up"
+      echo "Port $host:$port is ${c_ok}up${c_reset}"
       return 0
     fi
     sleep 1
@@ -1192,20 +1684,35 @@ wait_port() {
 # -------------------- 11. Stack check --------------------
 
 stack_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    check) stack_check "$@";;
-    *) die "stack: unknown subcommand '$sub'";;
+  check) stack_check "$@" ;;
+  *) die "stack: unknown subcommand '$sub'" ;;
   esac
 }
 
 stack_check() {
-  local name="${1:-}"
+  local name="" cfg=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --config)
+      cfg="$2"
+      shift
+      ;;
+    *) name="$1" ;;
+    esac
+    shift || true
+  done
   [[ -z "$name" ]] && die "stack check: name required"
-  local cfg="${HOME}/.config/netx/stacks/${name}.conf"
+  if [[ -z "$cfg" ]]; then
+    local dir="${NETX_STACK_DIR:-$HOME/.config/netx/stacks}"
+    cfg="$dir/${name}.conf"
+  fi
   [[ -f "$cfg" ]] || die "stack config not found: $cfg"
-  echo "Stack: $name"
-  # Simple INI parser: lines under [services]
+
+  section "Stack: $name"
+  kv "Config" "$cfg"
   awk -F'=' '
     /^\[services\]/ {in_s=1; next}
     /^\[/ {in_s=0; next}
@@ -1216,18 +1723,16 @@ stack_check() {
     }
   ' "$cfg" | while read -r svc target; do
     if [[ "$target" =~ ^https?:// ]]; then
-      printf "[HTTP] %-10s %s -> " "$svc" "$target"
-      local line
-      line=$(http_trace "$target" 2>/dev/null || echo "failed")
-      echo "$line"
+      printf "[HTTP] %-12s %s -> " "$svc" "$target"
+      http_trace "$target" 2>/dev/null || echo "failed"
     else
       host=${target%:*}
       port=${target##*:}
-      printf "[TCP ] %-10s %s:%s -> " "$svc" "$host" "$port"
+      printf "[TCP ] %-12s %s:%s -> " "$svc" "$host" "$port"
       if port_check "$host" "$port" --timeout 2 >/dev/null 2>&1; then
-        echo "OK"
+        echo "${c_ok}OK${c_reset}"
       else
-        echo "FAIL"
+        echo "${c_err}FAIL${c_reset}"
       fi
     fi
   done
@@ -1236,34 +1741,46 @@ stack_check() {
 # -------------------- 12. Namespaces --------------------
 
 ns_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    ls) ns_ls;;
-    inspect) ns_inspect "$@";;
-    exec) ns_exec "$@";;
-    *) die "ns: unknown subcommand '$sub'";;
+  ls) ns_ls ;;
+  inspect) ns_inspect "$@" ;;
+  exec) ns_exec "$@" ;;
+  *) die "ns: unknown subcommand '$sub'" ;;
   esac
 }
 
 ns_ls() {
   have ip || die "ip required"
-  ip netns list 2>/dev/null || echo "No network namespaces"
+  section "Network namespaces"
+  local out
+  out=$(ip netns list 2>/dev/null || true)
+  if [[ -z "$out" ]]; then
+    echo "  (none)"
+  else
+    echo "$out" | sed 's/^/  /'
+  fi
 }
 
 ns_inspect() {
   have ip || die "ip required"
   local ns="${1:-}"
   [[ -z "$ns" ]] && die "ns inspect: ns required"
-  echo "[Interfaces]"
-  ip netns exec "$ns" ip -o addr show | sed 's/^/  /'
-  echo
-  echo "[Routes]"
+  section "Namespace $ns - interfaces"
+  if ! ip netns exec "$ns" ip -o addr show 2>/dev/null; then
+    echo "  Cannot open network namespace '$ns'"
+    echo "  Hint: this expects a netns name (from 'ip netns ls'), not an interface like 'wlp0s20f3'."
+    return 1
+  fi
+  section "Namespace $ns - routes"
   ip netns exec "$ns" ip route show | sed 's/^/  /'
 }
 
 ns_exec() {
   have ip || die "ip required"
-  local ns="${1:-}"; shift || true
+  local ns="${1:-}"
+  shift || true
   [[ -z "$ns" ]] && die "ns exec: ns required"
   [[ $# -eq 0 ]] && die "ns exec: command required"
   ip netns exec "$ns" "$@"
@@ -1272,10 +1789,11 @@ ns_exec() {
 # -------------------- 13. Path trace --------------------
 
 path_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    trace) path_trace "$@";;
-    *) die "path: unknown subcommand '$sub'";;
+  trace) path_trace "$@" ;;
+  *) die "path: unknown subcommand '$sub'" ;;
   esac
 }
 
@@ -1283,14 +1801,18 @@ path_trace() {
   local host="" max_hops=15
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --max-hops) max_hops="$2"; shift;;
-      *) host="$1";;
+    --max-hops)
+      max_hops="$2"
+      shift
+      ;;
+    *) host="$1" ;;
     esac
     shift || true
   done
   [[ -z "$host" ]] && die "path trace: host required"
+  section "Path trace to $host (max $max_hops hops)"
   if have mtr; then
-    mtr -n -c 3 -r "$host"
+    mtr -n -c 3 -r -m "$max_hops" "$host"
   elif have traceroute; then
     traceroute -n -m "$max_hops" "$host"
   else
@@ -1301,23 +1823,38 @@ path_trace() {
 # -------------------- 14. Firewall --------------------
 
 fw_cmd() {
-  local sub="$1"; shift || true
+  local sub="$1"
+  shift || true
   case "$sub" in
-    summary) fw_summary;;
-    list)    fw_list "$@";;
-    *) die "fw: unknown subcommand '$sub'";;
+  summary) fw_summary ;;
+  list) fw_list "$@" ;;
+  *) die "fw: unknown subcommand '$sub'" ;;
   esac
 }
 
 fw_summary() {
+  section "Firewall summary"
   if have nft; then
-    echo "[nftables summary]"
-    nft list ruleset 2>/dev/null | grep -E 'table|chain' | sed 's/^/  /' | head -n 50
+    local out
+    out=$(nft list ruleset 2>/dev/null || true)
+    if [[ -z "$out" ]]; then
+      echo "  nftables present but no rules (or insufficient permissions)"
+    else
+      echo "$out" | head -n 80 | sed 's/^/  /'
+      local lines
+      lines=$(printf '%s\n' "$out" | wc -l | awk '{print $1}')
+      if ((lines > 80)); then
+        echo "  ... (truncated, use 'netx fw list --raw' for full ruleset)"
+      fi
+    fi
   elif have iptables; then
-    echo "[iptables summary]"
     iptables -L -n --line-numbers | sed 's/^/  /'
   else
-    echo "No nftables/iptables found"
+    echo "  No nftables/iptables found"
+  fi
+  if have ufw; then
+    section "UFW status"
+    ufw status 2>/dev/null | sed 's/^/  /'
   fi
 }
 
@@ -1325,24 +1862,25 @@ fw_list() {
   local raw=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --raw) raw=1;;
+    --raw) raw=1 ;;
     esac
     shift || true
   done
+  section "Firewall rules"
   if have nft; then
-    if (( raw )); then
+    if ((raw)); then
       nft list ruleset
     else
       nft list ruleset | sed 's/^/  /'
     fi
   elif have iptables; then
-    if (( raw )); then
+    if ((raw)); then
       iptables-save
     else
       iptables -S | sed 's/^/  /'
     fi
   else
-    echo "No nftables/iptables found"
+    echo "  No nftables/iptables found"
   fi
 }
 
@@ -1352,26 +1890,20 @@ report_cmd() {
   local out="$NETX_DIR/net-report.txt"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --out) out="$2"; shift;;
+    --out)
+      out="$2"
+      shift
+      ;;
     esac
     shift || true
   done
   {
     echo "netx report $(date -Is)"
-    echo
-    echo "== ip info =="
     ip_info || true
-    echo
-    echo "== route show =="
     route_show || true
-    echo
-    echo "== dns system =="
     dns_system || true
-    echo
-    echo "== port ls (listening tcp) =="
+    section "Listening ports (tcp)"
     port_ls --listening --tcp --process || true
-    echo
-    echo "== conn ls (outbound) =="
     conn_ls --outbound || true
   } >"$out"
   echo "Report saved to $out"
@@ -1381,46 +1913,101 @@ report_cmd() {
 
 main() {
   local cmd="${1:-}"
-  [[ -z "$cmd" ]] && { usage; exit 1; }
+  [[ -z "$cmd" ]] && {
+    usage
+    exit 1
+  }
   shift || true
   case "$cmd" in
-    -h|--help|help) usage;;
-    --version|-V) echo "netx $VERSION";;
+  -h | --help | help) usage ;;
+  --version | -V) echo "netx $VERSION" ;;
 
-    doctor) doctor_cmd "$@";;
+  doctor) doctor_cmd "$@" ;;
 
-    dns)    [[ $# -gt 0 ]] || die "dns subcommand required"; dns_cmd "$@";;
-    http)   [[ $# -gt 0 ]] || die "http subcommand required"; http_cmd "$@";;
-    proxy)  [[ $# -gt 0 ]] || die "proxy subcommand required"; proxy_cmd "$@";;
-    bench)  [[ $# -gt 0 ]] || die "bench subcommand required"; bench_cmd "$@";;
+  dns)
+    [[ $# -gt 0 ]] || die "dns subcommand required"
+    dns_cmd "$@"
+    ;;
+  http)
+    [[ $# -gt 0 ]] || die "http subcommand required"
+    http_cmd "$@"
+    ;;
+  proxy)
+    [[ $# -gt 0 ]] || die "proxy subcommand required"
+    proxy_cmd "$@"
+    ;;
+  bench)
+    [[ $# -gt 0 ]] || die "bench subcommand required"
+    bench_cmd "$@"
+    ;;
 
-    tls)    [[ $# -gt 0 ]] || die "tls subcommand required"; tls_cmd "$@";;
+  tls)
+    [[ $# -gt 0 ]] || die "tls subcommand required"
+    tls_cmd "$@"
+    ;;
 
-    port)   [[ $# -gt 0 ]] || die "port subcommand required"; port_cmd "$@";;
-    conn)   [[ $# -gt 0 ]] || die "conn subcommand required"; conn_cmd "$@";;
-    guard)  [[ $# -gt 0 ]] || die "guard subcommand required"; guard_cmd "$@";;
-    sec)    [[ $# -gt 0 ]] || die "sec subcommand required"; sec_cmd "$@";;
+  port)
+    [[ $# -gt 0 ]] || die "port subcommand required"
+    port_cmd "$@"
+    ;;
+  conn)
+    [[ $# -gt 0 ]] || die "conn subcommand required"
+    conn_cmd "$@"
+    ;;
+  guard)
+    [[ $# -gt 0 ]] || die "guard subcommand required"
+    guard_cmd "$@"
+    ;;
+  sec)
+    [[ $# -gt 0 ]] || die "sec subcommand required"
+    sec_cmd "$@"
+    ;;
 
-    ip)     [[ $# -gt 0 ]] || die "ip subcommand required"; ip_cmd "$@";;
-    if)     [[ $# -gt 0 ]] || die "if subcommand required"; if_cmd "$@";;
-    route)  [[ $# -gt 0 ]] || die "route subcommand required"; route_cmd "$@";;
+  ip)
+    [[ $# -gt 0 ]] || die "ip subcommand required"
+    ip_cmd "$@"
+    ;;
+  if)
+    [[ $# -gt 0 ]] || die "if subcommand required"
+    if_cmd "$@"
+    ;;
+  route)
+    [[ $# -gt 0 ]] || die "route subcommand required"
+    route_cmd "$@"
+    ;;
 
-    watch)  [[ $# -gt 0 ]] || die "watch subcommand required"; watch_cmd "$@";;
-    wait)   [[ $# -gt 0 ]] || die "wait subcommand required"; wait_cmd "$@";;
+  watch)
+    [[ $# -gt 0 ]] || die "watch subcommand required"
+    watch_cmd "$@"
+    ;;
+  wait)
+    [[ $# -gt 0 ]] || die "wait subcommand required"
+    wait_cmd "$@"
+    ;;
 
-    stack)  [[ $# -gt 0 ]] || die "stack subcommand required"; stack_cmd "$@";;
+  stack)
+    [[ $# -gt 0 ]] || die "stack subcommand required"
+    stack_cmd "$@"
+    ;;
 
-    ns)     [[ $# -gt 0 ]] || die "ns subcommand required"; ns_cmd "$@";;
+  ns)
+    [[ $# -gt 0 ]] || die "ns subcommand required"
+    ns_cmd "$@"
+    ;;
 
-    path)   [[ $# -gt 0 ]] || die "path subcommand required"; path_cmd "$@";;
+  path)
+    [[ $# -gt 0 ]] || die "path subcommand required"
+    path_cmd "$@"
+    ;;
 
-    fw)     [[ $# -gt 0 ]] || die "fw subcommand required"; fw_cmd "$@";;
+  fw)
+    [[ $# -gt 0 ]] || die "fw subcommand required"
+    fw_cmd "$@"
+    ;;
 
-    report) report_cmd "$@";;
+  report) report_cmd "$@" ;;
 
-    *)
-      die "Unknown command: $cmd"
-      ;;
+  *) die "Unknown command: $cmd" ;;
   esac
 }
 
