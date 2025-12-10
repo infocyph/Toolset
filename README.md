@@ -8,12 +8,13 @@ All tools are standalone Bash scripts and can be installed with a single `curl +
 
 | Tool        | Area             | Quick Summary                                                                 | Docs                             |
 |-------------|------------------|-------------------------------------------------------------------------------|----------------------------------|
-| `dockex`    | Docker           | Inspect, benchmark, backup/restore and clean Docker resources                | [Docker](Docker/README.md)       |
-| `phpx`      | PHP              | PHP version / extension manager, FPM/webserver config, doctor & tuner        | [PHP](PHP/README.md)             |
-| `gitx`      | Git              | Opinionated Git workflow, cleanup, summaries & changelog helper              | [Git](Git/README.md)             |
-| `chromacat` | Terminal output  | Colourful / animated text, banners & ASCII art with themes and palettes      | [ChromaCat](ChromaCat/README.md) |
-| `sqlitex`   | SQLite           | Non-interactive, flag-driven SQLite admin, migrations, seeds & tuning        | [Sqlite](Sqlite/README.md)       |
+| `dockex`    | Docker           | Inspect, benchmark, backup/restore and clean Docker resources                 | [Docker](Docker/README.md)       |
+| `phpx`      | PHP              | PHP version / extension manager, FPM/webserver config, doctor & tuner         | [PHP](PHP/README.md)             |
+| `gitx`      | Git              | Opinionated Git workflow, cleanup, summaries & changelog helper               | [Git](Git/README.md)             |
+| `chromacat` | Terminal output  | Colourful / animated text, banners & ASCII art with themes and palettes       | [ChromaCat](ChromaCat/README.md) |
+| `sqlitex`   | SQLite           | Non-interactive, flag-driven SQLite admin, migrations, seeds & tuning         | [Sqlite](Sqlite/README.md)       |
 | `cleanx`    | Cleanup & Inodes | Safe, modular disk & inode cleaner; **dry-run by default**, quota/JSON/update | [Clean](Clean/README.md)         |
+| `netx`      | Networking       | Network diagnostics, DNS/TLS/HTTP helpers, firewall view & outbound guard     | [Net](Network/README.md)         |
 
 ### Tool Documentation
 
@@ -22,7 +23,8 @@ All tools are standalone Bash scripts and can be installed with a single `curl +
 - **gitx** – Git workflow helper: [Git](Git/README.md)  
 - **chromacat** – colourful terminal text: [ChromaCat](ChromaCat/README.md)  
 - **sqlitex** – SQLite CLI: [Sqlite](Sqlite/README.md)  
-- **cleanx** – disk & inode cleaner: [Clean](Clean/README.md)
+- **cleanx** – disk & inode cleaner: [Clean](Clean/README.md)  
+- **netx** – network toolbox (DNS/TLS/HTTP/ports/firewall): [Net](Network/README.md)
 
 ---
 
@@ -64,6 +66,12 @@ sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Sqlite/
 # cleanx – disk & inode cleaner (dry-run by default; use --yes to apply)
 sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Clean/cleanx" \
   -o /usr/local/bin/cleanx && sudo chmod +x /usr/local/bin/cleanx
+```
+
+```bash
+# netx – network toolbox (diagnostics, TLS, DNS, firewall, outbound guard)
+sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Network/netx" \
+  -o /usr/local/bin/netx && sudo chmod +x /usr/local/bin/netx
 ```
 
 See each tool’s README (linked above) for full command reference and examples.
