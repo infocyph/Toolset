@@ -2,14 +2,16 @@
 
 `dockex` is a **Docker helper CLI** that wraps common day-to-day ops into one script:
 
-* Inspect containers in-depth (network, limits, env, mounts, health)
+* Inspect containers in-depth (network, limits, env, mounts, health, DNS)
 * Fleet summaries with live CPU/MEM stats
 * Logs (normal, error-focused, streaming)
 * Start/stop/restart, shell, top
 * Volume backup & restore (zip-based)
-* HTTP benchmarks via ApacheBench
-* Resource tuning (CPU shares, memory limits)
+* HTTP benchmarks via ApacheBench (auto-detects published port)
+* Resource tuning (CPU shares, memory limits – supports %, cores, raw shares)
 * Host/container “doctor” health snapshots
+* Network-aware inspection (per-network subnet/gateway/container IP)
+* Connectivity trace from inside a container to any host:port
 * Safe → aggressive → destructive cleanup modes
 * Guided `docker run` for quickly bootstrapping containers
 
@@ -22,7 +24,7 @@ It is **non-invasive** – everything is just thin wrappers over `docker` + a fe
 ```bash
 sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Docker/dockex" \
   -o /usr/local/bin/dockex && sudo chmod +x /usr/local/bin/dockex
-```
+````
 
 ---
 
@@ -41,6 +43,8 @@ sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Docker/
 * `ab` (ApacheBench) – for `benchmark`
 * `zip` / `unzip` (inside a temporary Alpine helper container) – for `backup` / `restore`
 * `df` – for disk reports in `doctor`
+
+For `trace`, the container you’re tracing **from** benefits from having tools like `ping`, `curl` or `nc` installed, but `dockex` will degrade gracefully if they’re missing.
 
 ---
 
@@ -64,15 +68,32 @@ dockex <command> [container_name] [options...]
 
 * **`info` / `inspect`** – Deep inspect a single container:
 
-    * ID, image, created time, state, health, OS, IP, hostname, command
-    * CPU shares, memory limit (human readable)
-    * Ports, network, gateways, linked containers
-    * Environment variables and mounts
+    * ID, image, created time, state, health, OS, hostname, command
+    * IP addresses across all attached networks
+    * CPU shares, memory limit (human readable, or `Unlimited`)
+    * Per-network table (for each Docker network):
+
+        * network name, driver, subnet, gateway, container IP
+    * Ports:
+
+        * container port → host bindings (e.g. `80/tcp -> 0.0.0.0:8080`)
+    * DNS configuration (from `HostConfig`):
+
+        * DNS servers, search domains, options
+    * Environment variables
+    * Mounted volumes (`host_path -> container_path`)
 
 * **`ps`** – “Fleet” snapshot:
 
     * All containers (running + stopped)
-    * CPU usage, memory usage + %, restart policy, health
+    * Live CPU and MEM usage (via `docker stats --no-stream`)
+    * MEM usage including percentage (e.g. `120MiB (12.34%)`)
+    * Restart policy
+    * Health status (if defined)
+
+You can filter `ps` by a name substring (e.g. only show `api` containers).
+
+---
 
 ### Logs & lifecycle
 
@@ -83,6 +104,8 @@ dockex <command> [container_name] [options...]
 * **`start` / `stop` / `restart`**
 
     * Thin safety wrappers over base Docker lifecycle commands.
+
+---
 
 ### Shell & processes
 
@@ -96,11 +119,23 @@ dockex <command> [container_name] [options...]
 
     * Quick process view inside the container via `docker top`.
 
+---
+
 ### Resources & profiling
 
 * **`update_resources`**
 
     * Interactively tune per-container CPU shares + memory limit.
+    * CPU input supports several forms:
+
+        * **empty** – keep current value
+        * `N`   – raw Docker CPU shares (integer)
+        * `N%`  – percentage of the default 1024 shares (e.g. `50%` → `512`)
+        * `Nc`  – “N cores equivalent” (e.g. `2c` → `2 * 1024 = 2048` shares)
+    * Memory input:
+
+        * **empty** – keep current value
+        * any Docker-compatible limit (e.g. `500m`, `1g`)
 
 * **`stats`**
 
@@ -111,9 +146,28 @@ dockex <command> [container_name] [options...]
 
 * **`benchmark`**
 
-    * ApacheBench HTTP load against container’s `80/tcp`:
+    * ApacheBench HTTP load against the **published host port**:
 
-        * single-run + multi-instance execution.
+        * Prefers the host port mapped from `80/tcp` if present.
+        * Otherwise falls back to the first published container port.
+        * Targets `http://127.0.0.1:<host_port>/`.
+
+    * Runs both a single benchmark and multiple parallel benchmarks.
+
+---
+
+### Network trace
+
+* **`trace`**
+
+    * Run basic connectivity checks **from inside** a container:
+
+        * Check reachability to a target host (and optional port).
+        * Useful when “it works on the host but not from inside the container”.
+
+    * Uses `docker exec` plus whatever tools exist inside the container (`ping`, `curl`, `nc`, etc.), and reports what worked/failed.
+
+---
 
 ### Backup, restore & cleanup
 
@@ -128,6 +182,8 @@ dockex <command> [container_name] [options...]
         * `unused` (safe prune),
         * `aggressive` (all unused),
         * `all` (wipe everything – destructive).
+
+---
 
 ### Doctor & inventory
 
@@ -161,6 +217,8 @@ Shows a multi-section overview:
 * **Networks** – name, driver, ID
 * **Volumes** – name, driver
 
+For **per-container** IP/subnet/gateway details, use `dockex info <container>`.
+
 ---
 
 ### `info` / `inspect`
@@ -170,16 +228,28 @@ dockex info <container>
 dockex inspect <container>
 ```
 
-Shows a detailed inspect view for a **running** container:
+Shows a detailed inspect view for a container:
 
 * ID, image, created timestamp
-* State & health (or “No Healthcheck”)
-* OS, IP, hostname, command
-* Network name, CIDR, gateway, links
-* Ports mapping JSON (`NetworkSettings.Ports`)
-* CPU shares and memory limits (converted to MB or “Unlimited”)
+* State & health (or `No Healthcheck`)
+* OS, hostname, full command
+* IP addresses across all networks
+* CPU shares and memory limits (converted to MB or `Unlimited`)
+* **Network summary:**
+
+    * list of all attached Docker networks
+    * primary subnet & gateway
+* **Network details table (per network):**
+
+    * network name, driver, subnet, gateway, container IP
+* **Ports:**
+
+    * container port → host bindings (if any)
+* **DNS (from HostConfig):**
+
+    * DNS servers, search domains, options
 * Environment variables (if any)
-* Mounted volumes, as `host_path -> container_path`
+* Mounted volumes as `host_path -> container_path`
 
 ---
 
@@ -193,7 +263,7 @@ dockex ps <name_pattern>
 Fleet summary of all containers (running + stopped):
 
 * `NAME`, `IMAGE`, `STATUS`
-* CPU usage (`docker stats --no-stream`)
+* CPU usage (from a single `docker stats --no-stream` pass)
 * MEM usage + MEM% (e.g. `120MiB (12.34%)`)
 * Restart policy (`HostConfig.RestartPolicy`)
 * Health status (if defined)
@@ -212,7 +282,7 @@ dockex ps api
 dockex logs <container> [lines]
 ```
 
-* Shows last `lines` of logs (`docker logs --tail`)
+* Shows last `lines` of logs (`docker logs --tail`).
 * Default: `10` lines if omitted.
 
 Examples:
@@ -230,7 +300,7 @@ dockex logs my_container 50
 dockex logs-errors <container> [lines]
 ```
 
-* Pulls last `lines` (default `500`) from the container logs
+* Pulls last `lines` (default `500`) from the container logs.
 
 * Filters on common error patterns:
 
@@ -317,19 +387,35 @@ dockex update_resources <container>
 Interactive CPU/memory tuning:
 
 1. Validates the container exists.
+
 2. Reads current:
 
     * CPU shares (`HostConfig.CpuShares`)
-    * Memory limit (`HostConfig.Memory`) and prints it as MB or “Unlimited”
+    * Memory limit (`HostConfig.Memory`) and prints it as MB or `Unlimited`.
+
 3. Prompts for:
 
-    * new CPU shares (e.g., `512`)
-    * new memory limit (e.g., `500m`, `1g`)
-4. Executes:
+   **CPU shares input:**
+
+    * **empty** – keep current shares
+    * `N`   – raw Docker CPU shares (integer)
+    * `N%`  – percentage of the default 1024 shares
+      (e.g. `50%` → `512`)
+    * `Nc`  – N “cores worth” of shares
+      (e.g. `2c` → `2048` shares)
+
+   **Memory limit input:**
+
+    * **empty** – keep current limit
+    * any Docker memory string (`500m`, `1g`, etc.)
+
+4. Executes only the flags you changed, e.g.:
 
 ```bash
 docker update --cpu-shares <shares> --memory <limit> <container>
 ```
+
+If you leave both fields empty, nothing is updated.
 
 ---
 
@@ -349,7 +435,10 @@ Volume backup workflow:
 
 2. Prompts to choose which one to back up.
 
-3. Uses a temporary Alpine container with `--volumes-from` the target container, plus current directory mounted as `/backup`.
+3. Uses a temporary Alpine container with:
+
+    * `--volumes-from` the target container
+    * current directory mounted as `/backup`
 
 4. Creates a dated zip in the **current working directory**:
 
@@ -376,7 +465,7 @@ Restore workflow:
 
 1. Validates container exists.
 
-2. Validates `backup.zip` exists in the current directory (or given path).
+2. Validates `backup.zip` exists.
 
 3. Runs a temporary Alpine container:
 
@@ -408,16 +497,26 @@ Parameters:
 
 Behaviour:
 
-1. Requires `ab` (ApacheBench) to be installed.
-2. Detects:
+1. Requires `ab` (ApacheBench) to be installed on the host.
 
-    * container IP
-    * mapped host port for `80/tcp`
-3. Runs:
+2. Detects the **host port** to hit:
 
-    * a single benchmark: `ab -n <requests> -c <concurrency> http://IP:PORT/`
+    * tries the host port mapped from container `80/tcp` first.
+    * if unavailable, falls back to the first published container port.
+
+3. Constructs:
+
+   ```bash
+   http://127.0.0.1:<host_port>/
+   ```
+
+4. Runs:
+
+    * a single benchmark:
+      `ab -n <requests> -c <concurrency> http://127.0.0.1:<host_port>/`
     * then `instances` parallel runs, each writing to a temp file.
-4. Prints each node’s raw `ab` output plus a short summary.
+
+5. Prints each node’s raw `ab` output plus a short summary.
 
 Example:
 
@@ -447,13 +546,13 @@ Workflow:
 3. At each interval, runs:
 
    ```bash
-   docker stats --no-stream --format '{{.CPUPerc}}||{{.MemUsage}}||{{.MemPerc}}'
+   docker stats --no-stream --format '{{.CPUPerc}} {{.MemUsage}} {{.MemPerc}}'
    ```
 
 4. Prints each sample:
 
    ```text
-   Sample 1/15: CPU=12.34%, MEM=120MiB (15.67%)
+   Sample 1/15: CPU=12.34%, MEM=120MiB / 2GiB (15.67%)
    ```
 
 5. At the end, prints summary:
@@ -468,6 +567,38 @@ Example:
 ```bash
 dockex stats my_container 60 5
 ```
+
+---
+
+### `trace`
+
+```bash
+dockex trace <container> <host> [--port <port>]
+```
+
+Connectivity tracer **from inside** a container:
+
+* Validates the container exists and is running.
+* Uses `docker exec` to run simple checks from inside that container:
+
+    * e.g. `ping`, `nc`, `curl` – depending on what’s available.
+* Reports:
+
+    * whether hostname resolution works
+    * whether the TCP port is reachable
+    * any obvious error messages from the tools it tried.
+
+Typical usage:
+
+```bash
+# Check if a container can reach another service on port 5432
+dockex trace app_container db.internal --port 5432
+
+# Check default HTTPS connectivity
+dockex trace app_container google.com --port 443
+```
+
+If the container lacks diagnostic tools, `trace` will tell you what it tried and what’s missing.
 
 ---
 
@@ -515,7 +646,7 @@ Outputs:
     * restart policy
     * health status + last healthcheck output (if any)
     * CPU shares
-    * memory limit (MB / Unlimited)
+    * memory limit (MB / `Unlimited`)
 * One-shot `docker stats` snapshot for CPU/MEM
 * Embedded `logs-errors` (last 500 lines)
 * Suggestions, e.g.:
@@ -651,6 +782,9 @@ dockex benchmark my_container 3 100 10
 # Resource tuning & profiling
 dockex update_resources my_container
 dockex stats my_container 60 5
+
+# Network trace from inside a container
+dockex trace app_container db.internal --port 5432
 
 # Doctor mode
 dockex doctor

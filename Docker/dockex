@@ -18,9 +18,11 @@ show_usage() {
   echo "Usage: dockex <command> [container_name] [options]"
   echo
   echo "Available commands:"
-  echo "  info|inspect <container>          - Show detailed information about the container:"
-  echo "      * Container IP, Health Status, OS, Command"
-  echo "      * CPU shares, Memory limit, Volumes, Env vars, Ports, Network"
+  echo "  info|inspect <container>          - Detailed container info:"
+  echo "      * IP/hostname/OS/command"
+  echo "      * Networks (name/driver/subnet/gateway/IP)"
+  echo "      * CPU shares, memory limit"
+  echo "      * Volumes, env vars, ports, DNS (if running)"
   echo
   echo "  ps [name_pattern]                 - Summarize all containers (CPU/MEM/health/restart)."
   echo
@@ -33,12 +35,16 @@ show_usage() {
   echo "  restart <container>               - Restart a container."
   echo
   echo "  shell <container>                 - Exec into a container (bash, fallback sh)."
+  echo "  exec-run <container> <cmd...>     - Run a one-off command inside a container."
   echo "  top <container>                   - Show processes running inside container."
   echo
   echo "  update_resources <container>      - Update container's CPU and memory limits."
   echo
   echo "  backup <container>                - Backup a selected volume to a zip file."
   echo "  restore <container> <zip>         - Restore container data from a backup zip."
+  echo
+  echo "  ports <container>                 - Show published ports for a container."
+  echo "  dns <container> [hostname]        - Show DNS config / resolve a name inside container."
   echo
   echo "  benchmark <container> [instances] [requests] [concurrency]"
   echo "      * instances:   default 3"
@@ -49,11 +55,17 @@ show_usage() {
   echo "      * duration:    seconds to profile (default: 30)"
   echo "      * interval:    seconds between samples (default: 2)"
   echo
+  echo "  trace <container> <host-or-url> [port]"
+  echo "      * Run reachability / HTTP probe from inside container."
+  echo "      * If URL: infer host/port/protocol."
+  echo "      * If host + port: build http/https URL (443 => https)."
+  echo
   echo "  doctor [container]                - Doctor check for Docker host or a container."
   echo "      * No container: host + fleet health summary"
   echo "      * With container: deep health/logs/limits snapshot"
   echo
   echo "  list                              - Show images, containers, networks, volumes."
+  echo "  nets                              - Show Docker network topology (subnet / containers)."
   echo "  create <image> [name]             - Interactively create a new container."
   echo
   echo "  cleanup [unused|aggressive|all]   - Clean up Docker resources (default: unused)."
@@ -68,6 +80,10 @@ show_usage() {
   echo "  dockex logs-errors my_container 1000"
   echo "  dockex benchmark my_container 5 500 50"
   echo "  dockex stats my_container 60 5"
+  echo "  dockex trace my_container api.example.com 443"
+  echo "  dockex dns my_container example.com"
+  echo "  dockex ports my_container"
+  echo "  dockex nets"
   echo "  dockex doctor my_container"
   echo "  dockex backup my_container"
   echo "  dockex create nginx my_nginx"
@@ -93,62 +109,67 @@ validate_container() {
   fi
 }
 
+is_container_running() {
+  local container_name=$1
+  docker ps --format '{{.Names}}' | grep -wq "$container_name"
+}
+
 # Display container information
 view_container_info() {
   local container_name=$1
 
   validate_container "$container_name" "any"
 
-  local container_info
-  container_info=$(docker inspect "$container_name")
+  local inspect
+  inspect=$(docker inspect "$container_name")
 
-  local container_id
-  container_id=$(echo "$container_info" | jq -r '.[0].Id')
-  local container_image
-  container_image=$(echo "$container_info" | jq -r '.[0].Config.Image')
-  local container_created
-  container_created=$(echo "$container_info" | jq -r '.[0].Created')
-  local container_state
-  container_state=$(echo "$container_info" | jq -r '.[0].State.Status')
-  local container_health
-  container_health=$(echo "$container_info" | jq -r '.[0].State.Health.Status // "No Healthcheck"')
-  local container_ip
-  container_ip=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks[]?.IPAddress' | paste -sd',' -)
-  local container_hostname
-  container_hostname=$(echo "$container_info" | jq -r '.[0].Config.Hostname')
-  local container_command
-  container_command=$(echo "$container_info" | jq -r '.[0].Config.Cmd[]?' | paste -sd' ' -)
-  local container_os
-  container_os=$(echo "$container_info" | jq -r '.[0].Os')
+  # -------- basic fields -------- #
+  local container_id container_image container_created container_state
+  local container_health container_hostname container_command container_os
 
-  local network_name
-  network_name=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks | keys[0] // empty')
-  local container_cidr
-  container_cidr=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.IPAMConfig.Subnet // "Not available"' 2>/dev/null || echo "Not available")
-  local container_gateway
-  container_gateway=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.Gateway // "Not available"' 2>/dev/null || echo "Not available")
+  container_id=$(echo "$inspect" | jq -r '.[0].Id')
+  container_image=$(echo "$inspect" | jq -r '.[0].Config.Image')
+  container_created=$(echo "$inspect" | jq -r '.[0].Created')
+  container_state=$(echo "$inspect" | jq -r '.[0].State.Status')
+  container_health=$(echo "$inspect" | jq -r '.[0].State.Health.Status // "No Healthcheck"')
+  container_hostname=$(echo "$inspect" | jq -r '.[0].Config.Hostname')
+  container_command=$(echo "$inspect" | jq -r '.[0].Config.Cmd[]?' | paste -sd' ' -)
+  container_os=$(echo "$inspect" | jq -r '.[0].Os')
 
-  local container_ports
-  container_ports=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Ports // {}')
-  local container_connected_containers
-  container_connected_containers=$(echo "$container_info" | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.Links[]? // empty' | paste -sd',' -)
+  # IPs across all networks
+  local container_ips
+  container_ips=$(echo "$inspect" | jq -r '.[0].NetworkSettings.Networks[]?.IPAddress' 2>/dev/null | paste -sd',' -)
 
-  local cpu_shares
-  cpu_shares=$(echo "$container_info" | jq -r '.[0].HostConfig.CpuShares')
+  # Networks summary
+  local networks_list primary_net
+  networks_list=$(echo "$inspect" | jq -r '.[0].NetworkSettings.Networks | keys[]?' 2>/dev/null | paste -sd',' -)
+  primary_net=$(echo "$inspect" | jq -r '.[0].NetworkSettings.Networks | keys[0] // empty' 2>/dev/null)
 
-  local raw_mem
-  raw_mem=$(echo "$container_info" | jq -r '.[0].HostConfig.Memory')
-  local memory_limit
+  # Primary subnet/gateway via docker network inspect (if possible)
+  local primary_subnet="N/A" primary_gateway="N/A"
+  if [ -n "$primary_net" ]; then
+    local net_info
+    net_info=$(docker network inspect "$primary_net" 2>/dev/null || echo "")
+    if [ -n "$net_info" ]; then
+      primary_subnet=$(echo "$net_info" | jq -r '.[0].IPAM.Config[0].Subnet // "N/A"' 2>/dev/null || echo "N/A")
+      primary_gateway=$(echo "$net_info" | jq -r '.[0].IPAM.Config[0].Gateway // "N/A"' 2>/dev/null || echo "N/A")
+    fi
+  fi
+
+  # CPU / memory limits
+  local cpu_shares raw_mem memory_limit
+  cpu_shares=$(echo "$inspect" | jq -r '.[0].HostConfig.CpuShares')
+  raw_mem=$(echo "$inspect" | jq -r '.[0].HostConfig.Memory')
   if [ "$raw_mem" -eq 0 ] 2>/dev/null; then
     memory_limit="Unlimited"
   else
     memory_limit="$(awk "BEGIN {print $raw_mem/1024/1024}") MB"
   fi
 
-  local container_env
-  container_env=$(echo "$container_info" | jq -r '.[0].Config.Env[]?' || true)
-  local container_mounts
-  container_mounts=$(echo "$container_info" | jq -r '.[0].Mounts[]? | "\(.Source) -> \(.Destination)"' || true)
+  # Env + mounts
+  local container_env container_mounts
+  container_env=$(echo "$inspect" | jq -r '.[0].Config.Env[]?' 2>/dev/null || true)
+  container_mounts=$(echo "$inspect" | jq -r '.[0].Mounts[]? | "\(.Source) -> \(.Destination)"' 2>/dev/null || true)
 
   echo "=== Detailed Information for Container '$container_name' ==="
   echo "Container ID:        $container_id"
@@ -157,27 +178,94 @@ view_container_info() {
   echo "State:               $container_state"
   echo "Health:              $container_health"
   echo "OS:                  $container_os"
-  echo "IP Address:          ${container_ip:-N/A}"
   echo "Hostname:            $container_hostname"
   echo "Command:             ${container_command:-N/A}"
-  echo "Network:             ${network_name:-N/A}"
-  echo "CIDR Range:          $container_cidr"
-  echo "Gateway:             $container_gateway"
-  echo
-  echo "=== Ports ==="
-  echo "$container_ports"
-  echo
-  echo "=== Connected Containers ==="
-  if [ -z "${container_connected_containers:-}" ]; then
-    echo "No connected containers."
-  else
-    echo "$container_connected_containers"
-  fi
+  echo "IP Address(es):      ${container_ips:-N/A}"
+  echo "Networks:            ${networks_list:-N/A}"
+  echo "Primary Subnet:      $primary_subnet"
+  echo "Primary Gateway:     $primary_gateway"
   echo
   echo "=== CPU and Memory ==="
   echo "CPU Shares:          ${cpu_shares:-Not Set}"
   echo "Memory Limit:        $memory_limit"
   echo
+
+  # -------- network table (per network) -------- #
+  echo "=== Network Details ==="
+  local nets
+  nets=$(echo "$inspect" | jq -r '.[0].NetworkSettings.Networks | keys[]?' 2>/dev/null || true)
+
+  if [ -z "${nets:-}" ]; then
+    echo "No networks attached."
+  else
+    printf '%-18s %-10s %-18s %-18s %-15s\n' \
+      "NAME" "DRIVER" "SUBNET" "GATEWAY" "CONTAINER_IP"
+
+    local net
+    for net in $nets; do
+      [ -z "$net" ] && continue
+
+      local net_info driver subnet gw ip
+      net_info=$(docker network inspect "$net" 2>/dev/null || echo "")
+      if [ -n "$net_info" ]; then
+        driver=$(echo "$net_info" | jq -r '.[0].Driver // "unknown"' 2>/dev/null || echo "unknown")
+        subnet=$(echo "$net_info" | jq -r '.[0].IPAM.Config[0].Subnet // "N/A"' 2>/dev/null || echo "N/A")
+        gw=$(echo "$net_info" | jq -r '.[0].IPAM.Config[0].Gateway // "N/A"' 2>/dev/null || echo "N/A")
+      else
+        driver="unknown"
+        subnet="N/A"
+        gw="N/A"
+      fi
+
+      ip=$(echo "$inspect" | jq -r --arg NET "$net" '.[0].NetworkSettings.Networks[$NET].IPAddress // "N/A"' 2>/dev/null || echo "N/A")
+
+      printf '%-18s %-10s %-18s %-18s %-15s\n' \
+        "$net" "$driver" "$subnet" "$gw" "$ip"
+    done
+  fi
+  echo
+
+  # -------- ports (published) -------- #
+  echo "=== Ports (published) ==="
+  local ports
+  ports=$(echo "$inspect" | jq -r '.[0].NetworkSettings.Ports // {} | to_entries[]? |
+    "\(.key)\t\((.value // []) | if length>0 then map(.HostIp + \":\" + .HostPort) | join(",") else "-" end)"' 2>/dev/null || true)
+
+  if [ -z "${ports:-}" ]; then
+    echo "No published ports."
+  else
+    printf '%-18s %-30s\n' "CONTAINER_PORT" "HOST_BINDINGS"
+    while IFS=$'\t' read -r cport hbind; do
+      [ -z "${cport:-}" ] && continue
+      printf '%-18s %-30s\n' "$cport" "$hbind"
+    done <<<"$ports"
+  fi
+  echo
+
+  # -------- DNS -------- #
+  echo "=== DNS (HostConfig) ==="
+  local dns_servers dns_search dns_opts
+  dns_servers=$(echo "$inspect" | jq -r '.[0].HostConfig.Dns[]?' 2>/dev/null | paste -sd',' -)
+  dns_search=$(echo "$inspect" | jq -r '.[0].HostConfig.DnsSearch[]?' 2>/dev/null | paste -sd',' -)
+  dns_opts=$(echo "$inspect" | jq -r '.[0].HostConfig.DnsOptions[]?' 2>/dev/null | paste -sd',' -)
+
+  echo "DNS Servers:         ${dns_servers:-default}"
+  echo "DNS Search:          ${dns_search:--}"
+  echo "DNS Options:         ${dns_opts:--}"
+  echo
+
+  # -------- connected containers -------- #
+  echo "=== Connected Containers (Links) ==="
+  local links
+  links=$(echo "$inspect" | jq -r '.[0].NetworkSettings.Networks | to_entries[]? | .value.Links[]?' 2>/dev/null | sort -u | paste -sd',' -)
+  if [ -z "${links:-}" ]; then
+    echo "No explicit links."
+  else
+    echo "$links"
+  fi
+  echo
+
+  # -------- env + mounts -------- #
   echo "=== Environment Variables ==="
   if [ -n "${container_env:-}" ]; then
     echo "$container_env"
@@ -185,11 +273,12 @@ view_container_info() {
     echo "No environment variables."
   fi
   echo
+
   echo "=== Mounted Volumes ==="
-  if [ -z "${container_mounts:-}" ]; then
-    echo "No volumes mounted."
-  else
+  if [ -n "${container_mounts:-}" ]; then
     echo "$container_mounts"
+  else
+    echo "No volumes mounted."
   fi
 }
 
@@ -273,6 +362,20 @@ shell_into_container() {
   fi
 }
 
+# Exec-run convenience
+exec_run() {
+  local container_name=$1
+  shift
+  validate_container "$container_name" "running"
+
+  if [ "$#" -eq 0 ]; then
+    echo "Error: exec-run requires a command to execute."
+    exit 1
+  fi
+
+  docker exec -it "$container_name" "$@"
+}
+
 # Show top inside container
 top_container() {
   local container_name=$1
@@ -315,7 +418,6 @@ update_container_resources() {
   if [ -n "$cpu_input" ]; then
     local shares=""
     if [[ "$cpu_input" =~ %$ ]]; then
-      # percentage of 1024
       local pct=${cpu_input%%%}
       if [[ "$pct" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
         shares=$(awk "BEGIN {printf \"%d\", 1024*$pct/100.0}")
@@ -324,7 +426,6 @@ update_container_resources() {
         exit 1
       fi
     elif [[ "$cpu_input" =~ c$ ]]; then
-      # cores -> cores*1024
       local cores=${cpu_input%c}
       if [[ "$cores" =~ ^[0-9]+$ ]]; then
         shares=$((cores * 1024))
@@ -451,6 +552,35 @@ show_docker_listings() {
   docker volume ls --format "table {{.Name}}\t{{.Driver}}"
 }
 
+# --------------- docker nets topo ---------------- #
+nets_topology() {
+  echo "=== Docker networks topology ==="
+  docker network ls --format '{{.Name}}||{{.Driver}}||{{.ID}}' | while IFS='||' read -r name driver id; do
+    [ -z "${name:-}" ] && continue
+
+    local inspect
+    inspect=$(docker network inspect "$name" 2>/dev/null || echo "")
+
+    local subnet gateway
+    subnet=$(echo "$inspect" | jq -r '.[0].IPAM.Config[0].Subnet // "N/A"' 2>/dev/null || echo "N/A")
+    gateway=$(echo "$inspect" | jq -r '.[0].IPAM.Config[0].Gateway // "N/A"' 2>/dev/null || echo "N/A")
+
+    echo
+    echo "Network:  $name"
+    echo "Driver:   $driver"
+    echo "Subnet:   $subnet"
+    echo "Gateway:  $gateway"
+    echo "Containers:"
+    local containers
+    containers=$(echo "$inspect" | jq -r '.[0].Containers | to_entries[]? | "  \(.value.Name) (\(.value.IPv4Address // ""))"' 2>/dev/null || true)
+    if [ -z "$containers" ]; then
+      echo "  (none)"
+    else
+      echo "$containers"
+    fi
+  done
+}
+
 # --------------- create container ----------------- #
 create_new_container() {
   local image_name=$1
@@ -536,63 +666,301 @@ create_new_container() {
 # ---------------- benchmark ------------------------ #
 benchmark() {
   local container_name=$1
-  local instances=${2:-3}
-  local requests=${3:-100}
-  local concurrency=${4:-10}
+  shift || true
 
   validate_container "$container_name" "running"
 
-  if ! command -v ab >/dev/null 2>&1; then
-    echo "Error: 'ab' (ApacheBench) is not installed on the host."
+  # Defaults
+  local url_override=""
+  local instances=3
+  local requests=100
+  local concurrency=10
+
+  # Optional: direct URL as second argument
+  if [ "$#" -gt 0 ] && { [[ "$1" == http://* ]] || [[ "$1" == https://* ]]; }; then
+    url_override="$1"
+    shift || true
+  fi
+
+  # Optional numeric overrides: instances, requests, concurrency
+  if [ "$#" -ge 1 ]; then instances=$1; fi
+  if [ "$#" -ge 2 ]; then requests=$2; fi
+  if [ "$#" -ge 3 ]; then concurrency=$3; fi
+
+  # Check for host 'ab'
+  local have_host_ab=0
+  if command -v ab >/dev/null 2>&1; then
+    have_host_ab=1
+  fi
+
+  # Base URL resolution
+  local url=""
+  if [ -n "$url_override" ]; then
+    url="$url_override"
+  else
+    # Prefer 80/tcp mapping, fall back to any published port
+    local host_port
+    host_port=$(docker inspect -f '{{range $p, $arr := .NetworkSettings.Ports}}{{if and $arr (eq $p "80/tcp")}}{{(index $arr 0).HostPort}}{{"\n"}}{{end}}{{end}}' "$container_name" 2>/dev/null | head -n1 || true)
+
+    if [ -z "$host_port" ]; then
+      host_port=$(docker inspect -f '{{range $p, $arr := .NetworkSettings.Ports}}{{if $arr}}{{(index $arr 0).HostPort}}{{"\n"}}{{end}}{{end}}' "$container_name" 2>/dev/null | head -n1 || true)
+    fi
+
+    if [ -n "$host_port" ]; then
+      # Host-side benchmark via mapped port
+      url="http://127.0.0.1:${host_port}/"
+    fi
+  fi
+
+  if [ -z "$url" ]; then
+    if [ -z "$url_override" ]; then
+      echo "Error: Could not determine benchmark URL."
+      echo "Either publish a port (e.g. -p 8080:80) or pass a URL explicitly:"
+      echo "  dockex benchmark $container_name http://host:port/path/ [instances] [requests] [concurrency]"
+    else
+      echo "Error: Invalid or empty URL '$url_override'"
+    fi
     exit 1
   fi
 
-  # Prefer 80/tcp mapping; fall back to first exposed host port
-  local host_port
-  host_port=$(docker inspect -f '{{range $p, $arr := .NetworkSettings.Ports}}{{if and $arr (eq $p "80/tcp")}}{{(index $arr 0).HostPort}}{{"\n"}}{{end}}{{end}}' "$container_name" 2>/dev/null | head -n1 || true)
+  # Ensure trailing slash (ab requirement)
+  case "$url" in
+  */) ;;
+  *) url="${url}/" ;;
+  esac
 
-  if [ -z "$host_port" ]; then
-    host_port=$(docker inspect -f '{{range $p, $arr := .NetworkSettings.Ports}}{{if $arr}}{{(index $arr 0).HostPort}}{{"\n"}}{{end}}{{end}}' "$container_name" 2>/dev/null | head -n1 || true)
-  fi
-
-  if [ -z "$host_port" ]; then
-    echo "Error: Could not find any published host port for container '$container_name'."
-    echo "Make sure the container exposes an HTTP port (e.g., -p 8080:80) before benchmarking."
-    exit 1
-  fi
-
-  local url="http://127.0.0.1:${host_port}/"
-
-  echo "Performing benchmark on $url"
+  echo "Benchmark target: $url"
+  echo "Instances: $instances, Requests: $requests, Concurrency: $concurrency"
   echo
-  echo "Running single-node benchmark..."
-  ab -n "$requests" -c "$concurrency" "$url" 2>&1
 
-  echo
-  echo "Running multi-node benchmark with $instances instances..."
-
-  local tmp_dir
-  tmp_dir=$(mktemp -d)
-
-  local i
-  for i in $(seq 1 "$instances"); do
-    ab -n "$requests" -c "$concurrency" "$url" \
-      >"$tmp_dir/node_$i.out" 2>&1 &
-  done
-  wait
-
-  for i in $(seq 1 "$instances"); do
+  if [ "$have_host_ab" -eq 1 ]; then
+    # ---------------- host 'ab' path ---------------- #
+    echo "Using host 'ab' binary."
     echo
-    echo "=== Result from benchmark_node_$i ==="
-    cat "$tmp_dir/node_$i.out"
-  done
+    echo "Running single-node benchmark..."
+    ab -n "$requests" -c "$concurrency" "$url" 2>&1
 
-  rm -rf "$tmp_dir"
+    echo
+    echo "Running multi-node benchmark with $instances instances..."
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local i
+    for i in $(seq 1 "$instances"); do
+      ab -n "$requests" -c "$concurrency" "$url" >"$tmp_dir/node_$i.out" 2>&1 &
+    done
+    wait
+
+    for i in $(seq 1 "$instances"); do
+      echo
+      echo "=== Result from benchmark_node_$i ==="
+      cat "$tmp_dir/node_$i.out"
+    done
+    rm -rf "$tmp_dir"
+
+  else
+    # --------------- dockerized 'jordi/ab' path --------------- #
+    echo "Host 'ab' not found; using Docker image 'jordi/ab'."
+    echo
+
+    local docker_url="$url"
+
+    # If user did NOT override URL, use container's own network namespace & port
+    if [ -z "$url_override" ]; then
+      # Get first container port (e.g. '80/tcp')
+      local cport_key cport
+      cport_key=$(docker inspect -f '{{range $p, $arr := .NetworkSettings.Ports}}{{printf "%s\n" $p}}{{end}}' "$container_name" 2>/dev/null | head -n1 || true)
+      if [ -z "$cport_key" ]; then
+        cport=80
+      else
+        cport=${cport_key%%/*}
+      fi
+      docker_url="http://127.0.0.1:${cport}/"
+      # Ensure trailing slash
+      case "$docker_url" in
+      */) ;;
+      *) docker_url="${docker_url}/" ;;
+      esac
+      echo "Using container network namespace; internal URL: $docker_url"
+      echo
+    else
+      # Respect user-provided URL; just ensure slash
+      case "$docker_url" in
+      */) ;;
+      *) docker_url="${docker_url}/" ;;
+      esac
+    fi
+
+    echo "Running single-node benchmark (dockerized ab)..."
+    docker run --rm --network "container:${container_name}" \
+      jordi/ab -n "$requests" -c "$concurrency" "$docker_url" 2>&1
+
+    echo
+    echo "Running multi-node benchmark with $instances instances (dockerized ab)..."
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local i
+    for i in $(seq 1 "$instances"); do
+      docker run --rm --network "container:${container_name}" \
+        jordi/ab -n "$requests" -c "$concurrency" "$docker_url" >"$tmp_dir/node_$i.out" 2>&1 &
+    done
+    wait
+
+    for i in $(seq 1 "$instances"); do
+      echo
+      echo "=== Result from benchmark_node_$i ==="
+      cat "$tmp_dir/node_$i.out"
+    done
+    rm -rf "$tmp_dir"
+  fi
 
   echo
   echo "Benchmark summary:"
   echo "  Single-node: $requests requests, concurrency $concurrency."
   echo "  Multi-node:  $instances instances × $requests requests, concurrency $concurrency each."
+}
+
+# ---------------- ports helper --------------------- #
+ports_container() {
+  local container_name=$1
+  validate_container "$container_name" "any"
+
+  local inspect
+  inspect=$(docker inspect "$container_name")
+
+  echo "=== Ports for '$container_name' ==="
+  local lines
+  lines=$(echo "$inspect" | jq -r '.[0].NetworkSettings.Ports | to_entries[]? | select(.value != null) | "\(.key)\t\(.value[0].HostIp)\t\(.value[0].HostPort)"' 2>/dev/null || echo "")
+
+  if [ -z "$lines" ]; then
+    echo "No published ports."
+    return
+  fi
+
+  printf '%-18s %-18s %-18s\n' "CONTAINER PORT" "HOST IP" "HOST PORT"
+  printf '%-18s %-18s %-18s\n' "-------------" "-------" "---------"
+  while IFS=$'\t' read -r cport hip hport; do
+    printf '%-18s %-18s %-18s\n' "$cport" "${hip:-0.0.0.0}" "${hport:-"-"}"
+  done <<<"$lines"
+}
+
+# ---------------- dns helper ----------------------- #
+dns_info() {
+  local container_name=$1
+  local hostname=${2:-}
+
+  validate_container "$container_name" "running"
+
+  echo "=== DNS inside '$container_name' ==="
+  local resolv
+  resolv=$(docker exec "$container_name" cat /etc/resolv.conf 2>/dev/null || true)
+  if [ -z "$resolv" ]; then
+    echo "Could not read /etc/resolv.conf"
+  else
+    local servers search
+    servers=$(printf '%s\n' "$resolv" | awk '/^nameserver /{print $2}' | paste -sd',' - || true)
+    search=$(printf '%s\n' "$resolv" | awk '/^search /{$1=""; sub(/^ /,""); print}' || true)
+    echo "Servers: ${servers:-N/A}"
+    echo "Search : ${search:-N/A}"
+  fi
+
+  if [ -n "$hostname" ]; then
+    echo
+    echo "Resolving '$hostname' from inside container..."
+    if docker exec "$container_name" getent hosts "$hostname" >/dev/null 2>&1; then
+      docker exec "$container_name" getent hosts "$hostname"
+    elif docker exec "$container_name" ping -c1 -W3 "$hostname" >/dev/null 2>&1; then
+      docker exec "$container_name" ping -c1 -W3 "$hostname"
+    else
+      echo "Failed to resolve or reach '$hostname' (no getent/ping or resolution failed)."
+    fi
+  fi
+}
+
+# ---------------- trace helper --------------------- #
+trace_from_container() {
+  local container_name=$1
+  local target=$2
+  local port_arg=${3:-}
+
+  validate_container "$container_name" "running"
+
+  local url="" host="" port="" scheme="http"
+
+  if [[ "$target" =~ ^https?:// ]]; then
+    url="$target"
+    scheme=$(printf '%s\n' "$target" | sed -E 's#^([a-zA-Z]+)://.*#\1#')
+    host=$(printf '%s\n' "$target" | sed -E 's#^[a-zA-Z]+://([^/:]+).*#\1#')
+    if [[ "$target" =~ :([0-9]+) ]]; then
+      port="${BASH_REMATCH[1]}"
+    else
+      if [ "$scheme" = "https" ]; then
+        port=443
+      else
+        port=80
+      fi
+    fi
+  else
+    host="$target"
+    if [ -n "$port_arg" ]; then
+      port="$port_arg"
+    else
+      port=80
+    fi
+    if [ "$port" = "443" ]; then
+      scheme="https"
+    else
+      scheme="http"
+    fi
+    url="${scheme}://${host}:${port}/"
+  fi
+
+  echo "=== dockex trace ==="
+  echo "Container: $container_name"
+  echo "Target:    $target"
+  [ -n "$port" ] && echo "Port:      $port"
+  echo "URL:       $url"
+  echo
+
+  echo "-- DNS resolution (inside container) --"
+  if docker exec "$container_name" getent hosts "$host" >/dev/null 2>&1; then
+    docker exec "$container_name" getent hosts "$host"
+  elif docker exec "$container_name" ping -c1 -W3 "$host" >/dev/null 2>&1; then
+    docker exec "$container_name" ping -c1 -W3 "$host"
+  else
+    echo "DNS/ICMP resolution failed or tools missing."
+  fi
+
+  echo
+  echo "-- TCP connectivity --"
+  if docker exec "$container_name" command -v nc >/dev/null 2>&1; then
+    if docker exec "$container_name" nc -vz "$host" "$port" -w 5 >/dev/null 2>&1; then
+      echo "nc: TCP connect to $host:$port succeeded."
+    else
+      echo "nc: TCP connect to $host:$port FAILED."
+    fi
+  elif docker exec "$container_name" command -v telnet >/dev/null 2>&1; then
+    if docker exec "$container_name" sh -c "echo quit | telnet '$host' '$port'" >/dev/null 2>&1; then
+      echo "telnet: TCP connect to $host:$port succeeded."
+    else
+      echo "telnet: TCP connect to $host:$port FAILED."
+    fi
+  else
+    echo "No nc/telnet inside container; skipping TCP check."
+  fi
+
+  echo
+  echo "-- HTTP probe --"
+  if docker exec "$container_name" command -v curl >/dev/null 2>&1; then
+    if ! docker exec "$container_name" curl -sS -o /dev/null -w 'curl: HTTP %{http_code} in %{time_total}s\n' "$url"; then
+      echo "curl request failed."
+    fi
+  elif docker exec "$container_name" command -v wget >/dev/null 2>&1; then
+    if ! docker exec "$container_name" wget -q --server-response "$url" -O /dev/null 2>&1 | tail -n 5; then
+      echo "wget request failed."
+    fi
+  else
+    echo "No curl/wget inside container; skipping HTTP probe."
+  fi
 }
 
 # ---------------- ps summary ------------------------ #
@@ -943,6 +1311,9 @@ case "$command" in
 list)
   show_docker_listings
   ;;
+nets)
+  nets_topology
+  ;;
 create)
   if [ -z "$container_name" ]; then
     echo "Error: Image name is required."
@@ -1018,6 +1389,15 @@ shell)
   fi
   shell_into_container "$container_name"
   ;;
+exec-run)
+  if [ -z "$container_name" ]; then
+    echo "Error: Container name is required."
+    show_usage
+    exit 1
+  fi
+  shift 2
+  exec_run "$container_name" "$@"
+  ;;
 top)
   if [ -z "$container_name" ]; then
     echo "Error: Container name is required."
@@ -1065,6 +1445,30 @@ stats)
     exit 1
   fi
   stats_profile "$container_name" "${3:-30}" "${4:-2}"
+  ;;
+trace)
+  if [ -z "$container_name" ] || [ -z "${3:-}" ]; then
+    echo "Error: trace requires <container> and <host-or-url>."
+    show_usage
+    exit 1
+  fi
+  trace_from_container "$container_name" "$3" "${4:-}"
+  ;;
+ports)
+  if [ -z "$container_name" ]; then
+    echo "Error: Container name is required."
+    show_usage
+    exit 1
+  fi
+  ports_container "$container_name"
+  ;;
+dns)
+  if [ -z "$container_name" ]; then
+    echo "Error: Container name is required."
+    show_usage
+    exit 1
+  fi
+  dns_info "$container_name" "${3:-}"
   ;;
 doctor)
   doctor "${2:-}"
