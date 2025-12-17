@@ -1915,10 +1915,631 @@ doctor_php_version() {
 }
 
 ################################################################################
+# phpbrew-like native features (no phpbrew dependency)
+################################################################################
+
+# List versions known to apt sources (Sury/system repos)
+phpx_known() {
+  local show_more=0
+  if [[ "${1:-}" == "--more" ]]; then
+    show_more=1
+    shift || true
+  fi
+
+  if ! command -v apt-cache >/dev/null 2>&1; then
+    echo -e "${YELLOW}apt-cache not found; showing installed versions only.${NC}"
+    list_php_versions
+    return 0
+  fi
+
+  local versions=()
+  IFS=$'\n' read -r -d '' -a versions < <(
+    apt-cache pkgnames 2>/dev/null |
+      grep -E '^php[0-9]+\.[0-9]+-cli$' |
+      sed -E 's/^php([0-9]+\.[0-9]+)-cli$/\1/' |
+      sort -Vu &&
+      printf '\0'
+  )
+
+  if [[ ${#versions[@]} -eq 0 ]]; then
+    echo -e "${YELLOW}No PHP versions found in APT cache. (Did you run 'phpx sury'?)${NC}"
+    return 0
+  fi
+
+  echo -e "${GREEN}Known PHP versions from APT:${NC}"
+  local v
+  for v in "${versions[@]}"; do
+    if ((show_more == 1)) && command -v apt-cache >/dev/null 2>&1; then
+      # Try to show candidate package version (best-effort)
+      local cand=""
+      cand="$(apt-cache policy "php${v}-cli" 2>/dev/null | awk -F': ' '/Candidate:/ {print $2; exit}' || true)"
+      if [[ -n "$cand" && "$cand" != "(none)" ]]; then
+        printf "  - %s (candidate: %s)\n" "$v" "$cand"
+      else
+        printf "  - %s\n" "$v"
+      fi
+    else
+      printf "  - %s\n" "$v"
+    fi
+  done
+}
+
+# Variant map: these are distro-oriented "feature presets" (install/enable packages)
+# Notes:
+# - Some phpbrew compile-time variants have no true equivalent in apt builds (e.g. -debug),
+#   so we implement a pragmatic runtime analogue (e.g. disable xdebug).
+phpx_variants() {
+  local more=0
+  if [[ "${1:-}" == "--more" ]]; then more=1; fi
+
+  echo -e "${GREEN}phpx variants (native presets)${NC}"
+  echo -e "${YELLOW}Syntax:${NC} phpx build <X.Y> [+variant|-variant ...] [-- <ignored-configure-flags>]"
+
+  echo
+  echo -e "${GREEN}Core${NC}"
+  echo "  +default     Common extensions (curl, mbstring, xml, zip, intl, gd, opcache, soap, db drivers)"
+  echo "  +dbs         Database drivers: mysql, pgsql, sqlite3"
+  echo "  +fpm         Ensure php-fpm installed/enabled (systemd)"
+  echo "  +apache2     Ensure Apache integration packages are installed (mod_php or proxy_fcgi)"
+
+  echo
+  echo -e "${GREEN}Databases${NC}"
+  echo "  +mysql       php-mysql driver"
+  echo "  +pgsql       php-pgsql driver"
+  echo "  +sqlite      php-sqlite3 driver"
+
+  echo
+  echo -e "${GREEN}Common modules${NC}"
+  echo "  +curl        php-curl"
+  echo "  +mbstring    php-mbstring"
+  echo "  +xml         php-xml"
+  echo "  +zip         php-zip"
+  echo "  +gd          php-gd"
+  echo "  +intl        php-intl"
+  echo "  +soap        php-soap"
+  echo "  +opcache     php-opcache"
+
+  if ((more == 1)); then
+    echo
+    echo -e "${GREEN}Extra${NC}"
+    echo "  +redis       php-redis"
+    echo "  +memcached   php-memcached"
+    echo "  +imagick     php-imagick"
+    echo "  +imap        php-imap"
+    echo "  +xdebug      php-xdebug"
+    echo "  -xdebug      Disable xdebug (phpdismod) if present"
+    echo "  -debug       Alias for -xdebug (closest practical equivalent on apt builds)"
+  fi
+
+  echo
+  echo -e "${YELLOW}Tip:${NC} Use 'phpx ext <X.Y>' for interactive apt extension browsing/installs."
+}
+
+phpx__variant_to_ext_pkg() {
+  # Map variant token -> apt extension suffix (without phpX.Y- prefix).
+  # Return empty if the variant is not an apt extension package.
+  local v="$1"
+  case "$v" in
+  default) echo "__DEFAULT__" ;;
+  dbs) echo "__DBS__" ;;
+  mysql) echo "mysql" ;;
+  pgsql) echo "pgsql" ;;
+  sqlite) echo "sqlite3" ;;
+  curl) echo "curl" ;;
+  mbstring) echo "mbstring" ;;
+  xml) echo "xml" ;;
+  zip) echo "zip" ;;
+  gd) echo "gd" ;;
+  intl) echo "intl" ;;
+  soap) echo "soap" ;;
+  opcache) echo "opcache" ;;
+  redis) echo "redis" ;;
+  memcached) echo "memcached" ;;
+  imagick) echo "imagick" ;;
+  imap) echo "imap" ;;
+  xdebug) echo "xdebug" ;;
+  *) echo "" ;;
+  esac
+}
+
+phpx__apt_has_package() {
+  local pkg="$1"
+  apt-cache show "$pkg" >/dev/null 2>&1
+}
+
+phpx_build() {
+  require_sudo
+
+  if [[ $# -lt 1 ]]; then
+    echo -e "${RED}Usage: phpx build <X.Y> [+variant|-variant ...] [-- <configure flags>]${NC}"
+    return 2
+  fi
+
+  local version="$1"
+  shift
+  validate_php_version "$version"
+
+  # Parse variants until `--` (config flags are accepted but ignored on apt builds)
+  local raw_variants=()
+  local ignored_flags=()
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--" ]]; then
+      shift
+      ignored_flags=("$@")
+      break
+    fi
+    raw_variants+=("$1")
+    shift
+  done
+
+  if [[ ${#ignored_flags[@]} -gt 0 ]]; then
+    echo -e "${YELLOW}Note:${NC} configure flags are not applicable to apt-based builds; ignoring: ${ignored_flags[*]}"
+    log_action "WARN" "build: ignored configure flags: ${ignored_flags[*]}"
+  fi
+
+  # Always ensure core packages.
+  install_php_version "$version" || return 1
+
+  local want_fpm=0
+  local want_apache=0
+
+  # Expand variants to package suffixes and toggles
+  local install_suffixes=()
+  local disable_suffixes=()
+
+  local token op name mapped
+  for token in "${raw_variants[@]}"; do
+    op="${token:0:1}"
+    name="$token"
+    if [[ "$op" == "+" || "$op" == "-" ]]; then
+      name="${token:1}"
+    else
+      op="+"
+    fi
+
+    # Service toggles
+    case "$name" in
+    fpm) [[ "$op" == "+" ]] && want_fpm=1 || want_fpm=0; continue ;;
+    apache2) [[ "$op" == "+" ]] && want_apache=1 || want_apache=0; continue ;;
+    debug) # closest meaning on packaged builds
+      name="xdebug"
+      ;;
+    esac
+
+    mapped="$(phpx__variant_to_ext_pkg "$name")"
+    if [[ -z "$mapped" ]]; then
+      echo -e "${YELLOW}Unknown variant:${NC} $token (use 'phpx variants --more')"
+      continue
+    fi
+
+    if [[ "$mapped" == "__DEFAULT__" ]]; then
+      # Common baseline
+      local defaults=(curl mbstring xml zip intl gd opcache soap mysql pgsql sqlite3)
+      if [[ "$op" == "+" ]]; then
+        install_suffixes+=("${defaults[@]}")
+      else
+        disable_suffixes+=("${defaults[@]}")
+      fi
+      continue
+    fi
+
+    if [[ "$mapped" == "__DBS__" ]]; then
+      local dbs=(mysql pgsql sqlite3)
+      if [[ "$op" == "+" ]]; then
+        install_suffixes+=("${dbs[@]}")
+      else
+        disable_suffixes+=("${dbs[@]}")
+      fi
+      continue
+    fi
+
+    if [[ "$op" == "+" ]]; then
+      install_suffixes+=("$mapped")
+    else
+      disable_suffixes+=("$mapped")
+    fi
+  done
+
+  # Uniq the lists (lightweight)
+  local uniq_install=()
+  local seen=" "
+  local s
+  for s in "${install_suffixes[@]}"; do
+    [[ "$seen" == *" $s "* ]] && continue
+    uniq_install+=("$s")
+    seen+=" $s "
+  done
+  install_suffixes=("${uniq_install[@]}")
+
+  local uniq_disable=()
+  seen=" "
+  for s in "${disable_suffixes[@]}"; do
+    [[ "$seen" == *" $s "* ]] && continue
+    uniq_disable+=("$s")
+    seen+=" $s "
+  done
+  disable_suffixes=("${uniq_disable[@]}")
+
+  # Install required extension packages that exist
+  local pkgs=()
+  for s in "${install_suffixes[@]}"; do
+    local pkg="php${version}-${s}"
+    if phpx__apt_has_package "$pkg"; then
+      pkgs+=("$pkg")
+    else
+      echo -e "${YELLOW}Skipping:${NC} $pkg not found in apt sources."
+      log_action "WARN" "build: missing apt package: $pkg"
+    fi
+  done
+
+  if [[ ${#pkgs[@]} -gt 0 ]]; then
+    apt_update_once
+    echo -e "${YELLOW}Installing variant packages:${NC} ${pkgs[*]}"
+    if ! apt install -y "${pkgs[@]}" 2>&1 | show_last_lines; then
+      echo -e "${RED}Failed to install one or more variant packages.${NC}"
+      return 1
+    fi
+
+    # Enable installed modules
+    for s in "${install_suffixes[@]}"; do
+      if phpx__apt_has_package "php${version}-${s}"; then
+        phpenmod -v "$version" "$s" >/dev/null 2>&1 || true
+      fi
+    done
+  fi
+
+  # Disable requested modules
+  if [[ ${#disable_suffixes[@]} -gt 0 ]]; then
+    for s in "${disable_suffixes[@]}"; do
+      phpdismod -v "$version" "$s" >/dev/null 2>&1 || true
+    done
+  fi
+
+  # FPM toggle
+  if ((want_fpm == 1)); then
+    if systemctl list-unit-files | grep -q "^php${version}-fpm\.service"; then
+      systemctl enable "php${version}-fpm" >/dev/null 2>&1 || true
+      systemctl restart "php${version}-fpm" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  # Apache toggle (best-effort package + enable is handled by `phpx apache ...`)
+  if ((want_apache == 1)); then
+    if dpkg -l | grep -q "^ii  apache2 "; then
+      echo -e "${YELLOW}Apache detected.${NC} Use 'phpx apache fpm ${version}' or 'phpx apache modphp ${version}' to wire PHP."
+    fi
+  fi
+
+  echo -e "${GREEN}Build preset applied for PHP ${version}.${NC}"
+}
+
+# Source/PECL/GitHub extension installer (native, no phpbrew)
+phpx_ext_src() {
+  require_sudo
+
+  local action="${1:-}"
+  shift || true
+
+  local version=""
+  local enable=1
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --php=*)
+      version="${1#*=}"
+      ;;
+    --php)
+      shift
+      version="${1:-}"
+      ;;
+    --no-enable)
+      enable=0
+      ;;
+    *)
+      break
+      ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$version" ]]; then
+    version="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || true)"
+  fi
+  if [[ -z "$version" ]]; then
+    echo -e "${RED}Unable to detect PHP version. Use: phpx ext-src <install|uninstall> --php <X.Y> ...${NC}"
+    return 2
+  fi
+  validate_php_version "$version"
+
+  local phpbin="php${version}"
+  if ! command -v "$phpbin" >/dev/null 2>&1; then
+    echo -e "${YELLOW}PHP ${version} not installed. Installing...${NC}"
+    install_php_version "$version" || return 1
+  fi
+
+  local ext="${1:-}"
+  if [[ -z "$action" || -z "$ext" ]]; then
+    echo -e "${RED}Usage:${NC} phpx ext-src <install|uninstall> <pecl-name|github:org/repo[@ref]> [--php <X.Y>] [--no-enable]"
+    return 2
+  fi
+
+  case "$action" in
+  install)
+    ;;
+  uninstall|remove)
+    ;;
+  *)
+    echo -e "${RED}Unknown action:${NC} $action"
+    return 2
+    ;;
+  esac
+
+  # Ensure build tooling
+  apt_update_once
+  apt install -y git build-essential autoconf pkg-config 2>&1 | show_last_lines >/dev/null || true
+
+  # Ensure versioned dev tooling for phpize/php-config
+  apt install -y "php${version}-dev" php-pear 2>&1 | show_last_lines || true
+
+  local ext_dir=""
+  if command -v "php-config${version}" >/dev/null 2>&1; then
+    ext_dir="$(php-config${version} --extension-dir 2>/dev/null || true)"
+  fi
+  [[ -z "$ext_dir" ]] && ext_dir="$("$phpbin" -r 'echo ini_get("extension_dir");' 2>/dev/null || true)"
+
+  local mods_avail="/etc/php/${version}/mods-available"
+  local ini_file="${mods_avail}/${ext##*/}.ini" # best-effort; may adjust below
+
+  if [[ "$action" == "uninstall" || "$action" == "remove" ]]; then
+    local name="${ext##*/}"
+    name="${name#github:}"
+    name="${name%%@*}"
+    # Disable first
+    phpdismod -v "$version" "$name" >/dev/null 2>&1 || true
+    # Remove ini if we own it
+    if [[ -f "${mods_avail}/${name}.ini" ]]; then
+      rm -f "${mods_avail}/${name}.ini"
+    fi
+    echo -e "${GREEN}Disabled/removed module ini for:${NC} $name (Note: shared .so may remain in extension dir)"
+    return 0
+  fi
+
+  if [[ "$ext" =~ ^github: ]]; then
+    # github:org/repo[@ref]
+    local spec="${ext#github:}"
+    local ref=""
+    if [[ "$spec" == *"@"* ]]; then
+      ref="${spec##*@}"
+      spec="${spec%%@*}"
+    fi
+    local repo_url="https://github.com/${spec}.git"
+    local name="${spec##*/}"
+
+    local tmp
+    tmp="$(mktemp -d)"
+    log_action "INFO" "ext-src github install: ${repo_url} ref=${ref:-default} tmp=${tmp}"
+    if [[ -n "$ref" ]]; then
+      git clone --depth 1 --branch "$ref" "$repo_url" "$tmp/$name" 2>&1 | show_last_lines
+    else
+      git clone --depth 1 "$repo_url" "$tmp/$name" 2>&1 | show_last_lines
+    fi
+
+    ( cd "$tmp/$name" && "phpize${version}" >/dev/null && ./configure --with-php-config="$(command -v "php-config${version}")" >/dev/null && make -j"$(nproc 2>/dev/null || echo 2)" >/dev/null && make install >/dev/null ) || {
+      echo -e "${RED}Failed to build/install GitHub extension:${NC} $ext"
+      rm -rf "$tmp"
+      return 1
+    }
+    rm -rf "$tmp"
+
+    ini_file="${mods_avail}/${name}.ini"
+    if ((enable == 1)); then
+      mkdir -p "$mods_avail"
+      printf "; generated by phpx ext-src\nextension=%s.so\n" "$name" >"$ini_file"
+      phpenmod -v "$version" "$name" >/dev/null 2>&1 || true
+    fi
+
+    echo -e "${GREEN}Installed GitHub extension:${NC} $name (PHP $version)"
+    return 0
+  fi
+
+  # PECL path
+  local name="$ext"
+  # Run pecl with the requested php interpreter (best-effort)
+  if [[ -x /usr/bin/pecl ]]; then
+    # non-interactive: accept defaults
+    printf "\n" | "$phpbin" /usr/bin/pecl install "$name" 2>&1 | show_last_lines || {
+      echo -e "${RED}PECL install failed for:${NC} $name"
+      return 1
+    }
+  else
+    echo -e "${RED}pecl not found even after installing php-pear.${NC}"
+    return 1
+  fi
+
+  # Try to locate a matching .so (best-effort)
+  local so=""
+  if [[ -n "$ext_dir" && -d "$ext_dir" ]]; then
+    so="$(ls -1 "$ext_dir" 2>/dev/null | grep -E "^${name}.*\.so$" | head -n 1 || true)"
+  fi
+
+  ini_file="${mods_avail}/${name}.ini"
+  if ((enable == 1)); then
+    mkdir -p "$mods_avail"
+    if [[ -n "$so" ]]; then
+      printf "; generated by phpx ext-src\nextension=%s\n" "$so" >"$ini_file"
+    else
+      printf "; generated by phpx ext-src\nextension=%s.so\n" "$name" >"$ini_file"
+    fi
+    phpenmod -v "$version" "$name" >/dev/null 2>&1 || true
+    systemctl reload "php${version}-fpm" >/dev/null 2>&1 || true
+  fi
+
+  echo -e "${GREEN}Installed PECL extension:${NC} $name (PHP $version)"
+}
+
+# FPM command suite
+phpx_fpm() {
+  require_sudo
+
+  local sub="${1:-status}"
+  shift || true
+
+  local version="${1:-}"
+  if [[ -z "$version" ]]; then
+    version="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || true)"
+  else
+    shift || true
+  fi
+  validate_php_version "$version"
+
+  local svc="php${version}-fpm"
+
+  case "$sub" in
+  start|stop|restart|reload|status)
+    if systemctl list-unit-files | grep -q "^${svc}\.service"; then
+      systemctl "$sub" "$svc"
+    else
+      echo -e "${RED}Service not found:${NC} ${svc}.service"
+      return 1
+    fi
+    ;;
+  enable|disable)
+    if systemctl list-unit-files | grep -q "^${svc}\.service"; then
+      systemctl "$sub" "$svc"
+    else
+      echo -e "${RED}Service not found:${NC} ${svc}.service"
+      return 1
+    fi
+    ;;
+  test)
+    local bin="php-fpm${version}"
+    if command -v "$bin" >/dev/null 2>&1; then
+      "$bin" -t
+    else
+      echo -e "${YELLOW}php-fpm binary not found for ${version}. Trying service reload...${NC}"
+      systemctl reload "$svc" || true
+    fi
+    ;;
+  config)
+    echo -e "${GREEN}PHP-FPM config paths for ${version}:${NC}"
+    echo "  main: /etc/php/${version}/fpm/php-fpm.conf"
+    echo "  pools: /etc/php/${version}/fpm/pool.d/"
+    echo "  php.ini: /etc/php/${version}/fpm/php.ini"
+    ;;
+  *)
+    echo -e "${RED}Usage:${NC} phpx fpm {start|stop|restart|reload|status|enable|disable|test|config} [X.Y]"
+    return 2
+    ;;
+  esac
+}
+
+# Apache command suite
+phpx_apache() {
+  require_sudo
+
+  local sub="${1:-status}"
+  shift || true
+
+  local version="${1:-}"
+  if [[ -n "$version" ]]; then
+    shift || true
+  fi
+
+  if ! dpkg -l | grep -q "^ii  apache2 "; then
+    echo -e "${RED}Apache is not installed (package: apache2).${NC}"
+    return 1
+  fi
+
+  case "$sub" in
+  status)
+    systemctl is-active --quiet apache2 && echo -e "${GREEN}apache2: active${NC}" || echo -e "${YELLOW}apache2: inactive${NC}"
+    echo -e "${GREEN}Loaded PHP modules:${NC}"
+    apache2ctl -M 2>/dev/null | grep -E 'php[0-9]+\.[0-9]+_module' || echo "  (none)"
+    echo -e "${GREEN}Enabled PHP-FPM conf:${NC}"
+    ls -1 /etc/apache2/conf-enabled 2>/dev/null | grep -E '^php[0-9]+\.[0-9]+-fpm\.conf$' || echo "  (none)"
+    ;;
+  reload|restart)
+    systemctl "$sub" apache2
+    ;;
+  fpm)
+    if [[ -z "$version" ]]; then
+      echo -e "${RED}Usage:${NC} phpx apache fpm <X.Y>"
+      return 2
+    fi
+    validate_php_version "$version"
+    install_php_version "$version" || return 1
+
+    # Ensure required modules
+    a2enmod proxy_fcgi setenvif >/dev/null 2>&1 || true
+
+    # Disable any mod_php
+    local mods
+    mods=$(apache2ctl -M 2>/dev/null | grep -Eo 'php[0-9]+\.[0-9]+_module' | sed 's/_module//' || true)
+    local m
+    for m in $mods; do
+      a2dismod "$m" >/dev/null 2>&1 || true
+    done
+
+    # Disable other php*-fpm confs and enable target
+    local conf
+    for conf in /etc/apache2/conf-available/php*-fpm.conf; do
+      [[ -e "$conf" ]] || continue
+      local base
+      base="$(basename "$conf" .conf)"
+      [[ "$base" != "php${version}-fpm" ]] && a2disconf "$base" >/dev/null 2>&1 || true
+    done
+    if [[ -f "/etc/apache2/conf-available/php${version}-fpm.conf" ]]; then
+      a2enconf "php${version}-fpm" >/dev/null 2>&1 || true
+    else
+      echo -e "${YELLOW}Missing conf:${NC} /etc/apache2/conf-available/php${version}-fpm.conf"
+      echo -e "${YELLOW}Tip:${NC} On some distros you must create an Apache proxy_fcgi vhost config manually."
+    fi
+
+    systemctl restart "php${version}-fpm" >/dev/null 2>&1 || true
+    systemctl reload apache2
+    echo -e "${GREEN}Apache is now configured to use PHP-FPM ${version}.${NC}"
+    ;;
+  modphp)
+    if [[ -z "$version" ]]; then
+      echo -e "${RED}Usage:${NC} phpx apache modphp <X.Y>"
+      return 2
+    fi
+    validate_php_version "$version"
+    apt_update_once
+    apt install -y "libapache2-mod-php${version}" 2>&1 | show_last_lines || return 1
+
+    # Disable any php*-fpm confs
+    local conf
+    for conf in /etc/apache2/conf-available/php*-fpm.conf; do
+      [[ -e "$conf" ]] || continue
+      a2disconf "$(basename "$conf" .conf)" >/dev/null 2>&1 || true
+    done
+    a2dismod proxy_fcgi >/dev/null 2>&1 || true
+
+    # Disable other mod_php and enable target
+    local mods
+    mods=$(apache2ctl -M 2>/dev/null | grep -Eo 'php[0-9]+\.[0-9]+_module' | sed 's/_module//' || true)
+    local m
+    for m in $mods; do
+      [[ "$m" != "php${version}" ]] && a2dismod "$m" >/dev/null 2>&1 || true
+    done
+    a2enmod "php${version}" >/dev/null 2>&1 || true
+
+    systemctl reload apache2
+    echo -e "${GREEN}Apache is now configured to use mod_php ${version}.${NC}"
+    ;;
+  *)
+    echo -e "${RED}Usage:${NC} phpx apache {status|reload|restart|fpm|modphp} [X.Y]"
+    return 2
+    ;;
+  esac
+}
+
+################################################################################
 # Display Usage
 ################################################################################
 display_usage() {
-  echo -e "${GREEN}Usage: phpx {list|info|doctor|switch|ext|install|serve|run|remove|generate-config|sury|clean|self-update} <arguments>${NC}"
+  echo -e "${GREEN}Usage: phpx {list|info|doctor|switch|ext|install|serve|run|remove|generate-config|sury|clean|self-update|known|variants|build|ext-src|fpm|apache} <arguments>${NC}"
   echo
   echo -e "${YELLOW}Commands and Arguments:${NC}"
 
@@ -1946,6 +2567,27 @@ display_usage() {
     - With --install, installs the given comma-separated list of extension names non-interactively.
     - Without --install, you will be prompted to choose extensions to install."
 
+
+  echo -e "  ${GREEN}known [--more]${NC}
+    Lists PHP X.Y versions available from your current APT sources (useful after 'phpx sury').
+    With --more, also prints the candidate package version for each X.Y."
+
+  echo -e "  ${GREEN}variants [--more]${NC}
+    Shows supported variant presets usable with 'phpx build' (distro-oriented, not source compilation)."
+
+  echo -e "  ${GREEN}build <php_version> [+variant|-variant ...] [-- <configure flags>]${NC}
+    Applies a variant preset for a PHP version using APT packages and module enable/disable.
+    Notes:
+      - This is NOT a source compiler; any flags after '--' are accepted but ignored (logged)."
+
+  echo -e "  ${GREEN}ext-src <install|uninstall> <pecl-name|github:org/repo[@ref]> [--php <php_version>] [--no-enable]${NC}
+    Installs extensions from PECL (builds via phpize/php-config) or from GitHub repos, then enables them by writing mods-available ini."
+
+  echo -e "  ${GREEN}fpm {start|stop|restart|reload|status|enable|disable|test|config} [php_version]${NC}
+    Controls the php-fpm service for a specific PHP version and can run config tests."
+
+  echo -e "  ${GREEN}apache {status|reload|restart|fpm|modphp} [php_version]${NC}
+    Apache command suite; can wire Apache to PHP-FPM or mod_php for a specific PHP version."
   echo -e "  ${GREEN}install|i composer${NC}
     Installs Composer globally if not already installed, then updates it."
 
@@ -2238,8 +2880,8 @@ perform_system_checks() {
     need_apt_tools=1
     ;;
   *)
-    # For things like: list, info, doctor, ext, serve, run, generate-config, clean, or unknown:
-    # skip network + apt checks; only do disk-space sanity.
+  # For things like: list, info, doctor, ext, serve, run, generate-config, clean, or unknown:
+  # skip network + apt checks; only do disk-space sanity.
     ;;
   esac
 
@@ -2555,6 +3197,28 @@ sury)
   ;;
 clean)
   check_and_clean_php_extensions "$2"
+  ;;
+known)
+  phpx_known "${@:2}"
+  ;;
+variants)
+  phpx_variants "${@:2}"
+  ;;
+build)
+  shift
+  phpx_build "$@"
+  ;;
+ext-src|extsrc|extsource)
+  shift
+  phpx_ext_src "$@"
+  ;;
+fpm)
+  shift
+  phpx_fpm "$@"
+  ;;
+apache)
+  shift
+  phpx_apache "$@"
   ;;
 *)
   display_usage
