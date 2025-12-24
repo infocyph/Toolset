@@ -615,24 +615,27 @@ switch_php_version() {
   local requested_version=""
   local no_web_config=0
   local assume_yes=0
+  local ext_tokens=()
 
   if [[ -n "${PHPX_ASSUME_YES:-}" ]]; then
     assume_yes=1
   fi
 
+  # Parse args:
+  #   phpx switch <X.Y> [--no-web] [+ext|-ext|ext ...]
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --no-web)
       no_web_config=1
       ;;
-    -y | --yes)
+    -y|--yes)
       assume_yes=1
       ;;
     *)
       if [[ -z "$requested_version" ]]; then
         requested_version="$1"
       else
-        echo -e "${YELLOW}Unknown argument to switch: $1${NC}"
+        ext_tokens+=("$1")
       fi
       ;;
     esac
@@ -640,7 +643,7 @@ switch_php_version() {
   done
 
   if [[ -z "$requested_version" ]]; then
-    echo -e "${RED}No PHP version specified. Usage: phpx switch <X.Y> [--no-web]${NC}"
+    echo -e "${RED}No PHP version specified. Usage: phpx switch <X.Y> [--no-web] [+ext|-ext|ext ...]${NC}"
     log_action "ERROR" "No PHP version specified to switch."
     exit 1
   fi
@@ -680,6 +683,77 @@ switch_php_version() {
     update-alternatives --set phar.phar "$pharphar_bin" >/dev/null 2>&1 || true
   fi
 
+  # ────────────────────────────────────────────────────────────────
+  # Extension add/remove during switch:
+  #   phpx switch 8.4 +mysql -curl
+  #   phpx switch 8.3 mysql
+  # Behavior (APT-based):
+  #   +ext / ext => apt install phpX.Y-ext
+  #   -ext       => phpdismod (best-effort) + apt remove phpX.Y-ext
+  # ────────────────────────────────────────────────────────────────
+  if [[ ${#ext_tokens[@]} -gt 0 ]]; then
+    local to_add=()
+    local to_remove=()
+    local t e
+
+    for t in "${ext_tokens[@]}"; do
+      [[ -n "$t" ]] || continue
+      if [[ "$t" == +* ]]; then
+        e="${t:1}"
+        [[ -n "$e" ]] && to_add+=("$e")
+      elif [[ "$t" == -* ]]; then
+        e="${t:1}"
+        [[ -n "$e" ]] && to_remove+=("$e")
+      else
+        to_add+=("$t")
+      fi
+    done
+
+    if command -v apt >/dev/null 2>&1; then
+      apt_update_once
+
+      if [[ ${#to_add[@]} -gt 0 ]]; then
+        for e in "${to_add[@]}"; do
+          echo -e "${YELLOW}Installing extension package:${NC} php${final_version}-${e}"
+          log_action "INFO" "switch: installing php${final_version}-${e}"
+          apt install -y "php${final_version}-${e}" 2>&1 | show_last_lines || {
+            echo -e "${RED}Failed to install php${final_version}-${e}${NC}"
+            log_action "ERROR" "switch: failed to install php${final_version}-${e}"
+            exit 1
+          }
+          # Some packages auto-enable; try enabling by name (best-effort)
+          if command -v phpenmod >/dev/null 2>&1; then
+            phpenmod -v "$final_version" "$e" >/dev/null 2>&1 || true
+          fi
+        done
+      fi
+
+      if [[ ${#to_remove[@]} -gt 0 ]]; then
+        for e in "${to_remove[@]}"; do
+          echo -e "${YELLOW}Removing extension package:${NC} php${final_version}-${e}"
+          log_action "INFO" "switch: removing php${final_version}-${e}"
+          if command -v phpdismod >/dev/null 2>&1; then
+            phpdismod -v "$final_version" "$e" >/dev/null 2>&1 || true
+          fi
+          apt remove -y "php${final_version}-${e}" 2>&1 | show_last_lines || true
+        done
+      fi
+
+      # Restart services if running
+      if command -v systemctl >/dev/null 2>&1; then
+        if systemctl is-active --quiet "php${final_version}-fpm" 2>/dev/null; then
+          systemctl restart "php${final_version}-fpm" >/dev/null 2>&1 || true
+        fi
+        if systemctl is-active --quiet apache2 2>/dev/null; then
+          systemctl reload apache2 >/dev/null 2>&1 || systemctl restart apache2 >/dev/null 2>&1 || true
+        fi
+      fi
+    else
+      echo -e "${YELLOW}APT not found; extension add/remove via switch is only supported on Debian/Ubuntu in this script.${NC}"
+      log_action "WARN" "switch: apt not found; skipping extension ops."
+    fi
+  fi
+
   echo -e "${GREEN}Switched the default PHP CLI to version $final_version.${NC}"
   log_action "INFO" "Switched to PHP version $final_version."
 
@@ -689,6 +763,7 @@ switch_php_version() {
     log_action "INFO" "Skipping web server configuration for PHP $final_version (--no-web)."
   fi
 }
+
 
 ################################################################################
 # Install PHP Extensions (interactive + non-interactive via --install and -y/env)
@@ -1969,51 +2044,82 @@ phpx_known() {
 # - Some phpbrew compile-time variants have no true equivalent in apt builds (e.g. -debug),
 #   so we implement a pragmatic runtime analogue (e.g. disable xdebug).
 phpx_variants() {
-  local more=0
-  if [[ "${1:-}" == "--more" ]]; then more=1; fi
+  # Show installed local PHP X.Y versions and remote-available versions (APT) not installed locally.
+  # This intentionally focuses on version discovery (not build presets).
+  local local_versions=()
+  local remote_versions=()
 
-  echo -e "${GREEN}phpx variants (native presets)${NC}"
-  echo -e "${YELLOW}Syntax:${NC} phpx build <X.Y> [+variant|-variant ...] [-- <ignored-configure-flags>]"
+  # ── Local detection: /usr/bin/phpX.Y, /usr/local/bin/phpX.Y, /etc/php/X.Y
+  local f v
+  for f in /usr/bin/php[0-9].[0-9] /usr/local/bin/php[0-9].[0-9]; do
+    [[ -x "$f" ]] || continue
+    v="${f##*php}"
+    local_versions+=("$v")
+  done
 
-  echo
-  echo -e "${GREEN}Core${NC}"
-  echo "  +default     Common extensions (curl, mbstring, xml, zip, intl, gd, opcache, soap, db drivers)"
-  echo "  +dbs         Database drivers: mysql, pgsql, sqlite3"
-  echo "  +fpm         Ensure php-fpm installed/enabled (systemd)"
-  echo "  +apache2     Ensure Apache integration packages are installed (mod_php or proxy_fcgi)"
+  if [[ -d /etc/php ]]; then
+    for f in /etc/php/[0-9].[0-9]; do
+      [[ -d "$f" ]] || continue
+      v="${f##*/}"
+      local_versions+=("$v")
+    done
+  fi
 
-  echo
-  echo -e "${GREEN}Databases${NC}"
-  echo "  +mysql       php-mysql driver"
-  echo "  +pgsql       php-pgsql driver"
-  echo "  +sqlite      php-sqlite3 driver"
+  # De-dup + sort
+  local local_sorted=""
+  if [[ ${#local_versions[@]} -gt 0 ]]; then
+    local_sorted="$(printf '%s\n' "${local_versions[@]}" | awk 'NF' | sort -Vu)"
+  fi
 
-  echo
-  echo -e "${GREEN}Common modules${NC}"
-  echo "  +curl        php-curl"
-  echo "  +mbstring    php-mbstring"
-  echo "  +xml         php-xml"
-  echo "  +zip         php-zip"
-  echo "  +gd          php-gd"
-  echo "  +intl        php-intl"
-  echo "  +soap        php-soap"
-  echo "  +opcache     php-opcache"
-
-  if ((more == 1)); then
-    echo
-    echo -e "${GREEN}Extra${NC}"
-    echo "  +redis       php-redis"
-    echo "  +memcached   php-memcached"
-    echo "  +imagick     php-imagick"
-    echo "  +imap        php-imap"
-    echo "  +xdebug      php-xdebug"
-    echo "  -xdebug      Disable xdebug (phpdismod) if present"
-    echo "  -debug       Alias for -xdebug (closest practical equivalent on apt builds)"
+  echo -e "${GREEN}Local installed PHP versions:${NC}"
+  if [[ -n "$local_sorted" ]]; then
+    echo "$local_sorted" | sed 's/^/  - /'
+  else
+    echo "  (none detected)"
   fi
 
   echo
-  echo -e "${YELLOW}Tip:${NC} Use 'phpx ext <X.Y>' for interactive apt extension browsing/installs."
+
+  # ── Remote discovery: APT cache (requires enabled repos, e.g. Sury/Ondrej)
+  if command -v apt-cache >/dev/null 2>&1; then
+    IFS=$'\n' read -r -d '' -a remote_versions < <(
+      apt-cache pkgnames 2>/dev/null |
+        grep -E '^php[0-9]+\.[0-9]+-cli$' |
+        sed -E 's/^php([0-9]+\.[0-9]+)-cli$/\1/' |
+        sort -Vu &&
+        printf '\0'
+    )
+  fi
+
+  if [[ ${#remote_versions[@]} -eq 0 ]]; then
+    echo -e "${YELLOW}Remote-available PHP versions (not installed locally):${NC}"
+    echo "  (none detected / apt-cache not available / repo not enabled)"
+    echo -e "${YELLOW}Tip:${NC} Run: phpx sury   (to enable Sury/Ondrej PHP repos on Debian/Ubuntu)"
+    return 0
+  fi
+
+  # Compute remote - local
+  local missing=()
+  local rv
+  if [[ -n "$local_sorted" ]]; then
+    while IFS= read -r rv; do
+      [[ -n "$rv" ]] || continue
+      if ! grep -qx "$rv" <<<"$local_sorted"; then
+        missing+=("$rv")
+      fi
+    done < <(printf '%s\n' "${remote_versions[@]}")
+  else
+    missing=("${remote_versions[@]}")
+  fi
+
+  echo -e "${GREEN}Remote-available PHP versions (not installed locally):${NC}"
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    printf '%s\n' "${missing[@]}" | sed 's/^/  - /'
+  else
+    echo "  (all remote versions already installed locally)"
+  fi
 }
+
 
 phpx__variant_to_ext_pkg() {
   # Map variant token -> apt extension suffix (without phpX.Y- prefix).
@@ -2535,11 +2641,105 @@ phpx_apache() {
   esac
 }
 
+
+################################################################################
+# PHP Syntax Checker (lint all project PHP files)
+################################################################################
+phpx_syntax() {
+  # Default excluded directories
+  local excludes=("vendor" "node_modules")
+
+  # Allow: phpx syntax --exclude dir --exclude other
+  # Also allow passing directory names directly as excludes.
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --exclude)
+      shift
+      [[ -n "${1:-}" ]] || { echo -e "${RED}Missing value for --exclude${NC}"; return 2; }
+      excludes+=("${1#./}")
+      ;;
+    --exclude=*)
+      excludes+=("${1#*=}")
+      ;;
+    -h|--help)
+      echo "Usage: phpx syntax [--exclude dir]... [dir-to-exclude ...]"
+      echo "  - Lints all *.php files under current directory."
+      echo "  - Default excludes: vendor, node_modules"
+      echo "  - Prints ONLY failures (skips 'No syntax errors detected')."
+      return 0
+      ;;
+    *)
+      excludes+=("${1#./}")
+      ;;
+    esac
+    shift
+  done
+
+  if ! command -v php >/dev/null 2>&1; then
+    echo -e "${RED}php binary not found in PATH.${NC}"
+    return 1
+  fi
+
+  local jobs
+  jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)"
+  [[ -n "$jobs" ]] || jobs=1
+
+  # Build find prune expression
+  local prune=()
+  local ex
+  for ex in "${excludes[@]}"; do
+    [[ -n "$ex" ]] || continue
+    prune+=(-path "./$ex" -o -path "./$ex/*" -o)
+  done
+  # Drop trailing -o
+  if [[ ${#prune[@]} -gt 0 ]]; then
+    unset 'prune[${#prune[@]}-1]'
+  fi
+
+  # Run lint checks in parallel; show progress in a single updating line (\r).
+  # Note: With parallel workers, progress output can interleave slightly; errors are still clean.
+  local rc=0
+  if [[ ${#prune[@]} -gt 0 ]]; then
+    find -L . \( "${prune[@]}" \) -prune -o -name "*.php" -print0 \
+      | xargs -0 -n1 -P"$jobs" bash -c '
+          f="$1"
+          printf "\rScanning: %s" "$f" >&2
+          out="$(php -l "$f" 2>&1)"
+          if ! grep -q "No syntax errors detected" <<<"$out"; then
+            printf "\n%s\n" "$out"
+            exit 2
+          fi
+        ' _ || rc=$?
+  else
+    find -L . -name "*.php" -print0 \
+      | xargs -0 -n1 -P"$jobs" bash -c '
+          f="$1"
+          printf "\rScanning: %s" "$f" >&2
+          out="$(php -l "$f" 2>&1)"
+          if ! grep -q "No syntax errors detected" <<<"$out"; then
+            printf "\n%s\n" "$out"
+            exit 2
+          fi
+        ' _ || rc=$?
+  fi
+
+  # Clear progress line
+  printf "\r\033[2K\r" >&2
+
+  if [[ $rc -eq 0 ]]; then
+    echo -e "${GREEN}✅ PHP syntax check passed (no failures).${NC}"
+    return 0
+  fi
+
+  echo -e "${RED}❌ PHP syntax check failed.${NC}" >&2
+  return 1
+}
+
 ################################################################################
 # Display Usage
 ################################################################################
 display_usage() {
-  echo -e "${GREEN}Usage: phpx {list|info|doctor|switch|ext|install|serve|run|remove|generate-config|sury|clean|self-update|known|variants|build|ext-src|fpm|apache} <arguments>${NC}"
+  echo -e "${GREEN}Usage: phpx {list|info|doctor|switch|ext|install|serve|run|remove|generate-config|sury|clean|self-update|known|variants|syntax|fpm|apache} <arguments>${NC}"
   echo
   echo -e "${YELLOW}Commands and Arguments:${NC}"
 
@@ -2552,13 +2752,13 @@ display_usage() {
 
   echo -e "  ${GREEN}doctor <php_version> [--fix]${NC}
     Runs sanity checks for a PHP version: CLI vs FPM mismatch, broken extensions, Apache module conflicts, FPM sizing hints.
-    With --fix, it also:
-      - cleans broken extension ini references (same as 'phpx clean <version>')
-      - optionally disables extra Apache mod_php modules (keeps one)."
+    With --fix, it can auto-clean broken extension ini references (same as: phpx clean <version>)."
 
-  echo -e "  ${GREEN}switch|s <php_version> [--no-web]${NC}
+  echo -e "  ${GREEN}switch|s <php_version> [--no-web] [+ext|-ext|ext ...]${NC}
     Switches to the specified PHP version (e.g., 8.2), installing it if not found.
-    Also installs PHP-FPM if required for Nginx or Lighttpd, and configures the web server.
+    Supports add/remove extensions during switch:
+      phpx switch 8.4 +mysql -curl
+      phpx switch 8.3 mysql
     Use --no-web to skip the web-server configuration wizard (useful in CI / CLI-only setups)."
 
   echo -e "  ${GREEN}ext|extensions|x [php_version] [--install=\"ext1,ext2\"] [-y|--yes]${NC}
@@ -2567,27 +2767,12 @@ display_usage() {
     - With --install, installs the given comma-separated list of extension names non-interactively.
     - Without --install, you will be prompted to choose extensions to install."
 
+  echo -e "  ${GREEN}remove <php_version>${NC}
+    Removes a PHP version (APT-based) and related packages."
 
-  echo -e "  ${GREEN}known [--more]${NC}
-    Lists PHP X.Y versions available from your current APT sources (useful after 'phpx sury').
-    With --more, also prints the candidate package version for each X.Y."
+  echo -e "  ${GREEN}remove <php_version> ext [--remove=\"ext1,ext2\"] [-y|--yes]${NC}
+    Removes one or more PHP extension packages for a specific PHP version."
 
-  echo -e "  ${GREEN}variants [--more]${NC}
-    Shows supported variant presets usable with 'phpx build' (distro-oriented, not source compilation)."
-
-  echo -e "  ${GREEN}build <php_version> [+variant|-variant ...] [-- <configure flags>]${NC}
-    Applies a variant preset for a PHP version using APT packages and module enable/disable.
-    Notes:
-      - This is NOT a source compiler; any flags after '--' are accepted but ignored (logged)."
-
-  echo -e "  ${GREEN}ext-src <install|uninstall> <pecl-name|github:org/repo[@ref]> [--php <php_version>] [--no-enable]${NC}
-    Installs extensions from PECL (builds via phpize/php-config) or from GitHub repos, then enables them by writing mods-available ini."
-
-  echo -e "  ${GREEN}fpm {start|stop|restart|reload|status|enable|disable|test|config} [php_version]${NC}
-    Controls the php-fpm service for a specific PHP version and can run config tests."
-
-  echo -e "  ${GREEN}apache {status|reload|restart|fpm|modphp} [php_version]${NC}
-    Apache command suite; can wire Apache to PHP-FPM or mod_php for a specific PHP version."
   echo -e "  ${GREEN}install|i composer${NC}
     Installs Composer globally if not already installed, then updates it."
 
@@ -2603,48 +2788,39 @@ display_usage() {
       --router <file> (Custom router script)
       -v|--verbose    (Verbose output)"
 
-  echo -e "  ${GREEN}run <script_path> [php_version]${NC}
-    Runs a PHP script using the specified or currently active PHP version."
-
-  echo -e "  ${GREEN}remove <php_version>${NC}
-    Removes the specified PHP version and all related packages."
-
-  echo -e "  ${GREEN}remove <php_version> ext [--remove=\"ext1,ext2\"]${NC}
-    Removes selected PHP extensions for the given version.
-    - With --remove, removes the given comma-separated list of extension names non-interactively.
-    - Without --remove, you will be prompted to select extensions to remove."
+  echo -e "  ${GREEN}run <script> [php_version]${NC}
+    Runs a PHP script file using a specific PHP version (or the current default)."
 
   echo -e "  ${GREEN}generate-config <environment> <php_version>${NC}
-    Generates a PHP-FPM configuration and php.ini template for the given version and environment (production|development)."
+    Generates a tuned php.ini + FPM pool config for an environment (development|production) and PHP version."
 
   echo -e "  ${GREEN}sury${NC}
-    Adds the Sury (or Ondrej) repository if needed (Debian/Ubuntu), enabling the latest PHP packages."
+    Adds Sury/Ondrej PHP repositories (Debian/Ubuntu) so more PHP versions are available via APT."
 
-  echo -e "  ${GREEN}clean${NC}
-    Cleans up missing or broken extension references for a specified or current PHP version."
+  echo -e "  ${GREEN}clean <php_version>${NC}
+    Cleans broken extension ini references for the given PHP version (removes dead .ini files pointing to missing .so)."
 
   echo -e "  ${GREEN}self-update${NC}
-    Updates the phpx script itself to the latest version from the official source."
+    Updates phpx from the official Toolset repository."
 
-  echo
-  echo -e "${YELLOW}Examples:${NC}"
-  echo -e "  ${GREEN}phpx list${NC}
-    Shows all installed PHP versions with CLI/FPM information."
+  echo -e "  ${GREEN}known [--more]${NC}
+    Lists PHP X.Y versions available from your current APT sources (useful after 'phpx sury').
+    With --more, also prints the candidate package version for each X.Y."
 
-  echo -e "  ${GREEN}phpx info 8.3${NC}
-    Displays a summarized config overview for PHP 8.3."
+  echo -e "  ${GREEN}variants${NC}
+    Shows local installed PHP versions and remote-available versions (APT) not installed locally."
 
-  echo -e "  ${GREEN}phpx doctor 8.2 --fix${NC}
-    Runs checks and cleans broken extensions / Apache PHP module conflicts for PHP 8.2."
+  echo -e "  ${GREEN}syntax|lint|check${NC}
+    Lints all *.php files in the current directory (skips vendor/node_modules by default).
+    You can exclude more dirs:
+      phpx syntax --exclude storage --exclude cache"
 
-  echo -e "  ${GREEN}phpx switch 8.2 --no-web${NC}
-    Switches to PHP 8.2 and sets it as CLI default, but skips web-server configuration."
+  echo -e "  ${GREEN}fpm {start|stop|restart|reload|status|enable|disable|test|config} [php_version]${NC}
+    Controls the php-fpm service for a specific PHP version and can run config tests."
 
-  echo -e "  ${GREEN}phpx ext 8.2 --install=redis,imagick${NC}
-    Installs redis and imagick extensions for PHP 8.2 without interactive selection."
-
-  echo -e "  ${GREEN}phpx install composer${NC}
-    Installs Composer globally if missing, then does a composer self-update."
+  echo -e "  ${GREEN}apache {status|reload|restart|fpm|modphp} [php_version]${NC}
+    Apache command suite; can wire Apache to PHP-FPM or mod_php for a specific PHP version."
+}
 
   echo -e "  ${GREEN}phpx install xdebug,redis${NC}
     Installs multiple PECL packages (e.g., xdebug and redis)."
@@ -3204,13 +3380,9 @@ known)
 variants)
   phpx_variants "${@:2}"
   ;;
-build)
+syntax|lint|check)
   shift
-  phpx_build "$@"
-  ;;
-ext-src|extsrc|extsource)
-  shift
-  phpx_ext_src "$@"
+  phpx_syntax "$@"
   ;;
 fpm)
   shift
