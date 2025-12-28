@@ -87,12 +87,12 @@ usage() {
   echo "🗄️ Stashing & Cleanup:"
   echo "  stash [subcommand]                               Manage stash operations"
   echo "      - stash                      (interactive menu)"
-  echo "      - stash save [msg]           Save with message (default WIP-style)"
+  echo "      - stash save [msg...]           Save with message (default WIP-style)"
   echo "      - stash list                 List stashes"
   echo "      - stash apply <n>            Apply stash@{n}"
   echo "      - stash pop <n>              Pop stash@{n}"
   echo "      - stash drop <n>             Drop stash@{n}"
-  echo "      - stash rename <n> <name>    Rename stash@{n}"
+  echo "      - stash rename <n> <name...>    Rename stash@{n}"
   echo "      - stash clear                Delete all stashes"
   echo "  wip <save|list|pop|apply|clear>                  Opinionated WIP stash helper"
   echo "  clean [--force]                                 Clean untracked files and directories"
@@ -708,7 +708,8 @@ fetch_prs_and_commits() {
       read -rp "Enter the start commit hash or tag: " start_ref
     fi
 
-    commit_range="${start_ref}..${end_ref}"
+    # Inclusive on both ends (matches your date-range behavior)
+    commit_range="$(build_inclusive_range_spec "$start_ref" "$end_ref")"
 
     local safe_start safe_end
     safe_start=${start_ref//\//_}
@@ -723,51 +724,88 @@ fetch_prs_and_commits() {
     echo "PRs, Non-PR Merges, and Standalone Commits Report"
     echo ""
 
+    # ------------------------- PR merges -------------------------
     echo "1️⃣ PRs:"
     echo ""
-    git log --merges --pretty=format:"%h|%s|%b|%an|%ae|%ad" "$commit_range" | grep "Merge pull request" | while IFS= read -r merge_commit; do
-      local merge_hash pr_details
-      merge_hash=$(echo "$merge_commit" | cut -d'|' -f1)
-      pr_details=$(echo "$merge_commit" | cut -d'|' -f2-)
-      echo "🔹 Merge Commit: $merge_hash | $pr_details"
-      echo "   PR Contains the following commits:"
-      git log "${merge_hash}^1..${merge_hash}" --no-merges --pretty=format:"   - %h | %s | %an (%ad)"
-      echo ""
-    done
 
+    git log --merges --date=iso-strict \
+      --pretty=format:'%H|%s|%an|%ae|%ad' "$commit_range" |
+      while IFS='|' read -r merge_hash subject an ae ad; do
+        [[ -z "$merge_hash" ]] && continue
+        [[ "$subject" != *"Merge pull request"* ]] && continue
+
+        echo "🔹 Merge Commit: ${merge_hash:0:7} | $subject | $an|$ae|$ad"
+
+        # Keep body without breaking parsing (body is fetched per-merge, not in the list stream)
+        local body
+        body="$(git show -s --format=%b "$merge_hash" 2>/dev/null || true)"
+        if [[ -n "${body//[[:space:]]/}" ]]; then
+          echo "   Body:"
+          printf '%s\n' "$body" | sed 's/^/   | /'
+        fi
+
+        echo "   PR Contains the following commits:"
+        git log --no-merges --date=iso-strict \
+          --pretty=format:'   - %h | %s | %an (%ad)' \
+          "${merge_hash}^1..${merge_hash}" 2>/dev/null || true
+        echo ""
+      done
+
+    # ---------------------- Non-PR merges ------------------------
     echo "2️⃣ Non-PR Merges:"
     echo ""
-    git log --merges --pretty=format:"%h|%s|%b|%an|%ae|%ad" "$commit_range" | grep -v "Merge pull request" | while IFS= read -r merge_commit; do
-      local merge_hash merge_details
-      merge_hash=$(echo "$merge_commit" | cut -d'|' -f1)
-      merge_details=$(echo "$merge_commit" | cut -d'|' -f2-)
-      echo "🔹 Merge Commit: $merge_hash | $merge_details"
-      echo "   Contains the following commits:"
-      git log "${merge_hash}^1..${merge_hash}" --no-merges --pretty=format:"   - %h | %s | %an (%ad)"
-      echo ""
-    done
 
+    git log --merges --date=iso-strict \
+      --pretty=format:'%H|%s|%an|%ae|%ad' "$commit_range" |
+      while IFS='|' read -r merge_hash subject an ae ad; do
+        [[ -z "$merge_hash" ]] && continue
+        [[ "$subject" == *"Merge pull request"* ]] && continue
+
+        echo "🔹 Merge Commit: ${merge_hash:0:7} | $subject | $an|$ae|$ad"
+
+        local body
+        body="$(git show -s --format=%b "$merge_hash" 2>/dev/null || true)"
+        if [[ -n "${body//[[:space:]]/}" ]]; then
+          echo "   Body:"
+          printf '%s\n' "$body" | sed 's/^/   | /'
+        fi
+
+        echo "   Contains the following commits:"
+        git log --no-merges --date=iso-strict \
+          --pretty=format:'   - %h | %s | %an (%ad)' \
+          "${merge_hash}^1..${merge_hash}" 2>/dev/null || true
+        echo ""
+      done
+
+    # ---------------------- Standalone commits -------------------
     echo "3️⃣ Standalone Commits:"
     echo ""
 
-    local all_commits merge_commits standalone_commits
-    all_commits=$(git log --no-merges --pretty=format:"%h" "$commit_range")
-    merge_commits=$(git log --merges --pretty=format:"%h" "$commit_range" | while IFS= read -r merge_commit; do
-      git log "${merge_commit}^1..${merge_commit}" --no-merges --pretty=format:"%h"
-    done)
+    local all_commits merge_commits standalone_commits merges
+    all_commits="$(git log --no-merges --pretty=format:'%H' "$commit_range" 2>/dev/null | LC_ALL=C sort -u)"
+    merges="$(git log --merges --pretty=format:'%H' "$commit_range" 2>/dev/null || true)"
 
-    standalone_commits=$(comm -23 <(echo "$all_commits" | sort) <(echo "$merge_commits" | sort))
+    merge_commits="$(
+      while IFS= read -r m; do
+        [[ -z "$m" ]] && continue
+        git log --no-merges --pretty=format:'%H' "${m}^1..${m}" 2>/dev/null || true
+      done <<<"$merges" | LC_ALL=C sort -u
+    )"
 
-    for commit in $standalone_commits; do
-      git log -n 1 --pretty=format:"🔸 %h | %s | %an (%ad)" "$commit"
-    done
+    standalone_commits="$(comm -23 <(printf '%s\n' "$all_commits") <(printf '%s\n' "$merge_commits"))"
+
+    while IFS= read -r commit; do
+      [[ -z "$commit" ]] && continue
+      git show -s --date=iso-strict \
+        --pretty=format:'🔸 %h | %s | %an (%ad)%n' \
+        "$commit"
+    done <<<"$standalone_commits"
 
     echo ""
   } | tee "$output_file"
 
   echo "✅ Report generated in $output_file"
 }
-
 
 # Unified stash operations (CLI + interactive)
 stash_operations() {
