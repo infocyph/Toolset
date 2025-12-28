@@ -19,7 +19,7 @@ It never hides Git – it just wires composable commands into practical workflow
 ```bash
 sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Git/gitx" \
   -o /usr/local/bin/gitx && sudo chmod +x /usr/local/bin/gitx
-```
+````
 
 ## Usage
 
@@ -33,8 +33,8 @@ If you call `gitx` with no or unknown command, it prints a categorized help with
 
 For commands that accept **date windows** (`YYYY-MM-DD YYYY-MM-DD`), `gitx` resolves the window to:
 
-- **start_ref** = first commit in the window (chronological)
-- **end_ref** = last commit in the window (newest)
+* **start_ref** = first commit in the window (chronological)
+* **end_ref** = last commit in the window (newest)
 
 Then it runs the same logic as commit/tag ranges. This keeps outputs consistent across repos and avoids off-by-one issues.
 
@@ -62,19 +62,20 @@ Then it runs the same logic as commit/tag ranges. This keeps outputs consistent 
 
 ### Commit & Change Management
 
-| Command                            | Description                                                       |
-| ---------------------------------- | ----------------------------------------------------------------- |
-| `commit`                           | Interactive commit helper (numbered file selection + message)     |
-| `amend`                            | Amend last commit message (inline or interactive)                 |
-| `unstage`                          | Unstage all files in the index (with confirmation)                |
-| `cherry-pick`                      | Interactive cherry-pick by selecting commits from a numbered list |
-| `revert`                           | Interactive revert (select commits; per-commit or amend mode)     |
-| `diff [output_file]`               | Show staged diff or save it to a file                             |
-| `log-file <path>`                  | Show commit history or diffs for a specific file                  |
-| `count-changes <start> [end]`      | Show shortstat (files/insertions/deletions) between two commits   |
-| `list-changes <branch1> <branch2>` | List files changed between two branches                           |
-| `stage-deleted`                    | Stage all deleted files                                           |
-| `stage-deleted-dir <directory>`    | Stage deleted files under a specific directory                    |
+| Command                            | Description                                                           |
+| ---------------------------------- | --------------------------------------------------------------------- |
+| `commit`                           | Interactive commit helper (numbered file selection + message)         |
+| `amend`                            | Amend last commit message (inline or interactive)                     |
+| `unstage`                          | Unstage all files in the index (with confirmation)                    |
+| `cherry-pick`                      | Interactive cherry-pick by selecting commits from a numbered list     |
+| `revert`                           | Interactive revert (select commits; per-commit or amend mode)         |
+| `diff [output_file]`               | Staged diff viewer/saver **OR** range/date diff (see notes)           |
+| `apply-patch <patch_file> [...]`   | Apply a patch file (with `--check`, `--3way`, `--index`, `--reverse`) |
+| `log-file <path>`                  | Show commit history or diffs for a specific file                      |
+| `count-changes <start> [end]`      | Show shortstat (files/insertions/deletions) between two commits       |
+| `list-changes <branch1> <branch2>` | List files changed between two branches                               |
+| `stage-deleted`                    | Stage all deleted files                                               |
+| `stage-deleted-dir <directory>`    | Stage deleted files under a specific directory                        |
 
 ### Reporting, Summary & Worklog
 
@@ -135,10 +136,12 @@ gitx tag 1.0.0     # also accepted (will create tag "1.0.0")
 ```
 
 * Creates an **annotated tag**:
+
   ```bash
   git tag -a <version> -m "Release <version>"
   ```
 * Pushes the tag:
+
   ```bash
   git push origin <version>
   ```
@@ -201,9 +204,9 @@ gitx sync
 
 * Merges main into:
 
-    * `alpha`
-    * `develop`
-    * Additional comma-separated branches you optionally enter interactively.
+  * `alpha`
+  * `develop`
+  * Additional comma-separated branches you optionally enter interactively.
 
 * For each branch:
 
@@ -227,10 +230,10 @@ gitx create feature merchant-fy-summary
 * Branch name: `<type>/<name>` (e.g., `feature/merchant-fy-summary`).
 * Steps:
 
-    1. Detect main branch.
-    2. Checkout main and pull latest.
-    3. Create new branch from main.
-    4. Push to origin.
+  1. Detect main branch.
+  2. Checkout main and pull latest.
+  3. Create new branch from main.
+  4. Push to origin.
 
 If the branch already exists locally, it aborts with an error.
 
@@ -257,8 +260,8 @@ gitx merge feature/fy-summary main
 
 * On merge conflicts:
 
-    * Notifies you about conflicts
-    * Instructs you to resolve manually (`git status`, `git add`, `git commit`) or `git merge --abort`.
+  * Notifies you about conflicts
+  * Instructs you to resolve manually (`git status`, `git add`, `git commit`) or `git merge --abort`.
 
 ---
 
@@ -272,26 +275,26 @@ gitx reset-branch
 * Requires `origin/<branch>` to exist.
 * Menu:
 
-    1. **Soft reset** – keep local changes, reset only HEAD:
+  1. **Soft reset** – keep local changes, reset only HEAD:
 
-       ```bash
-       git fetch origin
-       git reset --soft origin/<branch>
-       ```
+     ```bash
+     git fetch origin
+     git reset --soft origin/<branch>
+     ```
 
-    2. **Hard reset** – discard all local changes (with confirmation):
+  2. **Hard reset** – discard all local changes (with confirmation):
 
-       ```bash
-       git fetch origin
-       git reset --hard origin/<branch>
-       ```
+     ```bash
+     git fetch origin
+     git reset --hard origin/<branch>
+     ```
 
-    3. **Dry-run** – preview diff vs `origin/<branch>`:
+  3. **Dry-run** – preview diff vs `origin/<branch>`:
 
-       ```bash
-       git fetch origin
-       git diff --stat origin/<branch>
-       ```
+     ```bash
+     git fetch origin
+     git diff --stat origin/<branch>
+     ```
 
 ---
 
@@ -311,8 +314,8 @@ gitx prune
 
 * Offers:
 
-    * Delete all such branches at once, or
-    * Confirm deletion per-branch.
+  * Delete all such branches at once, or
+  * Confirm deletion per-branch.
 
 ---
 
@@ -325,8 +328,8 @@ gitx cleanup
 * Lists branches merged into main (excluding `master`, `main`, `develop`, `alpha`).
 * Options:
 
-    * Delete all merged branches at once.
-    * Or confirm deletion one by one.
+  * Delete all merged branches at once.
+  * Or confirm deletion one by one.
 
 ---
 
@@ -340,14 +343,14 @@ gitx orphan-branches 60
 * Detects main branch.
 * Scans all local branches:
 
-    * Skips core branches (`master`, `main`, `develop`, `alpha`, `trunk`).
-    * Skips branches already merged into main.
-    * Computes age (in days) from last commit timestamp.
+  * Skips core branches (`master`, `main`, `develop`, `alpha`, `trunk`).
+  * Skips branches already merged into main.
+  * Computes age (in days) from last commit timestamp.
 * Lists branches **not merged into main** and **older than N days**.
 * Then offers:
 
-    * Delete all of them, or
-    * Delete selected names.
+  * Delete all of them, or
+  * Delete selected names.
 
 ---
 
@@ -360,17 +363,17 @@ gitx compare develop main
 
 * Output:
 
-    * Commits unique to `branch2`:
+  * Commits unique to `branch2`:
 
-      ```bash
-      git log --oneline branch1..branch2
-      ```
+    ```bash
+    git log --oneline branch1..branch2
+    ```
 
-    * Files changed between branches:
+  * Files changed between branches:
 
-      ```bash
-      git diff --name-only branch1..branch2
-      ```
+    ```bash
+    git diff --name-only branch1..branch2
+    ```
 
 ---
 
@@ -413,8 +416,8 @@ Workflow:
 
 3. Prompt:
 
-    * `a` → stage all.
-    * Or e.g. `1,3,5` → stage selected files.
+  * `a` → stage all.
+  * Or e.g. `1,3,5` → stage selected files.
 
 4. Shows staged files (`git diff --cached --name-only`).
 
@@ -432,8 +435,8 @@ gitx amend
 
 * Asks for a new commit message:
 
-    * If blank: runs `git commit --amend` (opens editor).
-    * Otherwise: `git commit --amend -m "<new message>"`.
+  * If blank: runs `git commit --amend` (opens editor).
+  * Otherwise: `git commit --amend -m "<new message>"`.
 
 ---
 
@@ -493,15 +496,82 @@ gitx revert
 
 ---
 
-#### `diff [output_file]`
+#### `diff` (staged diff OR ref/date diff)
+
+`gitx diff` supports two modes:
+
+1. **Staged diff** (existing behavior)
 
 ```bash
 gitx diff
 gitx diff staged.patch
 ```
 
-* No file: prints staged diff (`git diff --cached`).
-* With file: confirms overwrite if exists, then writes staged diff to the file.
+* No args: prints staged diff (`git diff --cached`).
+* With a single file: confirms overwrite if exists, then writes staged diff to that file.
+
+2. **Range/date diff** (new)
+
+```bash
+# Date window → defaults to --stat output (prints to stdout)
+gitx diff 2025-12-14 2025-12-24
+gitx diff 2025-12-14 2025-12-24 --name-only
+gitx diff 2025-12-14 2025-12-24 --stat
+
+# Refs (commit/tag/branch)
+gitx diff v1.0.0 v1.1.0
+gitx diff cc08511 d5305c7 --name-only
+```
+
+**Notes**
+
+* Runs with **no pager** (uses `git --no-pager diff`).
+* Default mode for range/date diff is **`--stat`** (when you provide `<start> <end>` with no flags).
+* `--stat` / `--name-only` print to **stdout** (so redirection works):
+
+  ```bash
+  gitx diff 2025-12-14 2025-12-24 --stat > diff_stat.txt
+  gitx diff 2025-12-14 2025-12-24 --name-only > files.txt
+  ```
+* `--patch` saves to a file **by default**:
+
+  ```bash
+  gitx diff 2025-12-14 2025-12-24 --patch
+  gitx diff 2025-12-14 2025-12-24 --patch changes.patch
+  ```
+
+  Default filename:
+
+  ```text
+  diff_<start>_to_<end>.patch
+  ```
+* Limit the diff to paths using `--`:
+
+  ```bash
+  gitx diff 2025-12-14 2025-12-24 --stat -- app/ routes/
+  gitx diff v1.0.0 v1.1.0 --patch -- src/
+  ```
+
+---
+
+#### `apply-patch <patch_file> [...]`
+
+Applies a patch generated by `gitx diff ... --patch` (or any compatible unified diff).
+
+```bash
+gitx apply-patch changes.patch
+gitx apply-patch changes.patch --check
+gitx apply-patch changes.patch --index
+gitx apply-patch changes.patch --3way
+gitx apply-patch changes.patch --reverse
+```
+
+Flags:
+
+* `--check`  – validate patch applies cleanly (no changes made)
+* `--index`  – apply and stage (updates index)
+* `--3way`   – attempt a 3-way merge fallback if patch does not apply cleanly
+* `--reverse` – unapply/revert a patch
 
 ---
 
@@ -513,14 +583,16 @@ gitx log-file src/Service/Payment.php
 
 * Menu:
 
-    1. **Commit history**:
-       ```bash
-       git log --follow --pretty='%h - %s (%an, %ad)' --date=short -- <file>
-       ```
-    2. **Diffs**:
-       ```bash
-       git log --follow -p -- <file>
-       ```
+  1. **Commit history**:
+
+     ```bash
+     git log --follow --pretty='%h - %s (%an, %ad)' --date=short -- <file>
+     ```
+  2. **Diffs**:
+
+     ```bash
+     git log --follow -p -- <file>
+     ```
 
 ---
 
@@ -568,6 +640,7 @@ gitx summary 2025-01-01 2025-01-31 lite
 ```
 
 * Modes:
+
   * `heavy` (default): runs `git blame` to compute **surviving code share** per author.
   * `lite` / `fast` / `no-blame`: skips blame; Surviving Code % is `N/A`.
 
@@ -592,6 +665,7 @@ gitx worklog 2025-01-01 2025-01-31 >worklog-2025-01.csv
 ```
 
 * Outputs CSV:
+
   ```text
   Author,Email,CommitId,Type,DateTime,Subject,Body
   ```
@@ -606,6 +680,7 @@ gitx report 2025-01-01 2025-01-31 pr_report_jan.txt
 ```
 
 * Sections:
+
   1. PR merges (subjects contain `"Merge pull request"`)
   2. Non-PR merges
   3. Standalone commits not inside merges
@@ -620,6 +695,7 @@ gitx changelog 2025-01-01 2025-01-31 changelog_jan.txt
 ```
 
 * Produces a `changelog_*.txt` file with lines:
+
   ```text
   <hash> - <subject> (<author>, <date>)
   ```
@@ -687,6 +763,13 @@ gitx sync
 gitx create feature merchant-fy-summary
 gitx merge feature/merchant-fy-summary main
 gitx tag v1.0.0
+
+# Range/date diff
+gitx diff 2025-12-14 2025-12-24
+gitx diff 2025-12-14 2025-12-24 --name-only
+gitx diff 2025-12-14 2025-12-24 --patch
+gitx apply-patch diff_2025-12-14_to_2025-12-24.patch --check
+
 gitx report 2025-01-01 2025-01-31
 gitx changelog v1.0.0 v1.1.0
 gitx summary HEAD~100 include-all heavy

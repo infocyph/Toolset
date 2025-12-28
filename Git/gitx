@@ -1106,33 +1106,40 @@ diff_between_refs_or_dates() {
   shift 2 || true
 
   if [[ -z "$a1" || -z "$a2" ]]; then
-    echo "Usage: gitx diff <start> <end> [--stat|--name-only|--patch] [-- <path...>]"
+    echo "Usage: gitx diff <start> <end> [--stat|--name-only|--patch] [patch_file] [-- <path...>]"
     return 1
   fi
 
-  local mode="--patch"
+  # Default for range/date diff is --stat
+  local mode="--stat"
   if [[ "${1:-}" == "--stat" || "${1:-}" == "--name-only" || "${1:-}" == "--patch" ]]; then
     mode="$1"
     shift || true
   fi
 
-  local flags=()
-  case "$mode" in
-  --stat) flags+=(--stat) ;;
-  --name-only) flags+=(--name-only) ;;
-  --patch) ;;
-  *)
-    echo "Invalid mode: $mode (use --stat, --name-only, or --patch)"
-    return 1
-    ;;
-  esac
+  # Optional patch output file (only for --patch)
+  local patch_file=""
+  if [[ "$mode" == "--patch" ]]; then
+    if [[ -n "${1:-}" && "${1:-}" != "--" && "${1:-}" =~ \.(patch|diff)$ ]]; then
+      patch_file="$1"
+      shift || true
+    else
+      # Default patch file name derived from start/end
+      local safe_a1 safe_a2
+      safe_a1="${a1//\//_}"
+      safe_a2="${a2//\//_}"
+      safe_a1="${safe_a1// /_}"
+      safe_a2="${safe_a2// /_}"
+      patch_file="diff_${safe_a1}_to_${safe_a2}.patch"
+    fi
+  fi
 
   # Allow explicit path separator `--`, but also accept paths without it.
   if [[ "${1:-}" == "--" ]]; then
     shift || true
   fi
 
-  local from_ref="" to_ref="" start_hash="" end_hash="" parent_start=""
+  local start_hash="" end_hash=""
 
   # Date mode (YYYY-MM-DD YYYY-MM-DD)
   if is_iso_date "$a1" && is_iso_date "$a2"; then
@@ -1140,7 +1147,6 @@ diff_between_refs_or_dates() {
     commits="$(resolve_date_range_to_commits "$a1" "$a2")" || return $?
     first="$(awk '{print $1}' <<<"$commits")"
     last="$(awk '{print $2}' <<<"$commits")"
-
     start_hash="$first"
     end_hash="$last"
   else
@@ -1155,7 +1161,8 @@ diff_between_refs_or_dates() {
     }
   fi
 
-  # Inclusive: parent(start) -> end
+  # Inclusive: parent(start) -> end (includes the start commit changes)
+  local from_ref to_ref parent_start
   parent_start="$(git rev-parse "${start_hash}^" 2>/dev/null || true)"
   if [[ -n "$parent_start" ]]; then
     from_ref="$parent_start"
@@ -1164,7 +1171,20 @@ diff_between_refs_or_dates() {
   fi
   to_ref="$end_hash"
 
-  git diff --no-renames "${flags[@]}" "$from_ref" "$to_ref" -- "$@"
+  case "$mode" in
+  --stat|--name-only)
+    git --no-pager diff --no-renames "$mode" "$from_ref" "$to_ref" -- "$@"
+    ;;
+  --patch)
+    # Patch goes to a file by default (still works with redirection if you want)
+    git --no-pager diff --no-renames "$from_ref" "$to_ref" -- "$@" >"$patch_file"
+    echo "✅ Patch saved to: $patch_file" >&2
+    ;;
+  *)
+    echo "Invalid mode: $mode (use --stat, --name-only, or --patch)"
+    return 1
+    ;;
+  esac
 }
 
 gitx_diff() {
@@ -1174,6 +1194,61 @@ gitx_diff() {
   else
     track_staged_changes "${1:-}"
   fi
+}
+
+apply_patch_file() {
+  ensure_git_repo
+
+  local patch_file="${1:-}"
+  shift || true
+
+  if [[ -z "$patch_file" ]]; then
+    read -rp "Enter patch file path: " patch_file
+  fi
+
+  if [[ -z "$patch_file" || ! -f "$patch_file" ]]; then
+    echo "Error: Patch file not found: $patch_file"
+    return 1
+  fi
+
+  if [[ ! -s "$patch_file" ]]; then
+    echo "Error: Patch file is empty: $patch_file"
+    return 1
+  fi
+
+  local check=0 threeway=0 index=0 reverse=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --check) check=1 ;;
+    --3way|--threeway) threeway=1 ;;
+    --index) index=1 ;;
+    --reverse) reverse=1 ;;
+    --help|-h)
+      echo "Usage: gitx apply-patch <patch_file> [--check] [--3way] [--index] [--reverse]"
+      return 0
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo "Usage: gitx apply-patch <patch_file> [--check] [--3way] [--index] [--reverse]"
+      return 1
+      ;;
+    esac
+    shift
+  done
+
+  local args=()
+  [[ $threeway -eq 1 ]] && args+=(--3way)
+  [[ $index -eq 1 ]] && args+=(--index)
+  [[ $reverse -eq 1 ]] && args+=(--reverse)
+
+  if [[ $check -eq 1 ]]; then
+    git apply --check "${args[@]}" "$patch_file"
+    echo "✅ Patch check passed: $patch_file"
+    return 0
+  fi
+
+  git apply "${args[@]}" "$patch_file"
+  echo "✅ Patch applied: $patch_file"
 }
 
 
@@ -2013,6 +2088,7 @@ reset-branch) reset_branch_to_remote ;;
 prune) prune_remote_branches ;;
 report) fetch_prs_and_commits "$@" ;;
 diff) gitx_diff "$@" ;;
+apply-patch) apply_patch_file "$@" ;;
 stash) stash_operations "$@" ;;
 wip) wip_manager "$@" ;;
 create) create_branch "$@" ;;
