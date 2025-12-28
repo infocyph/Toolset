@@ -8,30 +8,42 @@ It wraps the usual “install / switch / inspect / tune” PHP tasks into a sing
 
 ## Features
 
-- **Version lifecycle**
-  - Install / list / switch PHP versions (CLI + FPM) via apt + Sury/Ondřej repos
-  - Safely remove PHP versions and related packages
-- **Extensions & cleanup**
-  - Discover, install and remove `phpX.Y-*` extensions
-  - Clean broken `.so` references from `.ini` files (`clean`)
-- **Health & diagnostics**
-  - Run sanity checks (`doctor`) for a PHP version
-  - Get a summarized config view (`info`) with OPcache/JIT/FPM hints
-- **Composer & PECL**
-  - Install/update Composer globally
-  - Install multiple PECL packages in one go
-- **Runtime helpers**
-  - Start PHP’s built-in web server safely (`serve`)
-  - Run scripts under a specific PHP version (`run`)
-- **Configs & repos**
-  - Generate tuned `php.ini` + FPM pool configs (`generate-config`)
-  - Add Sury/Ondřej PHP repositories (`sury`)
-- **Script lifecycle**
-  - Self-update from GitHub (`self-update`)
-  - Per-day logging with env-based overrides
+* **Version lifecycle**
 
-High-impact commands (`switch`, `install`, `remove`, `sury`, `self-update`) run basic system checks (disk space, curl/wget,
-network) before touching apt or remote endpoints.
+  * Install / list / switch PHP versions (CLI + FPM) via `apt` + Sury/Ondřej repos
+  * Safely remove PHP versions and related packages
+  * Discover **available** PHP versions from APT (`known`) and compare against local installs (`variants`)
+* **Extensions & cleanup**
+
+  * Discover, install and remove `phpX.Y-*` extensions
+  * Toggle extensions during switch: `phpx switch 8.4 +mysql -curl`
+  * Clean broken `.so` references from `.ini` files (`clean`)
+* **Health & diagnostics**
+
+  * Run sanity checks (`doctor`) for a PHP version
+  * Get a summarized config view (`info`) with OPcache/JIT/FPM hints
+  * Lint a repo quickly and show only failures (`syntax`)
+* **Composer & PECL**
+
+  * Install/update Composer globally
+  * Install multiple PECL packages in one go
+* **Runtime helpers**
+
+  * Start PHP’s built-in web server safely (`serve`)
+  * Run scripts under a specific PHP version (`run`)
+* **Configs & repos**
+
+  * Generate tuned `php.ini` + FPM pool configs (`generate-config`)
+  * Add Sury/Ondřej PHP repositories (`sury`)
+* **Service helpers**
+
+  * Control PHP-FPM (`fpm`) and Apache wiring (`apache`)
+* **Script lifecycle**
+
+  * Self-update from GitHub (`self-update`)
+  * Per-day logging with env-based overrides
+
+High-impact commands (`switch`, `install`, `remove`, `sury`, `self-update`) run basic system checks (disk space, curl/wget, network) before touching apt or remote endpoints.
 
 ---
 
@@ -40,32 +52,26 @@ network) before touching apt or remote endpoints.
 ```bash
 sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/PHP/phpx" \
   -o /usr/local/bin/phpx && sudo chmod +x /usr/local/bin/phpx
-````
+```
 
 ---
 
 ## Requirements
 
-* Debian/Ubuntu or derivative (uses `apt`, `dpkg`, `lsb_release`, `systemctl`, etc.)
-* For most commands:
+* Debian/Ubuntu or derivative (uses `apt`, `dpkg`, `lsb_release`, `systemctl`, `update-alternatives`, etc.)
+* For extension toggles:
 
-    * `php` binaries (`phpX.Y`), `php-fpm` units if FPM is used
-* For repo / package management:
-
-    * `curl`, `wget`, `software-properties-common` (auto-installed when possible)
-* For Composer:
-
-    * `curl` (auto-installed when run as root)
+  * `phpenmod` / `phpdismod` (from Debian PHP packaging)
 * For logs:
 
-    * Writable log directory (`/var/log/phpx` as root, `~/.local/phpx_logs` as user)
+  * Writable log directory (`/var/log/phpx` as root, `~/.local/phpx_logs` as user)
 
 ---
 
 ## Usage at a Glance
 
 ```bash
-phpx {list | info | doctor | switch | ext | install | serve | run | remove | generate-config | sury | clean | self-update} <args>
+phpx {list|info|doctor|switch|ext|install|serve|run|remove|generate-config|sury|clean|self-update|known|variants|syntax|fpm|apache} <args>
 ```
 
 ### Command aliases
@@ -79,36 +85,68 @@ phpx {list | info | doctor | switch | ext | install | serve | run | remove | gen
 Anything that installs/removes packages or touches system config:
 
 * `switch`, `ext`, `install`, `remove`, `generate-config`, `sury`, `clean`, `self-update`
-* Plus any path that ends up calling apt / dpkg or writing into `/etc`, `/usr/local/bin`, etc.
+* plus anything that ends up calling `apt`/`dpkg` or writing into `/etc`, `/usr/local/bin`, etc.
 
 ---
 
 ## Commands Overview
 
-| Command                       | Summary                                                        |                                                              |                                           |
-| ----------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------- |
-| `list`                        | List installed PHP versions (CLI + FPM state, current default) |                                                              |                                           |
-| `info [X.Y]`                  | Summarized phpinfo-style view for a version                    |                                                              |                                           |
-| `doctor [X.Y] [--fix]`        | Sanity checks + optional auto-fix for a version                |                                                              |                                           |
-| `switch                       | s <X.Y> [--no-web]`                                            | Switch default CLI to `X.Y`, optionally configure web server |                                           |
-| `ext                          | extensions                                                     | x [X.Y] [...]`                                               | Discover/install extensions for a version |
-| `install                      | i composer`                                                    | Install/update Composer globally                             |                                           |
-| `install                      | i <pecl1,pecl2,...>`                                           | Install PECL packages                                        |                                           |
-| `serve [options]`             | Start PHP built-in web server safely                           |                                                              |                                           |
-| `run <script.php> [X.Y]`      | Run script with a specific PHP version                         |                                                              |                                           |
-| `remove <X.Y>`                | Remove PHP `X.Y` and related packages                          |                                                              |                                           |
-| `remove <X.Y> ext [...]`      | Remove extensions for PHP `X.Y`                                |                                                              |                                           |
-| `remove ext [...]`            | Remove extensions for detected default version                 |                                                              |                                           |
-| `generate-config <env> <X.Y>` | Generate `php.ini` + FPM pool configs (prod/dev)               |                                                              |                                           |
-| `sury`                        | Add Sury/Ondřej PHP repo for Debian/Ubuntu                     |                                                              |                                           |
-| `clean [X.Y]`                 | Clean broken extension `.ini` entries                          |                                                              |                                           |
-| `self-update`                 | Update `phpx` script from GitHub                               |                                                              |                                           |
+| Command                                          | Aliases         | Summary                                                              |                                           |
+| ------------------------------------------------ | --------------- | -------------------------------------------------------------------- | ----------------------------------------- |
+| `list`                                           |                 | List installed PHP versions (CLI + FPM state, current default)       |                                           |
+| `info [X.Y]`                                     |                 | Summarized phpinfo-style view for a version                          |                                           |
+| `doctor [X.Y] [--fix]`                           |                 | Sanity checks + optional auto-fix                                    |                                           |
+| `switch <X.Y> [--no-web] [+ext] [-ext] [ext...]` | `s`             | Switch default CLI to `X.Y` (+ optional extension toggles)           |                                           |
+| `ext [X.Y] [--install=...] [-y                   | --yes]`         | `extensions`, `x`                                                    | Discover/install extensions for a version |
+| `install composer`                               | `i composer`    | Install/update Composer globally                                     |                                           |
+| `install <pecl...>`                              | `i <pecl...>`   | Install PECL packages                                                |                                           |
+| `serve [options]`                                |                 | Start PHP built-in web server safely                                 |                                           |
+| `run <script.php> [X.Y]`                         |                 | Run script with a specific PHP version                               |                                           |
+| `remove <X.Y>`                                   |                 | Remove PHP `X.Y` and related packages                                |                                           |
+| `remove <X.Y> ext [--remove=...]`                |                 | Remove extensions for PHP `X.Y`                                      |                                           |
+| `remove ext [--remove=...]`                      |                 | Remove extensions for detected default version                       |                                           |
+| `generate-config <env> <X.Y>`                    |                 | Generate `php.ini` + FPM pool configs (prod/dev)                     |                                           |
+| `sury`                                           |                 | Add Sury/Ondřej PHP repo for Debian/Ubuntu                           |                                           |
+| `clean [X.Y]`                                    |                 | Clean broken extension `.ini` entries                                |                                           |
+| `known [--more]`                                 |                 | Show PHP X.Y versions available from current APT sources             |                                           |
+| `variants [--more]`                              |                 | Show local installed versions + APT-available versions not installed |                                           |
+| `syntax [options]`                               | `lint`, `check` | Lint repo PHP files (print only failures)                            |                                           |
+| `fpm <subcommand> [X.Y]`                         |                 | Manage php-fpm services for a version                                |                                           |
+| `apache <subcommand> [X.Y]`                      |                 | Apache helpers (status/reload/restart + FPM/mod_php wiring)          |                                           |
+| `self-update`                                    |                 | Update `phpx` script from GitHub                                     |                                           |
 
 ---
 
 ## Command Details
 
-### 1. Version Lifecycle
+### 1) Version Discovery & Lifecycle
+
+#### `known`
+
+Shows PHP versions available from your current APT sources (useful after `phpx sury`):
+
+```bash
+phpx known
+phpx known --more
+```
+
+* `--more` prints APT “Candidate” version (best-effort).
+
+#### `variants`
+
+Shows:
+
+1. **local installed** PHP versions
+2. **APT-available** PHP versions that are **not installed locally**
+
+```bash
+phpx variants
+phpx variants --more
+```
+
+* `--more` prints APT “Candidate” version for each remote entry (best-effort).
+
+---
 
 #### `list`
 
@@ -116,12 +154,11 @@ Anything that installs/removes packages or touches system config:
 phpx list
 ```
 
-* Lists installed PHP versions (`phpX.Y` packages).
-* Shows:
+Lists installed PHP versions (`phpX.Y-*` packages), and shows:
 
-    * CLI binary path per version (if any)
-    * FPM state: active / installed / not present
-    * Current `php` default and its version
+* CLI binary per version (if any)
+* FPM state: active / installed / not present
+* current `php` default and its version
 
 ---
 
@@ -131,206 +168,155 @@ phpx list
 phpx switch 8.2
 phpx s 8.3
 phpx switch 8.2 --no-web
+
+# extension toggles during switch
+phpx switch 8.4 +mysql -curl
+phpx switch 8.3 mysql
 ```
 
-* Verifies or installs `php8.2`, `php8.2-cli`, `php8.2-fpm` as needed.
-* Cleans missing extensions for that version.
+What it does:
+
+* Ensures `phpX.Y`, `phpX.Y-cli` (and FPM as needed) are installed.
+* Cleans broken `.ini` extension references for that version.
 * Updates `update-alternatives` for:
 
-    * `php`
-    * `phar`
-    * `phar.phar`
-* By default, runs a web-server configuration helper:
+  * `php`, `phar`, `phar.phar`
+* Web server wizard (unless `--no-web`):
 
-    * Detects installed web servers (`apache2`, `nginx`, `lighttpd`)
-    * Offers to configure Apache for:
+  * detects installed web server(s) and wires PHP-FPM or mod_php depending on choices.
+* **Extension toggles**:
 
-        * PHP-FPM (`phpX.Y-fpm`) **or**
-        * `libapache2-mod-phpX.Y` (mod_php)
-    * For Nginx/Lighttpd, prints the appropriate `fastcgi` socket.
-* Use `--no-web` to skip the server configuration wizard (good for CI / CLI-only boxes).
-
-> System checks (disk + network + curl/wget) run before any apt usage.
+  * `+ext` or `ext` ⇒ install `phpX.Y-ext` if missing, then `phpenmod -v X.Y ext`
+  * `-ext` ⇒ `phpdismod -v X.Y ext` (does not purge packages)
+  * reloads `phpX.Y-fpm` if active
 
 ---
 
 #### `remove`
 
 ```bash
-# Remove a PHP version
+# remove a PHP version
 phpx remove 7.4
 
-# Remove extensions for a specific version (interactive)
-phpx remove 8.1 ext
-
-# Remove extensions for auto-detected default version (interactive)
-phpx remove ext
-
-# Non-interactive extension removal by name
+# remove extensions for a specific version
 phpx remove 8.1 ext --remove=redis,imagick
+
+# remove extensions for detected default version
+phpx remove ext --remove=redis,imagick
 ```
 
-* If the first arg looks like `X.Y`:
+Behavior:
 
-    * `remove <X.Y>`:
+* `remove <X.Y>`:
 
-        * Stops + disables `phpX.Y-fpm` if present
-        * Purges all `phpX.Y-*` packages via apt
-        * Runs apt autoremove
-    * `remove <X.Y> ext [--remove="ext1,ext2"]`:
+  * stops/disables `phpX.Y-fpm` if present
+  * purges `phpX.Y-*` packages via APT
+  * runs `apt autoremove`
+* `remove <X.Y> ext ...`:
 
-        * Removes only specified extensions (`phpX.Y-ext`) for that version
-        * Interactive selection if `--remove` is omitted
-* If the first arg is **not** a version:
+  * removes only selected `phpX.Y-<ext>` packages
+* `remove ext ...`:
 
-    * `remove ext [...]`:
-
-        * Operates on auto-detected default CLI version
+  * operates on detected default CLI version
 
 ---
 
-### 2. Health & Diagnostics
+### 2) Health & Diagnostics
 
 #### `info`
 
 ```bash
 phpx info 8.3
-phpx info           # uses current default CLI version
+phpx info      # uses current default CLI version
 ```
 
-Shows a summarized `php -i` / `php -m` view for the chosen version:
+Shows:
 
-* Binary path (`/usr/bin/phpX.Y` or `/usr/local/bin/phpX.Y`)
-* Loaded `php.ini`, additional `.ini` scan dir, `extension_dir`
-* Key runtime settings:
-
-    * `memory_limit`, `max_execution_time`, `post_max_size`, `upload_max_filesize`, etc.
-* FPM overview:
-
-    * Service state (`phpX.Y-fpm`): active / installed / missing
-    * Pool dir: `/etc/php/X.Y/fpm/pool.d`
-    * Selected FPM settings when available:
-
-        * `listen`, `pm`, `pm.max_children`, min/max spare, `pm.max_requests`
-        * slowlog path and `request_slowlog_timeout`
-* Extensions:
-
-    * Total modules from `php -m`
-    * `apt`-level extension packages: `phpX.Y-*`
-    * `xdebug` presence
-* OPcache & JIT snapshot:
-
-    * `opcache.*`, `opcache.jit*` values
-* Best-effort performance hints (e.g., disabled OPcache, small opcache memory, JIT off, xdebug in non-dev)
+* binary path, loaded `php.ini`, scan dir, `extension_dir`
+* key runtime settings (memory_limit, upload limits, etc.)
+* FPM overview (`phpX.Y-fpm` state + key pool settings)
+* extension summary (`php -m`, apt-level `phpX.Y-*`, xdebug presence)
+* OPcache + JIT snapshot + best-effort hints
 
 ---
 
 #### `doctor`
 
 ```bash
-phpx doctor           # uses current default CLI version
+phpx doctor
 phpx doctor 8.2
 phpx doctor 8.2 --fix
 ```
 
-Runs sanity checks for a version and prints actionable hints:
+Checks:
 
-* CLI vs FPM:
-
-    * Default CLI version vs inspected version
-    * `phpX.Y-fpm` service state
-* Broken extensions:
-
-    * Parses `php -m` stderr for “Unable to load dynamic library …”
-    * Lists missing `.so` entries and suggests `phpx clean <X.Y>`
-* Apache `mod_php`:
-
-    * Detects enabled `phpX.Y_module` variants
-    * Warns if multiple modules are enabled
-* FPM sizing hints:
-
-    * Uses system RAM to derive a recommended `pm.max_children` ballpark
-* Runtime checks:
-
-    * Too low `memory_limit`
-    * `max_execution_time` unusually high
-    * `upload_max_filesize > post_max_size`
-    * Dev-style `display_errors On` + `log_errors Off`
-* OPcache & JIT hints:
-
-    * OPcache disabled / tiny memory
-    * Frequent revalidation (dev vs prod)
-    * JIT effectively disabled
-* `xdebug` warnings in non-dev setups
+* CLI vs FPM mismatch, service states
+* broken extensions (“Unable to load dynamic library …”)
+* Apache mod_php conflicts
+* FPM sizing hints (RAM-based)
+* runtime sanity (upload/post sizes, display/log errors, etc.)
+* OPcache & JIT hints
+* xdebug warnings
 
 With `--fix`:
 
-* Runs the same checks plus:
-
-    * Cleans broken `.ini` extension references (same behavior as `phpx clean <X.Y>`)
-    * On Apache, can disable extra `mod_php` modules, keeping a single version active (best-effort).
+* runs `clean` behavior for broken extension `.ini` entries
+* best-effort Apache mod_php conflict cleanup
 
 ---
 
-### 3. Extensions & Cleanup
+#### `syntax` (PHP lint)
+
+Lints all `*.php` files under the current directory and prints **only failures**.
+
+```bash
+phpx syntax
+phpx syntax --exclude storage --exclude bootstrap/cache
+phpx syntax --jobs 8
+phpx syntax --php /usr/bin/php8.4
+```
+
+Defaults:
+
+* excludes: `vendor`, `node_modules`
+* jobs: `nproc` (or `sysctl -n hw.ncpu`)
+* prints scanning progress on a single updating line (`\r`)
+* hides “No syntax errors detected” lines
+
+---
+
+### 3) Extensions & Cleanup
 
 #### `ext` / `extensions` / `x`
 
 ```bash
-# Use detected default version
 phpx ext
-
-# Work on a specific version
 phpx ext 8.3
-
-# Non-interactive install for a version
 phpx ext 8.2 --install=redis,imagick
-
-# Force “yes” answers via env
 PHPX_ASSUME_YES=1 phpx ext 8.2 --install=redis
 ```
 
-* If no version is given:
-
-    * Uses the currently active CLI version.
-* Shows:
-
-    * All installed extensions from apt: `phpX.Y-*`
-    * All installable extensions from `apt-cache` for `phpX.Y-*`, excluding ones already installed.
-* Interactive mode:
-
-    * Enter numbers or names (comma-separated) to select extensions.
-* Non-interactive mode:
-
-    * Use `--install=ext1,ext2` to install by extension name.
-* Behavior:
-
-    * Auto-installs `phpX.Y` if missing.
-    * Cleans stale/missing extension references first.
-    * Installs selected apt packages, then:
-
-        * Runs `phpenmod -v X.Y <ext>`
-        * Reloads `phpX.Y-fpm` if running.
+* If no version is given: uses current default CLI version.
+* Interactive mode: choose from installable extensions via APT metadata.
+* Non-interactive mode: `--install=ext1,ext2`
+* Installs packages `phpX.Y-ext` and enables them (reloads FPM if running).
 
 ---
 
 #### `clean`
 
 ```bash
-phpx clean        # uses current default version
+phpx clean
 phpx clean 8.2
 ```
 
-* Parses `php -m` output for “Unable to load dynamic library …” lines.
-* For each missing `.so`:
-
-    * Finds matching `.ini` files under `/etc/php/X.Y`
-    * Removes those `.ini` files
-* Safe to run multiple times; only broken entries are targeted.
+* Detects missing `.so` errors
+* removes broken `.ini` entries under `/etc/php/X.Y/...`
+* safe to run repeatedly
 
 ---
 
-### 4. Composer & PECL
+### 4) Composer & PECL
 
 #### `install composer`
 
@@ -339,40 +325,23 @@ phpx install composer
 phpx i composer
 ```
 
-* Ensures `curl` is installed (installs via apt if run as root).
-* Installs Composer using the official installer:
+* ensures `curl` is available
+* installs Composer into `/usr/local/bin/composer`
+* runs `composer self-update`
 
-    * Downloads installer via `curl`
-    * Places `composer` into `/usr/local/bin/composer`
-* Runs `composer self-update` to bring it to latest stable.
-
----
-
-#### `install <pecl1,pecl2,...>`
+#### `install <pecl...>`
 
 ```bash
 phpx install xdebug,redis apcu
-phpx i xdebug, redis apcu
+phpx i xdebug redis
 ```
 
-* Accepts:
-
-    * Comma-separated names
-    * Space-separated names
-    * Or a mix of both
-* Ensures PECL is ready:
-
-    * Installs `php-pear` and `php-dev` via apt if needed.
-* For each package:
-
-    * Skips if already installed (per `pecl list`)
-    * Otherwise runs `pecl install <package>`
-
-> You still need to enable PECL extensions in PHP configs as usual (e.g., adding `.ini` files under `/etc/php/X.Y/mods-available`).
+* installs `php-pear` + `php-dev` if needed
+* installs PECL packages (skips ones already present per `pecl list`)
 
 ---
 
-### 5. Runtime Helpers
+### 5) Runtime Helpers
 
 #### `serve`
 
@@ -382,33 +351,7 @@ phpx serve --host=0.0.0.0 --port=8080
 phpx serve --root=/var/www/app --router=router.php -v
 ```
 
-Options:
-
-* `--host <host>` (default: `127.0.0.1`)
-* `--port <port>` (default: `8000`)
-* `--root <dir>` (default: current directory)
-* `--router <file>` (custom router script)
-* `-v`, `--verbose` (extra output)
-
-Behavior:
-
-1. Ensures a `php` CLI is available.
-2. Validates `--root` directory.
-3. Checks port availability via `lsof` / `ss` / `netstat` when present.
-4. If no `--router` is given, auto-discovers a likely document root by probing (in order):
-
-    * `ROOT/public/index.php`
-    * `ROOT/public/index.html`
-    * `ROOT/index.php`
-    * `ROOT/index.html`
-5. If `--router` is supplied, it must exist; otherwise the command fails.
-6. Launches:
-
-```bash
-php -S host:port -t <found_root> [router.php]
-```
-
----
+Starts `php -S host:port -t <root> [router]` with basic safety checks.
 
 #### `run`
 
@@ -417,20 +360,11 @@ phpx run bin/script.php
 phpx run bin/script.php 8.2
 ```
 
-* Validates script existence.
-* If `X.Y` is omitted:
-
-    * Uses active default CLI version (from `php`).
-* If `X.Y` is not installed:
-
-    * Attempts to install that PHP version.
-* Executes via:
-
-    * `/usr/bin/phpX.Y` or `/usr/local/bin/phpX.Y`
+Runs a script with the chosen PHP version (installs version if missing).
 
 ---
 
-### 6. Config Generator
+### 6) Config Generator
 
 #### `generate-config`
 
@@ -439,33 +373,38 @@ phpx generate-config production 8.2
 phpx generate-config development 8.3
 ```
 
-* Arguments:
+Outputs:
 
-    * `environment` ∈ `production` | `development`
-    * `X.Y` PHP version (e.g., `8.2`, `8.3`)
-* Outputs in current directory:
+* `fpm.<env>.conf`
+* `php.<env>.ini`
 
-    * `fpm.<environment>.conf`
-    * `php.<environment>.ini`
-* Behavior:
-
-    * Reads total system RAM (`free -m`).
-    * Calculates FPM settings:
-
-        * `pm.max_children` with min/max bounds
-        * `pm.start_servers`, `pm.min_spare_servers`, `pm.max_spare_servers`
-    * Sets environment-specific values:
-
-        * Execution times, upload limits
-        * Error display vs logging (dev vs prod)
-        * OPcache memory, accelerated files, validation frequency
-        * JIT mode + buffer size per environment
-
-You can then merge these templates into your actual `/etc/php/X.Y` configs.
+Uses RAM-based FPM sizing and environment-tuned OPcache/JIT defaults.
 
 ---
 
-### 7. Repositories & Self-Update
+### 7) Services
+
+#### `fpm`
+
+```bash
+phpx fpm status 8.2
+phpx fpm restart 8.2
+phpx fpm test 8.2
+phpx fpm config 8.2
+```
+
+#### `apache`
+
+```bash
+phpx apache status
+phpx apache reload
+phpx apache fpm 8.2
+phpx apache modphp 8.2
+```
+
+---
+
+### 8) Repositories & Self-Update
 
 #### `sury`
 
@@ -473,18 +412,7 @@ You can then merge these templates into your actual `/etc/php/X.Y` configs.
 phpx sury
 ```
 
-* Reads OS info from `/etc/os-release` and `lsb_release -sc`.
-* On Ubuntu (or Ubuntu-like):
-
-    * Installs `software-properties-common` if needed.
-    * Adds `ppa:ondrej/php` when missing.
-* On Debian (or Debian-like):
-
-    * Verifies that codename is supported by `packages.sury.org`.
-    * Installs Sury keyring & adds appropriate `deb` line.
-* Runs `apt update` afterwards.
-
----
+Adds Sury/Ondřej repo (Debian/Ubuntu) and runs `apt update`.
 
 #### `self-update`
 
@@ -492,88 +420,45 @@ phpx sury
 phpx self-update
 ```
 
-* Downloads latest script from:
-
-    * `https://raw.githubusercontent.com/infocyph/Toolset/main/PHP/phpx`
-
-* Compares SHA-256 of local vs downloaded version.
-
-* If identical:
-
-    * Prints “already up-to-date” and exits.
-
-* If different:
-
-    * Replaces `/usr/local/bin/phpx` with the new file.
-    * Marks it executable.
+Updates `/usr/local/bin/phpx` from the official source.
 
 ---
 
 ## Logging & Environment
 
-By default, `phpx` logs to per-day log files:
+Default logs:
 
-* As root:
-  `/var/log/phpx/YYYY-MM-DD.log`
-* As non-root:
-  `$HOME/.local/phpx_logs/YYYY-MM-DD.log`
+* as root: `/var/log/phpx/YYYY-MM-DD.log`
+* as user: `~/.local/phpx_logs/YYYY-MM-DD.log`
 
-Each log entry includes:
+Environment variables:
 
-* Timestamp
-* Level (`INFO` / `WARN` / `ERROR`)
-* Short message
-
-### Environment variables
-
-* `PHPX_LOG_DIR`
-  Override log directory (for both root and non-root runs).
-
-* `PHPX_NO_LOG`
-  If set (to anything), disables file logging entirely.
-
-* `PHPX_ASSUME_YES`
-  If set, treats operations as if `-y` / `--yes` were passed where applicable.
-  Useful for non-interactive flows around:
-
-    * `switch`, `install`, `remove`, `sury`, `self-update` and extension management.
+* `PHPX_LOG_DIR` override log directory
+* `PHPX_NO_LOG` disable file logging
+* `PHPX_ASSUME_YES` treat flows as non-interactive “yes” where supported
 
 ---
 
 ## Quick Examples
 
 ```bash
-# Show installed versions and current default
 phpx list
+phpx known --more
+phpx variants --more
 
-# Inspect config for PHP 8.3
 phpx info 8.3
-
-# Run doctor with auto-fix on 8.2
 phpx doctor 8.2 --fix
 
-# Switch default CLI to 8.2 without touching web server configs
+phpx switch 8.4 +mysql -curl
 phpx switch 8.2 --no-web
 
-# Install redis and imagick for 8.2 non-interactively
 phpx ext 8.2 --install=redis,imagick
+phpx syntax --exclude storage --exclude bootstrap/cache
 
-# Install Composer globally
-phpx install composer
-
-# Start a dev server on 0.0.0.0:8080
-phpx serve --host=0.0.0.0 --port=8080
-
-# Generate production-tuned configs for 8.2
-phpx generate-config production 8.2
-
-# Add Sury/Ondřej repo and refresh apt
 phpx sury
-
-# Update phpx itself
 phpx self-update
 ```
 
 ---
 
-`phpx` is part of the **Toolset** collection. See the main repo README for an overview of the other tools.
+`phpx` is part of the **Toolset** collection. See the main repo README for the rest of the tools.
