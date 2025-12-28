@@ -87,12 +87,12 @@ usage() {
   echo "🗄️ Stashing & Cleanup:"
   echo "  stash [subcommand]                               Manage stash operations"
   echo "      - stash                      (interactive menu)"
-  echo "      - stash save [msg]           Save with message (default WIP-style)"
+  echo "      - stash save [msg...]           Save with message (default WIP-style)"
   echo "      - stash list                 List stashes"
   echo "      - stash apply <n>            Apply stash@{n}"
   echo "      - stash pop <n>              Pop stash@{n}"
   echo "      - stash drop <n>             Drop stash@{n}"
-  echo "      - stash rename <n> <name>    Rename stash@{n}"
+  echo "      - stash rename <n> <name...>    Rename stash@{n}"
   echo "      - stash clear                Delete all stashes"
   echo "  wip <save|list|pop|apply|clear>                  Opinionated WIP stash helper"
   echo "  clean [--force]                                 Clean untracked files and directories"
@@ -725,7 +725,7 @@ fetch_prs_and_commits() {
 
     echo "1️⃣ PRs:"
     echo ""
-    git log --merges --pretty=format:"%h|%s|%b|%an|%ae|%ad" "$commit_range" | grep "Merge pull request" | while IFS= read -r merge_commit; do
+    git log --merges --pretty=format:"%h|%s|%an|%ae|%ad" "$commit_range" | grep "Merge pull request" | while IFS= read -r merge_commit; do
       local merge_hash pr_details
       merge_hash=$(echo "$merge_commit" | cut -d'|' -f1)
       pr_details=$(echo "$merge_commit" | cut -d'|' -f2-)
@@ -737,7 +737,7 @@ fetch_prs_and_commits() {
 
     echo "2️⃣ Non-PR Merges:"
     echo ""
-    git log --merges --pretty=format:"%h|%s|%b|%an|%ae|%ad" "$commit_range" | grep -v "Merge pull request" | while IFS= read -r merge_commit; do
+    git log --merges --pretty=format:"%h|%s|%an|%ae|%ad" "$commit_range" | grep -v "Merge pull request" | while IFS= read -r merge_commit; do
       local merge_hash merge_details
       merge_hash=$(echo "$merge_commit" | cut -d'|' -f1)
       merge_details=$(echo "$merge_commit" | cut -d'|' -f2-)
