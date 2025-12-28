@@ -47,8 +47,10 @@ usage() {
   echo "  stage-deleted                                    Stage all deleted files"
   echo "  stage-deleted-dir <directory>                    Stage deleted files in a specific directory"
   echo "      - directory: Path to the directory"
-  echo "  diff [output_file]                               View or save staged changes"
-  echo "      - output_file: Save diff to a file (optional)"
+  echo "  diff [output_file]                               Interactive staged diff (view/save)"
+  echo "  diff <start> <end> [--stat|--name-only|--patch] [-- <path...>]"
+  echo "      - start/end: commit/tag OR YYYY-MM-DD YYYY-MM-DD"
+  echo "      - tip: date diff is inclusive (start-commit parent → end-commit)"
   echo ""
   echo "🔍 Tracking & Reporting:"
   echo "  log-file <file_path>                             View commit history and diffs for a specific file"
@@ -423,7 +425,6 @@ generate_changelog() {
   git log "$range_spec" --pretty=format:"%h - %s (%an, %ad)" --date=short >"$changelog_file"
   echo "Changelog saved to $changelog_file."
 }
-
 
 # Count changes between two commits (CLI-first)
 count_changes_between_commits() {
@@ -936,7 +937,6 @@ stash_operations() {
   esac
 }
 
-
 # WIP helper (sugar around stash)
 wip_manager() {
   ensure_git_repo
@@ -1093,6 +1093,89 @@ track_staged_changes() {
     ;;
   esac
 }
+
+_gitx_empty_tree() {
+  git hash-object -t tree /dev/null 2>/dev/null
+}
+
+diff_between_refs_or_dates() {
+  ensure_git_repo
+
+  local a1="${1:-}"
+  local a2="${2:-}"
+  shift 2 || true
+
+  if [[ -z "$a1" || -z "$a2" ]]; then
+    echo "Usage: gitx diff <start> <end> [--stat|--name-only|--patch] [-- <path...>]"
+    return 1
+  fi
+
+  local mode="--patch"
+  if [[ "${1:-}" == "--stat" || "${1:-}" == "--name-only" || "${1:-}" == "--patch" ]]; then
+    mode="$1"
+    shift || true
+  fi
+
+  local flags=()
+  case "$mode" in
+  --stat) flags+=(--stat) ;;
+  --name-only) flags+=(--name-only) ;;
+  --patch) ;;
+  *)
+    echo "Invalid mode: $mode (use --stat, --name-only, or --patch)"
+    return 1
+    ;;
+  esac
+
+  # Allow explicit path separator `--`, but also accept paths without it.
+  if [[ "${1:-}" == "--" ]]; then
+    shift || true
+  fi
+
+  local from_ref="" to_ref="" start_hash="" end_hash="" parent_start=""
+
+  # Date mode (YYYY-MM-DD YYYY-MM-DD)
+  if is_iso_date "$a1" && is_iso_date "$a2"; then
+    local commits first last
+    commits="$(resolve_date_range_to_commits "$a1" "$a2")" || return $?
+    first="$(awk '{print $1}' <<<"$commits")"
+    last="$(awk '{print $2}' <<<"$commits")"
+
+    start_hash="$first"
+    end_hash="$last"
+  else
+    # Ref mode
+    start_hash="$(git rev-parse --verify "$a1^{commit}" 2>/dev/null)" || {
+      echo "Error: Invalid start ref: $a1"
+      return 1
+    }
+    end_hash="$(git rev-parse --verify "$a2^{commit}" 2>/dev/null)" || {
+      echo "Error: Invalid end ref: $a2"
+      return 1
+    }
+  fi
+
+  # Inclusive: parent(start) -> end
+  parent_start="$(git rev-parse "${start_hash}^" 2>/dev/null || true)"
+  if [[ -n "$parent_start" ]]; then
+    from_ref="$parent_start"
+  else
+    from_ref="$(_gitx_empty_tree)"
+  fi
+  to_ref="$end_hash"
+
+  git diff --no-renames "${flags[@]}" "$from_ref" "$to_ref" -- "$@"
+}
+
+gitx_diff() {
+  # Range/date diff if 2+ args are provided, otherwise keep existing staged diff UX.
+  if [[ $# -ge 2 ]]; then
+    diff_between_refs_or_dates "$@"
+  else
+    track_staged_changes "${1:-}"
+  fi
+}
+
 
 cherry_pick_commit() {
   ensure_git_repo
@@ -1565,7 +1648,6 @@ generate_git_summary() {
   rm -f "$temp_file" "$blame_file"
 }
 
-
 # Commit report (range or date-based)
 generate_commit_report() {
   ensure_git_repo
@@ -1658,7 +1740,6 @@ generate_commit_report() {
   '
 }
 
-
 # Worklog: CSV-oriented report for task logs
 generate_worklog() {
   ensure_git_repo
@@ -1720,7 +1801,6 @@ generate_worklog() {
     }
   '
 }
-
 
 self_update() {
   local script_url="https://raw.githubusercontent.com/infocyph/Toolset/main/Git/gitx"
@@ -1932,7 +2012,7 @@ cherry-pick) cherry_pick_commit ;;
 reset-branch) reset_branch_to_remote ;;
 prune) prune_remote_branches ;;
 report) fetch_prs_and_commits "$@" ;;
-diff) track_staged_changes "${1:-}" ;;
+diff) gitx_diff "$@" ;;
 stash) stash_operations "$@" ;;
 wip) wip_manager "$@" ;;
 create) create_branch "$@" ;;
