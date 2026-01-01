@@ -683,10 +683,7 @@ fetch_prs_and_commits() {
   local a2="${2:-}"
   local a3="${3:-}"
 
-  local start_ref=""
-  local end_ref=""
-  local commit_range=""
-  local output_file=""
+  local start_ref="" end_ref="" commit_range="" output_file=""
 
   # Date-range mode: report <start_date> <end_date> [file]
   if is_iso_date "$a1" && is_iso_date "$a2"; then
@@ -709,7 +706,6 @@ fetch_prs_and_commits() {
       read -rp "Enter the start commit hash or tag: " start_ref
     fi
 
-    # Inclusive on both ends (matches your date-range behavior)
     commit_range="$(build_inclusive_range_spec "$start_ref" "$end_ref")"
 
     local safe_start safe_end
@@ -729,60 +725,58 @@ fetch_prs_and_commits() {
     echo "1️⃣ PRs:"
     echo ""
 
-    git log --merges --date=iso-strict \
-      --pretty=format:'%H|%s|%an|%ae|%ad' "$commit_range" |
-      while IFS='|' read -r merge_hash subject an ae ad; do
-        [[ -z "$merge_hash" ]] && continue
-        [[ "$subject" != *"Merge pull request"* ]] && continue
+    local merge_lines
+    merge_lines="$(git log --merges --date=iso-strict --pretty=format:'%H|%s|%an|%ae|%ad' "$commit_range" 2>/dev/null || true)"
 
-        echo "🔹 Merge Commit: ${merge_hash:0:7} | $subject | $an|$ae|$ad"
+    while IFS='|' read -r merge_hash subject an ae ad; do
+      [[ -z "${merge_hash:-}" ]] && continue
+      [[ "${subject:-}" != *"Merge pull request"* ]] && continue
 
-        # Keep body without breaking parsing (body is fetched per-merge, not in the list stream)
-        local body
-        body="$(git show -s --format=%b "$merge_hash" 2>/dev/null || true)"
-        if [[ -n "${body//[[:space:]]/}" ]]; then
-          echo "   Body:"
-          printf '%s\n' "$body" | sed 's/^/   | /'
-        fi
+      echo "🔹 Merge Commit: ${merge_hash:0:7} | ${subject:-} | ${an:-}|${ae:-}|${ad:-}"
 
-        echo "   PR Contains the following commits:"
-        git log --no-merges --date=iso-strict \
-          --pretty=format:'   - %h | %s | %an (%ad)' \
-          "${merge_hash}^1..${merge_hash}" 2>/dev/null || true
-        echo ""
-      done
+      local body
+      body="$(git show -s --format=%b "$merge_hash" 2>/dev/null || true)"
+      if [[ -n "${body//[[:space:]]/}" ]]; then
+        echo "   Body:"
+        printf '%s\n' "$body" | sed 's/^/   | /'
+      fi
+
+      echo "   PR Contains the following commits:"
+      git log --no-merges --date=iso-strict \
+        --pretty=format:'   - %h | %s | %an (%ad)' \
+        "${merge_hash}^1..${merge_hash}" 2>/dev/null || true
+      echo ""
+    done <<<"$merge_lines"
 
     # ---------------------- Non-PR merges ------------------------
     echo "2️⃣ Non-PR Merges:"
     echo ""
 
-    git log --merges --date=iso-strict \
-      --pretty=format:'%H|%s|%an|%ae|%ad' "$commit_range" |
-      while IFS='|' read -r merge_hash subject an ae ad; do
-        [[ -z "$merge_hash" ]] && continue
-        [[ "$subject" == *"Merge pull request"* ]] && continue
+    while IFS='|' read -r merge_hash subject an ae ad; do
+      [[ -z "${merge_hash:-}" ]] && continue
+      [[ "${subject:-}" == *"Merge pull request"* ]] && continue
 
-        echo "🔹 Merge Commit: ${merge_hash:0:7} | $subject | $an|$ae|$ad"
+      echo "🔹 Merge Commit: ${merge_hash:0:7} | ${subject:-} | ${an:-}|${ae:-}|${ad:-}"
 
-        local body
-        body="$(git show -s --format=%b "$merge_hash" 2>/dev/null || true)"
-        if [[ -n "${body//[[:space:]]/}" ]]; then
-          echo "   Body:"
-          printf '%s\n' "$body" | sed 's/^/   | /'
-        fi
+      local body
+      body="$(git show -s --format=%b "$merge_hash" 2>/dev/null || true)"
+      if [[ -n "${body//[[:space:]]/}" ]]; then
+        echo "   Body:"
+        printf '%s\n' "$body" | sed 's/^/   | /'
+      fi
 
-        echo "   Contains the following commits:"
-        git log --no-merges --date=iso-strict \
-          --pretty=format:'   - %h | %s | %an (%ad)' \
-          "${merge_hash}^1..${merge_hash}" 2>/dev/null || true
-        echo ""
-      done
+      echo "   Contains the following commits:"
+      git log --no-merges --date=iso-strict \
+        --pretty=format:'   - %h | %s | %an (%ad)' \
+        "${merge_hash}^1..${merge_hash}" 2>/dev/null || true
+      echo ""
+    done <<<"$merge_lines"
 
     # ---------------------- Standalone commits -------------------
     echo "3️⃣ Standalone Commits:"
     echo ""
 
-    local all_commits merge_commits standalone_commits merges
+    local all_commits merges merge_commits standalone_commits
     all_commits="$(git log --no-merges --pretty=format:'%H' "$commit_range" 2>/dev/null | LC_ALL=C sort -u)"
     merges="$(git log --merges --pretty=format:'%H' "$commit_range" 2>/dev/null || true)"
 
@@ -797,9 +791,16 @@ fetch_prs_and_commits() {
 
     while IFS= read -r commit; do
       [[ -z "$commit" ]] && continue
-      git show -s --date=iso-strict \
-        --pretty=format:'🔸 %h | %s | %an (%ad)%n' \
-        "$commit"
+
+      git show -s --date=iso-strict --pretty=format:'🔸 %h | %s | %an (%ad)%n' "$commit"
+
+      local body
+      body="$(git show -s --format=%b "$commit" 2>/dev/null || true)"
+      if [[ -n "${body//[[:space:]]/}" ]]; then
+        echo "   Body:"
+        printf '%s\n' "$body" | sed 's/^/   | /'
+        echo ""
+      fi
     done <<<"$standalone_commits"
 
     echo ""
@@ -807,6 +808,7 @@ fetch_prs_and_commits() {
 
   echo "✅ Report generated in $output_file"
 }
+
 
 # Unified stash operations (CLI + interactive)
 stash_operations() {
@@ -1098,6 +1100,106 @@ _gitx_empty_tree() {
   git hash-object -t tree /dev/null 2>/dev/null
 }
 
+diff_grouped_by_date() {
+  ensure_git_repo
+
+  local a1="${1:-}"
+  local a2="${2:-}"
+  local mode="${3:---patch}"
+  local outfile="${4:-}"
+
+  shift 4 || true
+
+  if [[ -z "$a1" || -z "$a2" ]]; then
+    echo "Usage: diff_grouped_by_date <start> <end> <mode> <outfile> [-- <path...>]"
+    return 1
+  fi
+
+  if [[ -z "$outfile" ]]; then
+    echo "Error: outfile is required for grouped-by-date diff."
+    return 1
+  fi
+
+  # Allow explicit path separator `--`, but also accept paths without it.
+  if [[ "${1:-}" == "--" ]]; then
+    shift || true
+  fi
+
+  local start_hash="" end_hash=""
+
+  if is_iso_date "$a1" && is_iso_date "$a2"; then
+    local commits first last
+    commits="$(resolve_date_range_to_commits "$a1" "$a2")" || return $?
+    first="$(awk '{print $1}' <<<"$commits")"
+    last="$(awk '{print $2}' <<<"$commits")"
+    start_hash="$first"
+    end_hash="$last"
+  else
+    start_hash="$(git rev-parse --verify "$a1^{commit}" 2>/dev/null)" || {
+      echo "Error: Invalid start ref: $a1"
+      return 1
+    }
+    end_hash="$(git rev-parse --verify "$a2^{commit}" 2>/dev/null)" || {
+      echo "Error: Invalid end ref: $a2"
+      return 1
+    }
+  fi
+
+  local range_spec
+  range_spec="$(build_inclusive_range_spec "$start_hash" "$end_hash")" || return 1
+
+  : >"$outfile"  # overwrite
+
+  printf 'Date-grouped diff for: %s..%s\n\n' "$a1" "$a2" >>"$outfile"
+
+  local commit_list
+  commit_list="$(git rev-list --reverse --no-merges "$range_spec" 2>/dev/null || true)"
+
+  if [[ -z "$commit_list" ]]; then
+    echo "No commits found in range."
+    return 2
+  fi
+
+  local last_date=""
+  local commit date_line header
+
+  while IFS= read -r commit; do
+    [[ -z "$commit" ]] && continue
+
+    date_line="$(git show -s --format=%cs "$commit" 2>/dev/null || true)"
+    [[ -z "$date_line" ]] && date_line="unknown-date"
+
+    if [[ "$date_line" != "$last_date" ]]; then
+      last_date="$date_line"
+      printf '\n## %s\n\n' "$date_line" >>"$outfile"
+    fi
+
+    header="$(git show -s --format='%h | %s | %an (%ad)' --date=iso-strict "$commit" 2>/dev/null || true)"
+    printf '### %s\n\n' "$header" >>"$outfile"
+
+    case "$mode" in
+    --stat)
+      git --no-pager show --no-renames --pretty=format:'' --stat "$commit" -- "$@" >>"$outfile" 2>/dev/null || true
+      ;;
+    --name-only)
+      git --no-pager show --no-renames --pretty=format:'' --name-only "$commit" -- "$@" >>"$outfile" 2>/dev/null || true
+      ;;
+    --patch)
+      git --no-pager show --no-renames --pretty=format:'' "$commit" -- "$@" >>"$outfile" 2>/dev/null || true
+      ;;
+    *)
+      echo "Invalid mode for by-date: $mode"
+      return 1
+      ;;
+    esac
+
+    printf '\n' >>"$outfile"
+  done <<<"$commit_list"
+
+  echo "✅ Date-grouped diff saved to: $outfile" >&2
+}
+
+
 diff_between_refs_or_dates() {
   ensure_git_repo
 
@@ -1106,25 +1208,80 @@ diff_between_refs_or_dates() {
   shift 2 || true
 
   if [[ -z "$a1" || -z "$a2" ]]; then
-    echo "Usage: gitx diff <start> <end> [--stat|--name-only|--patch] [patch_file] [-- <path...>]"
+    echo "Usage: gitx diff <start> <end> [--stat|--name-only|--patch] [--by-date] [-o <file>] [patch_file] [-- <path...>]"
     return 1
   fi
 
-  # Default for range/date diff is --stat
+  # Default for range/date diff is --stat (stdout).
   local mode="--stat"
+  local mode_set=0
   if [[ "${1:-}" == "--stat" || "${1:-}" == "--name-only" || "${1:-}" == "--patch" ]]; then
     mode="$1"
+    mode_set=1
     shift || true
   fi
 
-  # Optional patch output file (only for --patch)
+  local by_date=0
+  local outfile=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --by-date|--group-by-date|--daily)
+      by_date=1
+      shift
+      ;;
+    -o|--out|--output)
+      outfile="${2:-}"
+      shift 2 || true
+      ;;
+    --help|-h)
+      echo "Usage:"
+      echo "  gitx diff <start> <end> [--stat|--name-only|--patch] [--by-date] [-o <file>] [patch_file] [-- <path...>]"
+      echo ""
+      echo "Notes:"
+      echo "  - <start>/<end> can be commit/tag OR YYYY-MM-DD YYYY-MM-DD (inclusive by commit boundaries)."
+      echo "  - Default mode is --stat (printed to stdout, no pager)."
+      echo "  - --patch saves to a file by default (you can pass a patch filename)."
+      echo "  - --by-date generates a date-grouped diff file (defaults to patch if no mode is explicitly set)."
+      return 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      break
+      ;;
+    esac
+  done
+
+  # Group-by-date mode always writes to a file (for easy sharing).
+  if [[ "$by_date" -eq 1 ]]; then
+    # If user didn't explicitly request stat/name-only/patch, default to patch.
+    if [[ "$mode_set" -eq 0 ]]; then
+      mode="--patch"
+    fi
+
+    if [[ -z "$outfile" ]]; then
+      local safe_a1 safe_a2 ext
+      safe_a1="${a1//\//_}"; safe_a2="${a2//\//_}"
+      safe_a1="${safe_a1// /_}"; safe_a2="${safe_a2// /_}"
+      ext="txt"
+      [[ "$mode" == "--patch" ]] && ext="patch"
+      outfile="diff_by_date_${safe_a1}_to_${safe_a2}.${ext}"
+    fi
+
+    diff_grouped_by_date "$a1" "$a2" "$mode" "$outfile" "$@"
+    return $?
+  fi
+
+  # Optional patch output file (only for --patch, non --by-date)
   local patch_file=""
   if [[ "$mode" == "--patch" ]]; then
     if [[ -n "${1:-}" && "${1:-}" != "--" && "${1:-}" =~ \.(patch|diff)$ ]]; then
       patch_file="$1"
       shift || true
     else
-      # Default patch file name derived from start/end
       local safe_a1 safe_a2
       safe_a1="${a1//\//_}"
       safe_a2="${a2//\//_}"
@@ -1176,7 +1333,6 @@ diff_between_refs_or_dates() {
     git --no-pager diff --no-renames "$mode" "$from_ref" "$to_ref" -- "$@"
     ;;
   --patch)
-    # Patch goes to a file by default (still works with redirection if you want)
     git --no-pager diff --no-renames "$from_ref" "$to_ref" -- "$@" >"$patch_file"
     echo "✅ Patch saved to: $patch_file" >&2
     ;;
@@ -1186,6 +1342,7 @@ diff_between_refs_or_dates() {
     ;;
   esac
 }
+
 
 gitx_diff() {
   # Range/date diff if 2+ args are provided, otherwise keep existing staged diff UX.
