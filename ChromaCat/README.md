@@ -4,14 +4,14 @@
 
 Think of it as a **colour-aware `cat`** for:
 
-* rainbow / palette gradients
-* scrolling or line-by-line animations
-* boxed banners / section headers
-* theme & palette presets
-* optional image-to-ANSI support (via `chafa` / `jp2a` / `img2txt`)
-* log-friendly highlighting modes
-* self-update from GitHub
-* graceful fallback to plain `cat` when appropriate
+- rainbow / palette gradients
+- scrolling or line-by-line animations
+- boxed banners / section headers (with title + padding)
+- theme & palette presets
+- optional image-to-ANSI support (via `chafa` / `jp2a` / `img2txt`)
+- log-friendly highlighting modes (regex + per-line)
+- self-update from GitHub
+- graceful fallback to plain `cat` when appropriate
 
 When it can’t safely colour (or you didn’t ask for anything special), it behaves like a normal `cat`.
 
@@ -22,7 +22,7 @@ When it can’t safely colour (or you didn’t ask for anything special), it beh
 ```bash
 sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/ChromaCat/chromacat" \
   -o /usr/local/bin/chromacat && sudo chmod +x /usr/local/bin/chromacat
-```
+````
 
 Or keep it in your `$HOME/bin` and add that to `PATH`.
 
@@ -36,13 +36,15 @@ chromacat [options] <file.txt>
 tail -f app.log | chromacat --log
 ```
 
-**Cat fallback behaviour**
+### Cat fallback behaviour
 
-* If `getopt` is missing, `chromacat` **becomes `cat`** for that invocation.
-* If stdout is **not a TTY**, and you did **not** ask for colour/box/match/etc., it auto-falls back to `cat` as well.
-* `--force` can override the “not a TTY” check and still apply colour.
+* If GNU `getopt` is missing (or incompatible), `chromacat` **becomes `cat`** for that invocation.
+* If stdout is **not a TTY**, and you did **not** ask for colour/box/match/etc., it auto-falls back to `cat`.
+* `--force` overrides the “not a TTY” check and still applies colour.
 
-When `-I/--image` is used, `chromacat` will **only render the ASCII/ANSI art** as produced by the image backend (no extra gradient on top).
+### Image mode note
+
+When `-I/--image` is used, `chromacat` will **only render the ASCII/ANSI art** produced by the image backend (no extra gradient/box/animation on top). This prevents “double colouring” an ANSI image.
 
 ---
 
@@ -54,66 +56,64 @@ When `-I/--image` is used, `chromacat` will **only render the ASCII/ANSI art** a
 -p, --spread <f>         Rainbow spread (default 3.0)
 -F, --freq <f>           Rainbow frequency (default 0.1)
 -S, --seed <n>           Seed (0 = random)
+
 -a, --animate            Classic scrolling animation
 -aa, --line              Line-by-line reveal animation
     --style <name>       Animation style (classic|line|none)
-    --per-line           Use one colour per line (faster, log-friendly)
+
+    --per-line           One colour per line (faster/log-friendly)
 -d, --duration <sec>     Animation seconds (default 1)
 -s, --speed <fps>        Frames / second (default 5.0)
--m, --match <regex>      Colour only text matching regex
+
+-m, --match <regex>      Colour only matching text
     --only-match         Hide non-matching characters (with --match)
     --strip-ansi         Strip existing ANSI codes before colouring
-    --log                Log preset (no animation, per-line gradient)
+
+    --log                Preset (no animation + per-line)
     --stream             Disable animations for streaming input
 ```
 
-**Details**
+#### Details
 
-* `--spread` / `--freq`:
+* `--spread` / `--freq`
 
-    * control how fast/slow the rainbow cycles across characters/lines.
-* `--seed`:
+    * Control how quickly the gradient cycles across the output.
+* `--seed`
 
-    * `0` → uses a random seed per run.
-    * non-zero → reproducible gradients for the same content.
-* `-a/--animate` (`classic`):
+    * `0` → random per run
+    * non-zero → reproducible gradient
+* `-a/--animate` (`classic`)
 
-    * repeatedly reprints the content and scrolls it like a marquee.
-* `-aa/--line` or `--style line`:
+    * Reprints content repeatedly to create a scrolling/marquee effect.
+* `-aa/--line` or `--style line`
 
-    * reveals lines one by one over the given duration.
-* `--per-line`:
+    * Reveals lines one by one over the given duration.
+* `--per-line`
 
-    * switches mode to **line-level colour**:
+    * Uses a single gradient colour per line (much faster on large output).
+* `--log`
 
-        * each line gets one gradient colour,
-        * better for big outputs and logs.
-* `--log` preset:
+    * Shortcut preset:
 
-    * `animation_style = none`
-    * `mode = line` (as if `--per-line`).
-* `--stream`:
+        * `animation_style = none`
+        * `mode = line` (same idea as `--per-line`)
+* `--stream`
 
-    * disables animations (but still colours) – useful for infinite streams (`tail -f`, long-running CLIs).
-* `--match <regex>` / `--only-match`:
+    * Forces no animations (still colours) — ideal for `tail -f` or long streams.
+* `--match <regex>` + `--only-match`
 
-    * if `--match` is set:
+    * With `--match`: only matching characters are colourised.
+    * With `--only-match`: non-matching characters are not printed at all.
+* `--strip-ansi`
 
-        * only matching characters are colourised.
-        * non-matching characters stay plain.
-    * if you also use `--only-match`:
+    * Removes existing `\033[...m` sequences before applying new colour.
+    * Useful to re-theme already coloured logs.
 
-        * non-matching characters are **not printed at all**.
-* `--strip-ansi`:
+Example:
 
-    * removes existing `\033[...m` sequences before applying new colour.
-    * good for re-theming already coloured logs.
-
-> For logs, something like:
->
-> ```bash
-> tail -f app.log | chromacat --log --strip-ansi --match 'ERROR|WARN'
-> ```
+```bash
+tail -f app.log | chromacat --log --strip-ansi --match 'ERROR|WARN'
+```
 
 ---
 
@@ -121,83 +121,92 @@ When `-I/--image` is used, `chromacat` will **only render the ASCII/ANSI art** a
 
 ```text
 -i, --invert             Invert foreground / background
--t, --truecolor          Force 24-bit colour
+-t, --truecolor          Prefer 24-bit colour if supported
 -f, --force              Colour even if stdout not a TTY
+    --no-color           Disable colouring (also respects NO_COLOR)
+
 -b, --box                Draw ASCII box
--B, --box-style <name>   Box style: default|dashed|dash2|round|double|heavy|parchment|simple|shell|html|plus|comment|php|chain
+-B, --box-style <name>   default|dashed|dash2|round|double|heavy|parchment|simple|shell|html|plus|comment|php|chain
     --title <text>       Box title line
     --center             Center-align box content
+    --pad <n>            Padding inside box (default 0)
+
 -O, --orientation <o>    Gradient orientation: h|v|d
 -P, --palette <file>     Palette file (HEX per line)
--T, --theme <name>       fire|ice|sunset|ocean|rainbow (comma-separated list)
-    --list-themes        Show available themes and exit
-    --sample-theme <n>   Preview theme and exit
-    --random-theme       Pick a random theme
+
+-T, --theme <name(s)>    Themes (comma list)
+    --list-themes        List themes and exit
+    --sample-theme <n>   Print theme sample and exit
+    --random-theme       Pick random theme
+
     --blink              Blinking text
 ```
 
-**Details**
+#### Details
 
-* `--invert`:
+* `--invert`
 
-    * uses ANSI reverse video around coloured segments.
+    * Uses ANSI reverse-video around coloured segments.
+* `--truecolor`
 
-* `--truecolor`:
+    * Enables 24-bit colour **only if** `COLORTERM` contains `truecolor`.
+    * Otherwise falls back to 256-colour approximation.
+* `--no-color`
 
-    * forces 24-bit RGB sequences, but only if `COLORTERM` contains `truecolor`.
+    * Hard disables colouring + animations + blink + invert (same effect as `NO_COLOR`).
+* `--orientation`
 
-* `--orientation`:
-
-    * accepts `h`, `v`, `d` and also the full words:
+    * Accepts `h`, `v`, `d` (and full words):
 
         * `horizontal` → `h`
         * `vertical` → `v`
         * `diagonal` → `d`
 
-* `--palette <file>`:
+#### Box rendering (`--box`, `--title`, `--center`, `--pad`)
 
-    * file with one hex colour per line, e.g.:
+* `--title` adds a title line inside the box.
+* `--center` centers each line inside the box.
+* `--pad <n>` adds inner padding:
 
-      ```text
-      FF0000
-      FFA500
-      FFFF00
-      ```
+    * adds blank lines above/below content
+    * adds left/right spacing
+* Box width is computed using the **longest line across both title and content**, so alignment stays correct.
 
-* `--theme`:
+Example:
 
-    * supports multiple themes in one go:
+```bash
+echo "hello" | chromacat -T neon --per-line -b -B round --title "ChromaCat" --center --pad 1
+```
 
-      ```bash
-      chromacat -T fire,ice
-      ```
+#### Palettes & themes
 
-    * built-in themes:
+`--palette <file>` expects **one HEX colour per line**:
 
-        * `fire`    – warm oranges/yellows
-        * `ice`     – cyans/blues
-        * `sunset`  – reds/oranges/golds
-        * `ocean`   – cool blues
-        * `rainbow` – standard rainbow
+```text
+FF0000
+FFA500
+FFFF00
+00FF00
+0000FF
+```
 
-* `--list-themes`:
+Themes can be comma-separated:
 
-    * prints the built-in theme list and exits.
+```bash
+echo "multi" | chromacat -T fire,ice
+```
 
-* `--sample-theme <name>`:
+Built-in themes:
 
-    * prints a small “Sample for theme "<name>"” line using that theme and exits.
+* `fire`    – warm oranges/yellows
+* `ice`     – cyans/blues
+* `sunset`  – reds/oranges/golds
+* `ocean`   – cool blues
+* `rainbow` – standard rainbow
 
-* `--random-theme`:
+`--random-theme` picks from the built-ins when no palette/theme was explicitly selected.
 
-    * when no theme/palette specified:
-
-        * picks randomly from `fire`, `ice`, `sunset`, `ocean`, `rainbow`.
-
-* `--blink`:
-
-    * wraps coloured characters with ANSI blink **on/off** codes.
-    * obeys `NO_COLOR` (disabled if `NO_COLOR` is set).
+> Note: If you use a theme name that isn’t built-in, `chromacat` warns and falls back to rainbow math.
 
 ---
 
@@ -210,20 +219,13 @@ When `-I/--image` is used, `chromacat` will **only render the ASCII/ANSI art** a
 
 #### Image mode (`-I/--image`)
 
-Behaviour:
-
-* Detects terminal size (capped at 160x60).
-
-* Tries, in order:
+* Detects terminal size (capped at 160×60)
+* Tries backends in order:
 
     1. `chafa` (preferred)
     2. `jp2a`
     3. `img2txt`
-
-* Prints the backend’s **ANSI output as-is**:
-
-    * **No additional gradient**, box or animation applied.
-    * This ensures the image renderer controls the colours.
+* Prints the backend’s ANSI output **as-is** (no extra gradient/box/animation)
 
 Examples:
 
@@ -234,31 +236,12 @@ chromacat -I logo.jpg
 
 #### Header mode (`-H/--header`)
 
-Behaviour:
-
-* Ignores stdin/files; operates only on the header text.
-
-* If `figlet` is installed:
-
-  ```bash
-  figlet "text"
-  ```
-
-  is used; otherwise plain text.
-
-* If `--box` / `--box-style` / `--title` / `--center` are provided:
-
-    * the figlet/plain output is first boxed via the internal box renderer.
-
-* After that, the result goes through:
-
-    * `classic` / `line` animation, or
-    * static `colour_block` (default).
-
-Example:
+* Ignores stdin/files; renders only the header text.
+* Uses `figlet` if available; otherwise plain text.
+* You can combine with box + colour + animation:
 
 ```bash
-chromacat -H "Release v1.0.0" -b --box-style double --center
+chromacat -H "Release v1.0.0" -b --box-style double --center --pad 1
 ```
 
 ---
@@ -274,25 +257,18 @@ chromacat -H "Release v1.0.0" -b --box-style double --center
 #### Self-update
 
 ```bash
-# Default: update resolved "chromacat" binary
 chromacat --self-update
-
-# Explicit target
 CHROMACAT_PATH=/usr/local/bin/chromacat chromacat -U
 ```
 
 The updater:
 
-1. Downloads from
-   `https://raw.githubusercontent.com/infocyph/Toolset/main/ChromaCat/chromacat`
-2. Writes to a temporary file.
-3. If `sha256sum` is available:
+1. Downloads from GitHub raw
+2. Writes to a temporary file
+3. If `sha256sum` is available, compares local vs remote
+4. Replaces the target and makes it executable
 
-    * compares remote vs local hash.
-    * if identical → “already up-to-date”.
-4. Moves the new script into place and makes it executable.
-
-If it cannot overwrite the target, it will tell you to use `sudo` or set `CHROMACAT_PATH`.
+If it cannot overwrite the target, it suggests `sudo` or setting `CHROMACAT_PATH`.
 
 ---
 
@@ -300,13 +276,13 @@ If it cannot overwrite the target, it will tell you to use `sudo` or set `CHROMA
 
 CLI flags **always win** over environment defaults.
 
-| Variable              | Description                                                                                |
-| --------------------- | ------------------------------------------------------------------------------------------ |
-| `CHROMACAT_THEME`     | Default theme(s), comma-separated (e.g. `fire,ocean`)                                      |
-| `CHROMACAT_BOX_STYLE` | Default box style (same values as `--box-style`)                                           |
-| `CHROMACAT_STYLE`     | Default animation style (`classic`, `line`, `none`)                                        |
-| `CHROMACAT_PATH`      | Target path for `--self-update`                                                            |
-| `NO_COLOR`            | If set (to anything), disables colour, animations, blink, invert and truecolor logic fully |
+| Variable              | Description                                                          |
+| --------------------- | -------------------------------------------------------------------- |
+| `CHROMACAT_THEME`     | Default theme(s), comma-separated (e.g. `fire,ocean`)                |
+| `CHROMACAT_BOX_STYLE` | Default box style (same values as `--box-style`)                     |
+| `CHROMACAT_STYLE`     | Default animation style (`classic`, `line`, `none`)                  |
+| `CHROMACAT_PATH`      | Target path for `--self-update`                                      |
+| `NO_COLOR`            | If set, disables colour/animations/blink/invert/truecolor (hard-off) |
 
 Example:
 
@@ -316,91 +292,84 @@ export CHROMACAT_BOX_STYLE=double
 export CHROMACAT_STYLE=none
 ```
 
-With `NO_COLOR` set, `chromacat` becomes essentially a smarter `cat`/box drawer with **no** ANSI sequences emitted.
-
 ---
 
 ## Behaviour Notes
 
 ### Truecolor detection
 
-* `-t/--truecolor` only enables 24-bit colour if:
+`--truecolor` uses 24-bit colour only when:
 
-  ```bash
-  COLORTERM contains "truecolor"
-  ```
+```bash
+COLORTERM contains "truecolor"
+```
 
-* Otherwise, it falls back to 256-colour approximation.
+Otherwise it uses 256-colour approximations.
 
 ### Non-TTY handling & force
 
-* If stdout is not a TTY **and** `--force` is not used:
+If stdout is not a TTY and `--force` is not used:
 
-    * Animations are disabled.
-    * Box is disabled.
-    * Truecolor is disabled.
-    * If no other colouring features are used, it **behaves exactly like `cat`**.
+* animations are disabled
+* box rendering is disabled
+* truecolor is disabled
+* if no other color features were requested, it behaves like `cat`
 
-* `--force` keeps colouring even when piping to files or through other programs.
+Use `--force` to keep coloring in pipelines.
 
 ---
 
 ## Examples
 
-### 1. Simple rainbow scroll
+### 1) Simple rainbow
+
+```bash
+echo "hello" | chromacat
+```
+
+### 2) Scrolling animation
 
 ```bash
 echo "hello" | chromacat -a -d 2
 ```
 
-### 2. Parchment banner with diagonal reveal
+### 3) Boxed + titled + padded + centered
+
+```bash
+echo "hello" | chromacat -T neon --per-line -b -B round --title "ChromaCat" --center --pad 1
+```
+
+### 4) Parchment banner with diagonal reveal
 
 ```bash
 figlet "Docker" | chromacat -b -B parchment --title "Containers" -aa -d 6 -O d
 ```
 
-### 3. Log highlighting (preset + regex)
+### 5) Log highlighting (preset + regex)
 
 ```bash
-tail -f app.log \
-  | chromacat --log --strip-ansi --match 'ERROR|WARN'
+tail -f app.log | chromacat --log --strip-ansi --match 'ERROR|WARN'
 ```
 
-### 4. Match-only mode
+### 6) Match-only mode
 
 ```bash
-echo "status=OK code=200" \
-  | chromacat -m 'OK|200' --only-match
+echo "status=OK code=200" | chromacat -m 'OK|200' --only-match
 ```
 
-### 5. Per-line gradient for big output
+### 7) Per-line gradient for big output
 
 ```bash
-kubectl get pods -A \
-  | chromacat --per-line -T ocean
+kubectl get pods -A | chromacat --per-line -T ocean
 ```
 
-### 6. Image to ANSI (no extra gradient)
+### 8) Image to ANSI (no extra gradient)
 
 ```bash
 chromacat -I screenshot.png
 ```
 
-Backend priority: `chafa` → `jp2a` → `img2txt`.
-
-### 7. Header with centered box
-
-```bash
-chromacat -H "Release v1.0.0" -b --box-style double --center
-```
-
-### 8. Fixed seed (reproducible colours)
-
-```bash
-echo "Consistent colours" | chromacat -S 42 -T sunset
-```
-
-### 9. Theme exploration
+### 9) Theme exploration
 
 ```bash
 chromacat --list-themes
@@ -408,7 +377,7 @@ chromacat --sample-theme fire
 echo "Ocean vibes" | chromacat --random-theme
 ```
 
-### 10. Self-update
+### 10) Self-update
 
 ```bash
 sudo chromacat --self-update
