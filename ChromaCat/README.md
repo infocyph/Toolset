@@ -4,14 +4,14 @@
 
 Think of it as a **colour-aware `cat`** for:
 
-- rainbow / palette gradients
-- scrolling or line-by-line animations
-- boxed banners / section headers (with title + padding)
-- theme & palette presets
-- optional image-to-ANSI support (via `chafa` / `jp2a` / `img2txt`)
-- log-friendly highlighting modes (regex + per-line)
-- self-update from GitHub
-- graceful fallback to plain `cat` when appropriate
+* rainbow / palette gradients
+* scrolling or line-by-line animations
+* boxed banners / section headers (with title + padding + centering)
+* theme & palette presets
+* optional image-to-ANSI support (via `chafa` / `jp2a` / `img2txt`)
+* log-friendly highlighting modes (regex + per-line)
+* self-update from GitHub
+* graceful fallback to plain `cat` when appropriate
 
 When it can’t safely colour (or you didn’t ask for anything special), it behaves like a normal `cat`.
 
@@ -22,7 +22,7 @@ When it can’t safely colour (or you didn’t ask for anything special), it beh
 ```bash
 sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/ChromaCat/chromacat" \
   -o /usr/local/bin/chromacat && sudo chmod +x /usr/local/bin/chromacat
-````
+```
 
 Or keep it in your `$HOME/bin` and add that to `PATH`.
 
@@ -36,15 +36,28 @@ chromacat [options] <file.txt>
 tail -f app.log | chromacat --log
 ```
 
-### Cat fallback behaviour
+### Fallback behaviour
 
-* If GNU `getopt` is missing (or incompatible), `chromacat` **becomes `cat`** for that invocation.
-* If stdout is **not a TTY**, and you did **not** ask for colour/box/match/etc., it auto-falls back to `cat`.
-* `--force` overrides the “not a TTY” check and still applies colour.
+* If you pass an **unknown option**, `chromacat` falls back to **plain `cat`** (so scripts won’t break).
+* If stdout is **not a TTY** and `--force` is not used:
+
+  * animations are disabled
+  * truecolor is disabled
+  * output remains safe for pipelines
+* `--no-color` (or `NO_COLOR`) hard-disables all ANSI effects.
+
+### Streaming input note
+
+If you use infinite/long streams (e.g. `tail -f`), you **must use**:
+
+* `--stream` (stream-safe mode), or
+* `--log` (preset that also implies stream-safe mode)
+
+In streaming mode, **box rendering is disabled** because it requires buffering the whole input.
 
 ### Image mode note
 
-When `-I/--image` is used, `chromacat` will **only render the ASCII/ANSI art** produced by the image backend (no extra gradient/box/animation on top). This prevents “double colouring” an ANSI image.
+When `-I/--image` is used, `chromacat` only renders the ANSI/ASCII art produced by the image backend (no extra gradient/box/animation on top). This prevents “double colouring” an ANSI image.
 
 ---
 
@@ -69,45 +82,48 @@ When `-I/--image` is used, `chromacat` will **only render the ASCII/ANSI art** p
     --only-match         Hide non-matching characters (with --match)
     --strip-ansi         Strip existing ANSI codes before colouring
 
-    --log                Preset (no animation + per-line)
-    --stream             Disable animations for streaming input
+    --log                Preset (no animation + per-line + stream-safe)
+    --stream             Stream-safe mode for tail -f / endless input
 ```
 
 #### Details
 
 * `--spread` / `--freq`
 
-    * Control how quickly the gradient cycles across the output.
+  * Control how quickly the gradient cycles across output.
 * `--seed`
 
-    * `0` → random per run
-    * non-zero → reproducible gradient
+  * `0` → random per run
+  * non-zero → reproducible gradient
 * `-a/--animate` (`classic`)
 
-    * Reprints content repeatedly to create a scrolling/marquee effect.
+  * Reprints content repeatedly to create a scrolling/marquee effect.
 * `-aa/--line` or `--style line`
 
-    * Reveals lines one by one over the given duration.
+  * Reveals lines one by one over the given duration.
 * `--per-line`
 
-    * Uses a single gradient colour per line (much faster on large output).
+  * Uses a single gradient colour per line (much faster on large outputs).
 * `--log`
 
-    * Shortcut preset:
+  * Shortcut preset:
 
-        * `animation_style = none`
-        * `mode = line` (same idea as `--per-line`)
+    * `animation_style = none`
+    * `mode = line` (same as `--per-line`)
+    * **enables stream-safe mode**
 * `--stream`
 
-    * Forces no animations (still colours) — ideal for `tail -f` or long streams.
+  * Stream-safe mode (no buffering). Ideal for `tail -f`.
+  * Disables animations (still colours).
+  * Disables box rendering (box requires full buffered input).
 * `--match <regex>` + `--only-match`
 
-    * With `--match`: only matching characters are colourised.
-    * With `--only-match`: non-matching characters are not printed at all.
+  * With `--match`: only matching characters are colourised.
+  * With `--only-match`: non-matching characters are not printed at all.
 * `--strip-ansi`
 
-    * Removes existing `\033[...m` sequences before applying new colour.
-    * Useful to re-theme already coloured logs.
+  * Removes existing `\033[...m` sequences before applying new colour.
+  * Useful to re-theme already coloured logs.
 
 Example:
 
@@ -125,13 +141,13 @@ tail -f app.log | chromacat --log --strip-ansi --match 'ERROR|WARN'
 -f, --force              Colour even if stdout not a TTY
     --no-color           Disable colouring (also respects NO_COLOR)
 
--b, --box                Draw ASCII box
+-b, --box                Draw ASCII box (finite input only)
 -B, --box-style <name>   default|dashed|dash2|round|double|heavy|parchment|simple|shell|html|plus|comment|php|chain
     --title <text>       Box title line
     --center             Center-align box content
     --pad <n>            Padding inside box (default 0)
 
--O, --orientation <o>    Gradient orientation: h|v|d
+-O, --orientation <o>    Gradient orientation: h|v|d (or horizontal|vertical|diagonal)
 -P, --palette <file>     Palette file (HEX per line)
 
 -T, --theme <name(s)>    Themes (comma list)
@@ -146,21 +162,21 @@ tail -f app.log | chromacat --log --strip-ansi --match 'ERROR|WARN'
 
 * `--invert`
 
-    * Uses ANSI reverse-video around coloured segments.
+  * Uses ANSI reverse-video around coloured segments.
 * `--truecolor`
 
-    * Enables 24-bit colour **only if** `COLORTERM` contains `truecolor`.
-    * Otherwise falls back to 256-colour approximation.
+  * Enables 24-bit colour only when `COLORTERM` contains `truecolor` (or `24bit`).
+  * Otherwise falls back to 256-colour approximation.
 * `--no-color`
 
-    * Hard disables colouring + animations + blink + invert (same effect as `NO_COLOR`).
+  * Hard disables colouring + animations + blink + invert (same effect as `NO_COLOR`).
 * `--orientation`
 
-    * Accepts `h`, `v`, `d` (and full words):
+  * Accepts `h`, `v`, `d` (and full words):
 
-        * `horizontal` → `h`
-        * `vertical` → `v`
-        * `diagonal` → `d`
+    * `horizontal` → `h`
+    * `vertical` → `v`
+    * `diagonal` → `d`
 
 #### Box rendering (`--box`, `--title`, `--center`, `--pad`)
 
@@ -168,9 +184,9 @@ tail -f app.log | chromacat --log --strip-ansi --match 'ERROR|WARN'
 * `--center` centers each line inside the box.
 * `--pad <n>` adds inner padding:
 
-    * adds blank lines above/below content
-    * adds left/right spacing
-* Box width is computed using the **longest line across both title and content**, so alignment stays correct.
+  * adds blank lines above/below content
+  * adds left/right spacing
+* Box width is computed using the **longest line across both title and content** (after padding), so alignment stays correct.
 
 Example:
 
@@ -180,7 +196,7 @@ echo "hello" | chromacat -T neon --per-line -b -B round --title "ChromaCat" --ce
 
 #### Palettes & themes
 
-`--palette <file>` expects **one HEX colour per line**:
+`--palette <file>` expects one HEX colour per line:
 
 ```text
 FF0000
@@ -203,10 +219,12 @@ Built-in themes:
 * `sunset`  – reds/oranges/golds
 * `ocean`   – cool blues
 * `rainbow` – standard rainbow
+* `neon`    – punchy high-contrast
+* `forest`  – greens/nature tones
+* `pastel`  – soft tones
+* `mono`    – grayscale gradient
 
 `--random-theme` picks from the built-ins when no palette/theme was explicitly selected.
-
-> Note: If you use a theme name that isn’t built-in, `chromacat` warns and falls back to rainbow math.
 
 ---
 
@@ -222,10 +240,10 @@ Built-in themes:
 * Detects terminal size (capped at 160×60)
 * Tries backends in order:
 
-    1. `chafa` (preferred)
-    2. `jp2a`
-    3. `img2txt`
-* Prints the backend’s ANSI output **as-is** (no extra gradient/box/animation)
+  1. `chafa` (preferred)
+  2. `jp2a`
+  3. `img2txt`
+* Prints the backend’s ANSI output as-is (no extra gradient/box/animation)
 
 Examples:
 
@@ -238,7 +256,7 @@ chromacat -I logo.jpg
 
 * Ignores stdin/files; renders only the header text.
 * Uses `figlet` if available; otherwise plain text.
-* You can combine with box + colour + animation:
+* Can combine with box + colour + animation:
 
 ```bash
 chromacat -H "Release v1.0.0" -b --box-style double --center --pad 1
@@ -274,7 +292,7 @@ If it cannot overwrite the target, it suggests `sudo` or setting `CHROMACAT_PATH
 
 ## Environment Variables
 
-CLI flags **always win** over environment defaults.
+CLI flags always win over environment defaults.
 
 | Variable              | Description                                                          |
 | --------------------- | -------------------------------------------------------------------- |
@@ -301,7 +319,7 @@ export CHROMACAT_STYLE=none
 `--truecolor` uses 24-bit colour only when:
 
 ```bash
-COLORTERM contains "truecolor"
+COLORTERM contains "truecolor" (or "24bit")
 ```
 
 Otherwise it uses 256-colour approximations.
@@ -311,11 +329,15 @@ Otherwise it uses 256-colour approximations.
 If stdout is not a TTY and `--force` is not used:
 
 * animations are disabled
-* box rendering is disabled
 * truecolor is disabled
-* if no other color features were requested, it behaves like `cat`
 
-Use `--force` to keep coloring in pipelines.
+Use `--force` to keep colouring in pipelines.
+
+### Streaming mode rules
+
+* Use `--stream` for endless input (e.g. `tail -f`).
+* `--log` implies `--stream`.
+* Box rendering is disabled in streaming mode (requires buffering).
 
 ---
 
@@ -383,4 +405,4 @@ echo "Ocean vibes" | chromacat --random-theme
 sudo chromacat --self-update
 ```
 
-Drop it into your pipelines in place of `cat` whenever you want logs and banners to actually be *visible* instead of grey noise.
+Drop it into your pipelines in place of `cat` whenever you want logs and banners to actually be visible instead of grey noise.

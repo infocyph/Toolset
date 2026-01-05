@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-VERSION="1.2"
+VERSION="1.3"
 
 # ---------------------------- defaults ----------------------------
 spread=3.0  freq=0.1  seed=0
@@ -24,6 +24,7 @@ no_color=false
 
 THEMES=()
 files=()
+ORIG_ARGS=("$@")
 
 # ---------------------------- terminal dimensions ----------------------------
 TERM_WIDTH=$(tput cols 2>/dev/null || echo 80)
@@ -55,20 +56,20 @@ COLOUR / ANIMATION
   -m, --match <regex>      Colour only matching text
       --only-match         Hide non-matching characters
       --strip-ansi         Strip ANSI before colouring
-      --log                Preset (no animation + per-line)
-      --stream             Disable animations for streaming input
+      --log                Preset (no animation + per-line + stream-safe)
+      --stream             Stream-safe mode for tail -f / endless input
 
 APPEARANCE
   -i, --invert             Invert foreground / background
   -t, --truecolor          Prefer 24-bit colour if supported
   -f, --force              Colour even if stdout not a TTY
       --no-color           Disable colouring (also respects NO_COLOR)
-  -b, --box                Draw ASCII box
+  -b, --box                Draw ASCII box (requires finite input)
   -B, --box-style <name>   default|dashed|dash2|round|double|heavy|parchment|simple|shell|html|plus|comment|php|chain
       --title <text>       Box title line
       --center             Center-align box content
       --pad <n>            Padding inside box (default 0)
-  -O, --orientation <o>    Gradient orientation: h|v|d (or horizontal|vertical|diagonal)
+  -O, --orientation <o>    h|v|d (or horizontal|vertical|diagonal)
   -P, --palette <file>     Palette file (HEX per line)
   -T, --theme <name(s)>    Themes (comma list)
       --list-themes        List themes and exit
@@ -86,6 +87,7 @@ MISC
 
 EXAMPLES
   echo "TEST" | chromacat
+  tail -f app.log | chromacat --log --strip-ansi --match 'ERROR|WARN'
   echo "TEST" | chromacat -T neon --per-line -b -B round --title "ChromaCat" --center --pad 1
 EOF
 }
@@ -93,8 +95,6 @@ EOF
 die() { echo "Error: $*" >&2; exit 1; }
 
 take_val() {
-  # usage: take_val "$1" "$2"  -> prints value, shifts handled by caller
-  # supports: --opt=value
   case "$1" in
   *=*) printf '%s' "${1#*=}" ;;
   *)   [[ -n "${2:-}" ]] || die "Missing value for $1"; printf '%s' "$2" ;;
@@ -142,7 +142,6 @@ self_update() {
 }
 
 # ------------------------- option parsing (portable) -------------------------
-# NOTE: no getopt dependency.
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --) shift; break ;;
@@ -211,16 +210,13 @@ while [[ $# -gt 0 ]]; do
   --image-opacity=*) image_opacity="$(take_val "$1" "")"; shift ;;
 
   -*)
-    die "Unknown option: $1"
+  # unknown flag: behave like cat for maximum safety
+    exec cat "${ORIG_ARGS[@]}"
     ;;
   *)
-    files+=("$1")
-    shift
-    ;;
+    files+=("$1"); shift ;;
   esac
 done
-
-# remaining args after --
 while [[ $# -gt 0 ]]; do files+=("$1"); shift; done
 
 # ------------------ self-update early exit -----------------------
@@ -244,10 +240,9 @@ if [[ $want_truecolor == true && ( ${COLORTERM:-} == *truecolor* || ${COLORTERM:
   truecolor=true
 fi
 
-# if stdout is not tty and not forced -> disable fancy output
+# If stdout is not tty and not forced -> prefer plain cat unless explicit features requested.
 if [[ ! -t 1 && $force == false ]]; then
   animation_style=none
-  build_box=false
   truecolor=false
 fi
 
@@ -258,9 +253,21 @@ done
 [[ $image_opacity =~ ^[0-9]+$ ]] || die "Invalid --image-opacity"
 
 # presets
-if [[ $log_mode == true ]]; then animation_style=none; mode="line"; fi
-if [[ $stream_mode == true ]]; then animation_style=none; fi
-if [[ $no_color == true ]]; then animation_style=none; blink=false; invert=false; truecolor=false; fi
+if [[ $log_mode == true ]]; then
+  animation_style=none
+  mode="line"
+  stream_mode=true   # IMPORTANT: log mode must be stream-safe
+fi
+if [[ $stream_mode == true ]]; then
+  animation_style=none
+  build_box=false    # streaming cannot buffer for box reliably
+fi
+if [[ $no_color == true ]]; then
+  animation_style=none
+  blink=false
+  invert=false
+  truecolor=false
+fi
 
 # list themes early
 if [[ $list_themes == true ]]; then
@@ -409,6 +416,7 @@ colour_block() {
       if(invert=="true") printf "\033[27m"
     }
     printf "\033[0m\n"
+    fflush()
   }'
 }
 
@@ -448,7 +456,6 @@ box_draw() {
     max=${#box_title}
   fi
 
-  # helpers
   hr() { printf '%*s' "$1" | tr ' ' "$2"; }
 
   # vertical padding: add blank lines that match max
@@ -532,9 +539,7 @@ box_draw() {
       printf '/\\ %*s\\\n' $((max + 2)) ""
     fi
     printf '\\_| %-*s |\n' "$max" "${LINES[0]:-}"
-    for ((i = 1; i < ${#LINES[@]}; i++)); do
-      printf '  | %-*s |\n' "$max" "${LINES[i]}"
-    done
+    for ((i = 1; i < ${#LINES[@]}; i++)); do printf '  | %-*s |\n' "$max" "${LINES[i]}"; done
     local u1=$((max - 2)); ((u1<1)) && u1=1
     printf '  |   %s_|_.\n' "$(hr "$u1" '_')"
     printf '   \\_/%s/\n' "$(hr "$max" '_')"
@@ -664,7 +669,20 @@ fi
 # defaults: read stdin
 [[ ${#files[@]} -eq 0 ]] && files=("-")
 
-# ---------------------------- main loop ---------------------------
+# -------------------- stream-safe fast path -----------------------
+# This is what fixes: tail -f ... | chromacat --log ...
+if [[ $stream_mode == true && -z $ascii_image && $animation_style == "none" ]]; then
+  for f in "${files[@]}"; do
+    if [[ $f == "-" ]]; then
+      safe_colour
+    else
+      cat "$f" | safe_colour
+    fi
+  done
+  exit 0
+fi
+
+# ---------------------------- main loop (finite input) ---------------------------
 for f in "${files[@]}"; do
   if [[ $f == "-" ]]; then
     input=${ascii_payload:-$(cat)}
