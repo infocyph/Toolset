@@ -2641,6 +2641,7 @@ phpx_syntax() {
   local -a excludes=("vendor" "node_modules")
   local jobs=""
   local phpbin="php"
+  local want_progress=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -2668,8 +2669,14 @@ phpx_syntax() {
         [[ -n "${1:-}" ]] || { echo -e "${RED}Missing value for --php${NC}"; return 2; }
         phpbin="$1"
         ;;
+      --progress)
+        want_progress=1
+        ;;
+      --no-progress)
+        want_progress=0
+        ;;
       -h|--help)
-        echo -e "${GREEN}Usage:${NC} phpx syntax [--exclude dir]... [--jobs N] [--php bin] [extra_excludes...]"
+        echo -e "${GREEN}Usage:${NC} phpx syntax [--exclude dir]... [--jobs N] [--php bin] [--progress] [extra_excludes...]"
         echo
         echo "Defaults:"
         echo "  - excludes: vendor, node_modules"
@@ -2677,8 +2684,8 @@ phpx_syntax() {
         echo "  - php:      php (from PATH)"
         echo
         echo "Behavior:"
-        echo "  - prints ONLY failures"
-        echo "  - progress is shown only when running in a terminal (won't pollute logs)"
+        echo "  - prints ONLY failures (single line per file)"
+        echo "  - progress is OFF by default; enable with --progress (TTY only)"
         return 0
         ;;
       *)
@@ -2717,9 +2724,9 @@ phpx_syntax() {
     unset 'prune[${#prune[@]}-1]'
   fi
 
-  # Terminal-only progress (prevents "Scanning: ..." from persisting in logs)
+  # Progress is OFF by default (to keep output clean). Enable with --progress (TTY only).
   local show_progress=0 cols=120
-  if [[ -t 2 ]]; then
+  if (( want_progress )) && [[ -t 2 ]]; then
     show_progress=1
     cols="$(tput cols 2>/dev/null || echo 120)"
     [[ "$cols" =~ ^[0-9]+$ ]] || cols=120
@@ -2729,13 +2736,15 @@ phpx_syntax() {
   _phpx_progress() {
     (( show_progress )) || return 0
     local msg="$1"
-    # Pad to full terminal width so old trailing chars never remain
-    printf "\r%-*.*s" "$cols" "$cols" "$msg" >&2
+    printf "
+%-*.*s" "$cols" "$cols" "$msg" >&2
   }
 
   _phpx_clear_line() {
     (( show_progress )) || return 0
-    printf "\r%-*s\r" "$cols" "" >&2
+    printf "
+%-*s
+" "$cols" "" >&2
   }
 
   # Collect file list (null-safe)
@@ -2755,20 +2764,28 @@ phpx_syntax() {
   local processed=0 running=0 failed=0
   local -a pids=()
 
-  # worker: prints only failures; never prints progress
+  # worker: prints only failures (single line); never prints progress
   _phpx_lint_one() {
     local f="$1" out=""
     out="$("$phpbin" -l "$f" 2>&1)"
+
+    # success
     if grep -q "No syntax errors detected" <<<"$out"; then
       return 0
     fi
-    # Clear the progress line before emitting errors to keep output clean
+
+    # failure: keep output to a single line (drop 'Errors parsing ...')
+    # usually the first line contains everything we need.
+    local first
+    first="$(printf '%s
+' "$out" | head -n1)"
+
     _phpx_clear_line
-    printf "%s\n" "$out"
+    printf "%s
+" "$first"
     return 1
   }
 
-  # If wait -n isn't available (very old bash), fallback to waiting first pid.
   _phpx_wait_any() {
     if wait -n 2>/dev/null; then
       return $?
@@ -2793,6 +2810,7 @@ phpx_syntax() {
     if (( running >= jobs )); then
       _phpx_wait_any
       rc=$?
+
       # prune finished pids
       local -a alive=()
       local p
@@ -2807,7 +2825,6 @@ phpx_syntax() {
     fi
   done
 
-  # Wait remaining
   for pid in "${pids[@]}"; do
     wait "$pid"
     rc=$?
@@ -2867,9 +2884,9 @@ display_usage() {
     Shows local installed PHP versions and remote-available versions (APT) that are not installed locally.
     With --more, also prints the candidate package version for each remote X.Y."
 
-  echo -e "  ${GREEN}syntax [--exclude dir]... [--jobs N] [--php bin] [extra_excludes...]${NC}
-    Lints all *.php files under the current directory, skipping successes and printing only failures.
-    Default excludes: vendor, node_modules. Shows current scanning file via a single updating line."
+  echo -e "  ${GREEN}syntax [--exclude dir]... [--jobs N] [--php bin] [--progress] [extra_excludes...]${NC}
+    Lints all *.php files under the current directory, printing only failures (single-line errors).
+    Default excludes: vendor, node_modules. Progress is OFF by default; enable with --progress."
 
   echo -e "  ${GREEN}fpm {start|stop|restart|reload|status|enable|disable|test|config} [php_version]${NC}
     Controls the php-fpm service for a specific PHP version and can run config tests."
