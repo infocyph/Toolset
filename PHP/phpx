@@ -2644,47 +2644,47 @@ phpx_syntax() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-    --exclude=*)
-      excludes+=("${1#*=}")
-      ;;
-    --exclude)
-      shift
-      [[ -n "${1:-}" ]] || { echo -e "${RED}Missing value for --exclude${NC}"; return 2; }
-      excludes+=("$1")
-      ;;
-    --jobs=*)
-      jobs="${1#*=}"
-      ;;
-    --jobs)
-      shift
-      [[ -n "${1:-}" ]] || { echo -e "${RED}Missing value for --jobs${NC}"; return 2; }
-      jobs="$1"
-      ;;
-    --php=*)
-      phpbin="${1#*=}"
-      ;;
-    --php)
-      shift
-      [[ -n "${1:-}" ]] || { echo -e "${RED}Missing value for --php${NC}"; return 2; }
-      phpbin="$1"
-      ;;
-    -h|--help)
-      echo -e "${GREEN}Usage:${NC} phpx syntax [--exclude dir]... [--jobs N] [--php bin] [extra_excludes...]"
-      echo
-      echo "Defaults:"
-      echo "  - excludes: vendor, node_modules"
-      echo "  - jobs:     nproc (or hw.ncpu)"
-      echo "  - php:      php (from PATH)"
-      echo
-      echo "Behavior:"
-      echo "  - prints ONLY failures"
-      echo "  - shows current scanning file on a single updating line (\\r)"
-      return 0
-      ;;
-    *)
-      # Allow passing directories as bare args to exclude
-      excludes+=("$1")
-      ;;
+      --exclude=*)
+        excludes+=("${1#*=}")
+        ;;
+      --exclude)
+        shift
+        [[ -n "${1:-}" ]] || { echo -e "${RED}Missing value for --exclude${NC}"; return 2; }
+        excludes+=("$1")
+        ;;
+      --jobs=*)
+        jobs="${1#*=}"
+        ;;
+      --jobs)
+        shift
+        [[ -n "${1:-}" ]] || { echo -e "${RED}Missing value for --jobs${NC}"; return 2; }
+        jobs="$1"
+        ;;
+      --php=*)
+        phpbin="${1#*=}"
+        ;;
+      --php)
+        shift
+        [[ -n "${1:-}" ]] || { echo -e "${RED}Missing value for --php${NC}"; return 2; }
+        phpbin="$1"
+        ;;
+      -h|--help)
+        echo -e "${GREEN}Usage:${NC} phpx syntax [--exclude dir]... [--jobs N] [--php bin] [extra_excludes...]"
+        echo
+        echo "Defaults:"
+        echo "  - excludes: vendor, node_modules"
+        echo "  - jobs:     nproc (or hw.ncpu)"
+        echo "  - php:      php (from PATH)"
+        echo
+        echo "Behavior:"
+        echo "  - prints ONLY failures"
+        echo "  - progress is shown only when running in a terminal (won't pollute logs)"
+        return 0
+        ;;
+      *)
+        # Allow passing directories as bare args to exclude
+        excludes+=("$1")
+        ;;
     esac
     shift
   done
@@ -2717,37 +2717,107 @@ phpx_syntax() {
     unset 'prune[${#prune[@]}-1]'
   fi
 
-  local rc=0
-  set +e
-  if [[ ${#prune[@]} -gt 0 ]]; then
-    find -L . \( "${prune[@]}" \) -prune -o -name "*.php" -print0 2>/dev/null \
-      | xargs -0 -n1 -P"$jobs" bash -c '
-          f="$1"
-          printf "\rScanning: %s" "$f" >&2
-          out="$("'"$phpbin"'" -l "$f" 2>&1)"
-          if ! grep -q "No syntax errors detected" <<<"$out"; then
-            printf "\n%s\n" "$out"
-            exit 1
-          fi
-        ' _
-    rc=$?
-  else
-    find -L . -name "*.php" -print0 2>/dev/null \
-      | xargs -0 -n1 -P"$jobs" bash -c '
-          f="$1"
-          printf "\rScanning: %s" "$f" >&2
-          out="$("'"$phpbin"'" -l "$f" 2>&1)"
-          if ! grep -q "No syntax errors detected" <<<"$out"; then
-            printf "\n%s\n" "$out"
-            exit 1
-          fi
-        ' _
-    rc=$?
+  # Terminal-only progress (prevents "Scanning: ..." from persisting in logs)
+  local show_progress=0 cols=120
+  if [[ -t 2 ]]; then
+    show_progress=1
+    cols="$(tput cols 2>/dev/null || echo 120)"
+    [[ "$cols" =~ ^[0-9]+$ ]] || cols=120
+    (( cols < 40 )) && cols=120
   fi
-  printf "\r%*s\r" 140 "" >&2
+
+  _phpx_progress() {
+    (( show_progress )) || return 0
+    local msg="$1"
+    # Pad to full terminal width so old trailing chars never remain
+    printf "\r%-*.*s" "$cols" "$cols" "$msg" >&2
+  }
+
+  _phpx_clear_line() {
+    (( show_progress )) || return 0
+    printf "\r%-*s\r" "$cols" "" >&2
+  }
+
+  # Collect file list (null-safe)
+  local -a files=()
+  if [[ ${#prune[@]} -gt 0 ]]; then
+    mapfile -d '' -t files < <(find -L . \( "${prune[@]}" \) -prune -o -name "*.php" -print0 2>/dev/null)
+  else
+    mapfile -d '' -t files < <(find -L . -name "*.php" -print0 2>/dev/null)
+  fi
+
+  local total=${#files[@]}
+  if (( total == 0 )); then
+    echo -e "${YELLOW}No PHP files found.${NC}"
+    return 0
+  fi
+
+  local processed=0 running=0 failed=0
+  local -a pids=()
+
+  # worker: prints only failures; never prints progress
+  _phpx_lint_one() {
+    local f="$1" out=""
+    out="$("$phpbin" -l "$f" 2>&1)"
+    if grep -q "No syntax errors detected" <<<"$out"; then
+      return 0
+    fi
+    # Clear the progress line before emitting errors to keep output clean
+    _phpx_clear_line
+    printf "%s\n" "$out"
+    return 1
+  }
+
+  # If wait -n isn't available (very old bash), fallback to waiting first pid.
+  _phpx_wait_any() {
+    if wait -n 2>/dev/null; then
+      return $?
+    fi
+    local pid="${pids[0]:-}"
+    [[ -n "$pid" ]] || return 0
+    wait "$pid"
+    return $?
+  }
+
+  set +e
+  local f pid rc
+  for f in "${files[@]}"; do
+    processed=$((processed + 1))
+    _phpx_progress "Scanning ($processed/$total): $f"
+
+    _phpx_lint_one "$f" &
+    pid=$!
+    pids+=("$pid")
+    running=$((running + 1))
+
+    if (( running >= jobs )); then
+      _phpx_wait_any
+      rc=$?
+      # prune finished pids
+      local -a alive=()
+      local p
+      for p in "${pids[@]}"; do
+        if kill -0 "$p" 2>/dev/null; then
+          alive+=("$p")
+        fi
+      done
+      pids=("${alive[@]}")
+      running=${#pids[@]}
+      (( rc != 0 )) && failed=1
+    fi
+  done
+
+  # Wait remaining
+  for pid in "${pids[@]}"; do
+    wait "$pid"
+    rc=$?
+    (( rc != 0 )) && failed=1
+  done
   set -e
 
-  if [[ $rc -eq 0 ]]; then
+  _phpx_clear_line
+
+  if (( failed == 0 )); then
     echo -e "${GREEN}Syntax OK (no failures).${NC}"
     return 0
   fi
