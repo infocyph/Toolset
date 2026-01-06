@@ -2780,6 +2780,22 @@ phpx_syntax() {
     first="$(printf '%s
 ' "$out" | head -n1)"
 
+    # Pretty output (TTY only): highlight error prefix + file path.
+    if [[ -t 1 ]]; then
+      # Color the error label
+      first="${first/PHP Parse error:/${RED}PHP Parse error:${NC}}"
+      first="${first/PHP Fatal error:/${RED}PHP Fatal error:${NC}}"
+
+      # Color the file path between " in " and " on line "
+      if [[ "$first" == *" in "* && "$first" == *" on line "* ]]; then
+        local left="${first%% in *}"
+        local rest="${first#* in }"
+        local path="${rest%% on line *}"
+        local tail="${rest#"$path"}"
+        first="${left} in ${YELLOW}${path}${NC}${tail}"
+      fi
+    fi
+
     _phpx_clear_line
     printf "%s
 " "$first"
