@@ -2745,15 +2745,13 @@ phpx_syntax() {
   _phpx_progress() {
     (( show_progress )) || return 0
     local msg="$1"
-    printf "
-%-*.*s" "$cols" "$cols" "$msg" >&2
+    #  = carriage return, [2K = clear whole line
+    printf '[2K%-*.*s' "$cols" "$cols" "$msg" >&2
   }
 
   _phpx_clear_line() {
     (( show_progress )) || return 0
-    printf "
-%*s
-" "$cols" "" >&2
+    printf '[2K' >&2
   }
 
   # Collect file list (null-safe)
@@ -2909,13 +2907,14 @@ phpx_syntax() {
     raw="$(cat "$ef" 2>/dev/null || true)"
     [[ -n "$raw" ]] || continue
     n=$((n + 1))
-    formatted="$(_phpx_format_line "$raw")"
     if [[ -t 1 ]]; then
-      printf "%s%d.%s %s
-" "$CYAN" "$n" "$NC" "$formatted"
+      printf "%s%d.%s " "$CYAN" "$n" "$NC"
+      _phpx_format_line "$raw"
+      printf "\n"
     else
-      printf "%d. %s
-" "$n" "$formatted"
+      printf "%d. " "$n"
+      _phpx_format_line "$raw"
+      printf "\n"
     fi
   done
   shopt -u nullglob
