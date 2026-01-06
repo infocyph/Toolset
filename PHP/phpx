@@ -3,10 +3,17 @@
 ################################################################################
 # Color Constants
 ################################################################################
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+# Colors (TTY only)
+if [[ -t 1 ]]; then
+  RED=$'\033[0;31m'
+  GREEN=$'\033[0;32m'
+  YELLOW=$'\033[1;33m'
+  CYAN=$'\033[0;36m'
+  NC=$'\033[0m'
+else
+  RED='' GREEN='' YELLOW='' CYAN='' NC=''
+fi
+
 LOG_FILE=""
 
 ################################################################################
@@ -2686,6 +2693,7 @@ phpx_syntax() {
         echo "Behavior:"
         echo "  - prints ONLY failures (single line per file)"
         echo "  - progress is OFF by default; enable with --progress (TTY only)"
+        echo "  - adds sequence numbering in output"
         return 0
         ;;
       *)
@@ -2736,15 +2744,12 @@ phpx_syntax() {
   _phpx_progress() {
     (( show_progress )) || return 0
     local msg="$1"
-    printf "
-%-*.*s" "$cols" "$cols" "$msg" >&2
+    printf "%-*.*s" "$cols" "$cols" "$msg" >&2
   }
 
   _phpx_clear_line() {
     (( show_progress )) || return 0
-    printf "
-%-*s
-" "$cols" "" >&2
+    printf "%*s" "$cols" "" >&2
   }
 
   # Collect file list (null-safe)
@@ -2761,44 +2766,52 @@ phpx_syntax() {
     return 0
   fi
 
-  local processed=0 running=0 failed=0
-  local -a pids=()
+  # Store errors to temp dir keyed by scan index -> stable order + safe concurrency
+  local tmpd
+  tmpd="$(mktemp -d 2>/dev/null || mktemp -d -t phpx_syntax)"
+  trap 'rm -rf "$tmpd" 2>/dev/null || true' RETURN
 
-  # worker: prints only failures (single line); never prints progress
+  _phpx_extract_first_error_line() {
+    # stdin: php -l output
+    # stdout: first meaningful error line (Parse/Fatal), fallback to first line
+    awk '
+      NR==1 { first=$0 }
+      /^PHP (Parse|Fatal|Warning|Deprecated|Notice) error:/ { print; exit }
+      /^PHP (Parse|Fatal) error:/ { print; exit }
+      END { if (!printed && first!="") print first }
+    '
+  }
+
+  _phpx_format_line() {
+    # $1 = raw php -l first line
+    local line="$1"
+    # Only color when writing to a terminal
+    if [[ -t 1 ]]; then
+      line="${line/PHP Parse error:/${RED}PHP Parse error:${NC}}"
+      line="${line/PHP Fatal error:/${RED}PHP Fatal error:${NC}}"
+      if [[ "$line" == *" in "* && "$line" == *" on line "* ]]; then
+        local left="${line%% in *}"
+        local rest="${line#* in }"
+        local path="${rest%% on line *}"
+        local tail="${rest#"$path"}"
+        line="${left} in ${YELLOW}${path}${NC}${tail}"
+      fi
+    fi
+    printf '%s' "$line"
+  }
+
   _phpx_lint_one() {
-    local f="$1" out=""
+    # $1 = scan index (1..N), $2 = file path
+    local idx="$1" f="$2" out first key
     out="$("$phpbin" -l "$f" 2>&1)"
-
-    # success
     if grep -q "No syntax errors detected" <<<"$out"; then
       return 0
     fi
-
-    # failure: keep output to a single line (drop 'Errors parsing ...')
-    # usually the first line contains everything we need.
-    local first
     first="$(printf '%s
-' "$out" | head -n1)"
-
-    # Pretty output (TTY only): highlight error prefix + file path.
-    if [[ -t 1 ]]; then
-      # Color the error label
-      first="${first/PHP Parse error:/${RED}PHP Parse error:${NC}}"
-      first="${first/PHP Fatal error:/${RED}PHP Fatal error:${NC}}"
-
-      # Color the file path between " in " and " on line "
-      if [[ "$first" == *" in "* && "$first" == *" on line "* ]]; then
-        local left="${first%% in *}"
-        local rest="${first#* in }"
-        local path="${rest%% on line *}"
-        local tail="${rest#"$path"}"
-        first="${left} in ${YELLOW}${path}${NC}${tail}"
-      fi
-    fi
-
-    _phpx_clear_line
-    printf "%s
-" "$first"
+' "$out" | _phpx_extract_first_error_line | head -n1)"
+    printf -v key '%06d' "$idx"
+    printf '%s
+' "$first" > "${tmpd}/${key}.err"
     return 1
   }
 
@@ -2806,19 +2819,23 @@ phpx_syntax() {
     if wait -n 2>/dev/null; then
       return $?
     fi
+    # fallback for older bash
     local pid="${pids[0]:-}"
     [[ -n "$pid" ]] || return 0
     wait "$pid"
     return $?
   }
 
-  set +e
+  local processed=0 running=0 failed=0
+  local -a pids=()
   local f pid rc
+
+  set +e
   for f in "${files[@]}"; do
     processed=$((processed + 1))
     _phpx_progress "Scanning ($processed/$total): $f"
 
-    _phpx_lint_one "$f" &
+    _phpx_lint_one "$processed" "$f" &
     pid=$!
     pids+=("$pid")
     running=$((running + 1))
@@ -2850,14 +2867,35 @@ phpx_syntax() {
 
   _phpx_clear_line
 
+  # Print errors in stable scan order with numbering
+  local n=0 ef raw formatted
+  shopt -s nullglob
+  for ef in "${tmpd}"/*.err; do
+    raw="$(cat "$ef" 2>/dev/null || true)"
+    [[ -n "$raw" ]] || continue
+    n=$((n + 1))
+    formatted="$(_phpx_format_line "$raw")"
+    if [[ -t 1 ]]; then
+      printf "%s%d.%s %s
+" "$CYAN" "$n" "$NC" "$formatted"
+    else
+      printf "%d. %s
+" "$n" "$formatted"
+    fi
+  done
+  shopt -u nullglob
+
   if (( failed == 0 )); then
     echo -e "${GREEN}Syntax OK (no failures).${NC}"
     return 0
   fi
 
+  # Ensure we reset color before printing final status
   echo -e "${RED}Syntax check failed.${NC}" >&2
   return 1
 }
+
+
 
 ################################################################################
 # Display Usage
