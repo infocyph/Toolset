@@ -4,6 +4,12 @@ set -euo pipefail
 
 VERSION="0.4.0"
 
+# Global flags (set in main)
+NETX_JSON=0
+NETX_QUIET=0
+NETX_JSON_NATIVE=0
+
+
 # -------------------- Capability & Color Setup --------------------
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -73,11 +79,18 @@ die() {
 }
 
 section() {
-  printf '\n%s== %s ==%s\n' "${c_header}" "$*" "${c_reset}"
+  ((NETX_QUIET)) && return 0
+  ((NETX_JSON)) && return 0
+  printf '
+%s== %s ==%s
+' "${c_header}" "$*" "${c_reset}"
 }
 
 kv() {
-  printf '  %s%-14s%s %s\n' "${c_muted}" "$1:" "${c_reset}" "$2"
+  ((NETX_QUIET)) && return 0
+  ((NETX_JSON)) && return 0
+  printf '  %s%-14s%s %s
+' "${c_muted}" "$1:" "${c_reset}" "$2"
 }
 
 usage() {
@@ -1852,6 +1865,7 @@ route_explain() {
   fi
 
   if ((NETX_JSON)); then
+    NETX_JSON_NATIVE=1
     local dev gw src
     dev=$(grep -oE ' dev [^ ]+' <<<"$out" | awk '{print $2}' || true)
     gw=$(grep -oE ' via [^ ]+' <<<"$out" | awk '{print $2}' || true)
@@ -2212,25 +2226,8 @@ report_cmd() {
 
 # -------------------- Main dispatcher --------------------
 
-main() {
-  # Global flags
-  NETX_JSON=0
-  NETX_QUIET=0
-  while [[ "${1:-}" == --* ]]; do
-    case "$1" in
-    --json) NETX_JSON=1; shift ;;
-    --quiet) NETX_QUIET=1; shift ;;
-    --) shift; break ;;
-    *) break ;;
-    esac
-  done
-
-  local cmd="${1:-}"
-  [[ -z "$cmd" ]] && {
-    usage
-    exit 1
-  }
-  shift || true
+dispatch_cmd() {
+  local cmd="$1"; shift || true
   case "$cmd" in
   -h | --help | help) usage ;;
   --version | -V) echo "netx $VERSION" ;;
@@ -2332,5 +2329,59 @@ main() {
   *) die "Unknown command: $cmd" ;;
   esac
 }
+
+
+main() {
+  # Global flags
+  NETX_JSON=0
+  NETX_QUIET=0
+  NETX_JSON_NATIVE=0
+  while [[ "${1:-}" == --* ]]; do
+    case "$1" in
+    --json) NETX_JSON=1; NETX_COLOR="never"; shift ;;
+    --quiet) NETX_QUIET=1; shift ;;
+    --) shift; break ;;
+    *) break ;;
+    esac
+  done
+
+  local cmd="${1:-}"
+  [[ -z "$cmd" ]] && { usage; exit 1; }
+  shift || true
+
+  # Stream/interactive commands should not be captured/wrapped
+  local stream=0
+  case "$cmd" in
+    sniff|watch|wait) stream=1 ;;
+    guard) [[ "${1:-}" == "watch" ]] && stream=1 || true ;;
+  esac
+
+  if ((NETX_JSON)) && ((stream==0)); then
+    local out errf rc
+    out="$(mktemp 2>/dev/null || mktemp -t netx)"
+    errf="$(mktemp 2>/dev/null || mktemp -t netx)"
+    NETX_JSON_NATIVE=0
+    dispatch_cmd "$cmd" "$@" >"$out" 2>"$errf" || rc=$?
+    rc="${rc:-0}"
+
+    if ((NETX_JSON_NATIVE)); then
+      cat "$out"
+    else
+      printf '{'
+      printf '"ok":%s,' "$([[ "$rc" -eq 0 ]] && echo true || echo false)"
+      printf '"exit_code":%s,' "$rc"
+      printf '"cmd":"%s",' "$(printf '%s' "$cmd" | json_escape)"
+      printf '"stdout":"%s",' "$(cat "$out" | json_escape)"
+      printf '"stderr":"%s"' "$(cat "$errf" | json_escape)"
+      printf '}
+'
+    fi
+    rm -f "$out" "$errf"
+    return "$rc"
+  fi
+
+  dispatch_cmd "$cmd" "$@"
+}
+
 
 main "$@"
