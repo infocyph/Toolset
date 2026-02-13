@@ -2,7 +2,7 @@
 # netx - Network toolbox for diagnostics, security and benchmarks
 set -euo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 
 # -------------------- Capability & Color Setup --------------------
 
@@ -82,7 +82,11 @@ kv() {
 
 usage() {
   cat <<'EOF'
-Usage: netx <command> [subcommand] [options]
+Usage: netx [--json] [--quiet] <command> [subcommand] [options]
+
+Global flags:
+  --json    Machine-readable output where supported
+  --quiet   Print only the primary value where supported
 
 Core:
   netx doctor <host> [--port P] [--http] [--tls] [--raw]
@@ -93,6 +97,8 @@ DNS:
   netx dns compare <name> [--type T] [--resolver ip1,ip2,...]
   netx dns trace <name> [--type T]
   netx dns reverse <ip>
+  netx dns whoami [--resolver IP]
+  netx dns flush
   netx dns system
   netx dns hosts <host>
 
@@ -102,6 +108,10 @@ HTTP / Proxy:
   netx http trace <url> [--timeout N]
   netx proxy env
   netx proxy test <url>
+
+Sniff:
+  netx sniff http <url> [curl-args...]
+  netx sniff pkt <iface> [--count N] [--seconds N] [--write file.pcap] [--no-resolve] [--verbose] [--snaplen N] [--rotate MB] [--files N] [--promisc off] [-- <bpf-filter...>]
 
 Benchmark (curl-only):
   netx bench http <url> [--requests N] [--concurrency N] [--timeout N]
@@ -138,6 +148,7 @@ IP / Interfaces / Routes:
   netx if ls
   netx if stats <iface>
   netx route show
+  netx route explain <host>
 
 Watchers / Waiters:
   netx watch ping <host> [--interval N]
@@ -154,6 +165,7 @@ Namespaces:
 
 Path / Firewall / Report:
   netx path trace <host> [--max-hops N]
+  netx trace <host> [--max-hops N]
   netx fw summary
   netx fw list [--raw]
   netx report [--out file]
@@ -313,6 +325,44 @@ doctor_cmd() {
     echo "  ${c_err}FAILED (no DNS/NSS answer)${c_reset}"
   fi
 
+
+# Quick network summary (best-effort)
+section "Network"
+if have ip; then
+  local def_line def_dev def_gw
+  def_line=$(ip route show default 2>/dev/null | head -n1 || true)
+  def_dev=$(awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' <<<"$def_line" || true)
+  def_gw=$(awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}' <<<"$def_line" || true)
+  [[ -n "$def_line" ]] && kv "Default route" "$def_line" || kv "Default route" "(none)"
+  [[ -n "$def_dev" ]] && kv "Default dev" "$def_dev"
+  [[ -n "$def_gw" ]] && kv "Default gw" "$def_gw"
+fi
+
+local dns_srv=""
+if [[ -r /etc/resolv.conf ]]; then
+  dns_srv=$(awk '/^nameserver/{print $2}' /etc/resolv.conf | paste -sd, - 2>/dev/null || true)
+  [[ -n "$dns_srv" ]] && kv "DNS" "$dns_srv"
+fi
+
+if have ip; then
+  local vpn_if
+  vpn_if=$(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -E '^(tun|tap|wg|ppp|utun)[0-9]*$' || true)
+  [[ -n "$vpn_if" ]] && kv "VPN ifaces" "$(tr '\n' ' ' <<<"$vpn_if" | xargs)" || kv "VPN ifaces" "(none)"
+fi
+
+if have docker; then
+  local subnets=""
+  subnets=$(docker network ls --format '{{.Name}}' 2>/dev/null | while read -r n; do docker network inspect "$n" --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2>/dev/null; done | tr ' ' '\n' | grep -E '^[0-9]' || true)
+  if [[ -n "$subnets" ]]; then
+    kv "Docker subnets" "$(tr '\n' ' ' <<<"$subnets" | xargs)"
+  fi
+fi
+
+if have ip; then
+  local mtu_line
+  mtu_line=$(ip -o link show 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="mtu"){print $(i+1); break}}' | head -n5 | paste -sd, - 2>/dev/null || true)
+  [[ -n "$mtu_line" ]] && kv "MTU sample" "$mtu_line"
+fi
   # Ping (summary only)
   section "Ping"
   if have ping; then
@@ -415,6 +465,8 @@ dns_cmd() {
   trace) dns_trace "$@" ;;
   reverse) dns_reverse "$@" ;;
   system) dns_system ;;
+  whoami) dns_whoami "$@" ;;
+  flush) dns_flush ;;
   hosts) dns_hosts "$@" ;;
   *) die "dns: unknown subcommand '$sub'" ;;
   esac
@@ -518,6 +570,73 @@ dns_reverse() {
     host "$ip"
   else
     die "dns reverse: dig or host required"
+  fi
+}
+
+dns_whoami() {
+  # Shows resolver behavior and your public egress IP as seen by resolver target (best-effort)
+  local resolver=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --resolver) resolver="$2"; shift ;;
+    *) resolver="$1" ;;
+    esac
+    shift || true
+  done
+  have dig || die "dns whoami: dig required"
+
+  [[ -z "$resolver" ]] && resolver="1.1.1.1"
+
+  section "DNS whoami (via $resolver)"
+  local who ip
+  who=$(dig @"$resolver" +short TXT CH whoami.cloudflare 2>/dev/null | tr -d '"\r' || true)
+  ip=$(dig @"$resolver" +short A whoami.cloudflare 2>/dev/null | head -n1 | tr -d "\r" || true)
+
+  [[ -n "$who" ]] && kv "Resolver sees" "$who" || kv "Resolver sees" "(n/a)"
+  [[ -n "$ip" ]] && kv "Egress IP" "$ip" || kv "Egress IP" "(n/a)"
+}
+
+dns_flush() {
+  section "DNS cache flush (best-effort)"
+  local did=0
+
+  if have resolvectl; then
+    if resolvectl flush-caches >/dev/null 2>&1; then
+      echo "  resolvectl flush-caches: ${c_ok}ok${c_reset}"
+      did=1
+    fi
+  fi
+
+  if have systemd-resolve; then
+    if systemd-resolve --flush-caches >/dev/null 2>&1; then
+      echo "  systemd-resolve --flush-caches: ${c_ok}ok${c_reset}"
+      did=1
+    fi
+  fi
+
+  if have dscacheutil; then
+    if dscacheutil -flushcache >/dev/null 2>&1; then
+      echo "  dscacheutil -flushcache: ${c_ok}ok${c_reset}"
+      did=1
+    fi
+  fi
+
+  if have killall && [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]]; then
+    if killall -HUP mDNSResponder >/dev/null 2>&1; then
+      echo "  mDNSResponder HUP: ${c_ok}ok${c_reset}"
+      did=1
+    fi
+  fi
+
+  if have nscd; then
+    if nscd -i hosts >/dev/null 2>&1; then
+      echo "  nscd -i hosts: ${c_ok}ok${c_reset}"
+      did=1
+    fi
+  fi
+
+  if ((did==0)); then
+    echo "  ${c_warn}No known DNS cache service detected (or insufficient permissions).${c_reset}"
   fi
 }
 
@@ -1441,6 +1560,132 @@ sec_listeners() {
   fi
 }
 
+# -------------------- 9. Sniff --------------------
+
+sniff_cmd() {
+  local mode="${1:-}"
+  shift || true
+  case "$mode" in
+  http) sniff_http "$@" ;;
+  pkt|packet) sniff_pkt "$@" ;;
+  ""|help|-h|--help)
+    cat <<'EOF'
+Usage:
+  netx sniff http <url> [curl-args...]
+  netx sniff pkt <iface> [--count N] [--seconds N] [--write file.pcap]
+                         [--no-resolve] [--verbose] [--snaplen N]
+                         [--rotate MB] [--files N] [--promisc off]
+                         [-- <bpf-filter...>]
+EOF
+    ;;
+  *) die "sniff: unknown mode '$mode' (use: http | pkt)" ;;
+  esac
+}
+
+sniff_http() {
+  require_curl
+  local url="${1:-}"
+  [[ -n "$url" ]] || die "sniff http: url required"
+  shift || true
+
+  local timeout="${NETX_SNIFF_TIMEOUT:-20}"
+
+  _mktemp_netx() { mktemp 2>/dev/null || mktemp -t netx; }
+
+  local hdr body
+  hdr="$(_mktemp_netx)"
+  body="$(_mktemp_netx)"
+  trap 'rm -f "$hdr" "$body"' RETURN
+
+  echo "URL: $url"
+  echo
+
+  curl -k -L --max-time "$timeout" -sS \
+    -D "$hdr" -o "$body" \
+    "$@" "$url" \
+    -w $'\n\n---- timing ----\nurl_effective: %{url_effective}\nremote_ip: %{remote_ip}\nremote_port: %{remote_port}\nhttp_code: %{http_code}\nhttp_version: %{http_version}\nssl_verify_result: %{ssl_verify_result}\ntime_namelookup: %{time_namelookup}\ntime_connect: %{time_connect}\ntime_appconnect: %{time_appconnect}\ntime_starttransfer: %{time_starttransfer}\ntime_total: %{time_total}\n' \
+    || true
+
+  echo
+  echo "---- headers ----"
+  cat "$hdr"
+
+  echo
+  echo "---- body ----"
+
+  local ctype=""
+  ctype="$(grep -i '^content-type:' "$hdr" | tail -n1 | sed -E 's/^[^:]+:[[:space:]]*//; s/\r$//' | tr '[:upper:]' '[:lower:]' || true)"
+
+  if have jq; then
+    if [[ "$ctype" == *"application/json"* ]] || jq -e . <"$body" >/dev/null 2>&1; then
+      jq -C . <"$body" 2>/dev/null || sed -n '1,400p' "$body"
+    else
+      sed -n '1,400p' "$body"
+    fi
+  else
+    sed -n '1,400p' "$body"
+  fi
+}
+
+sniff_pkt() {
+  local iface="${1:-}"
+  [[ -n "$iface" ]] || die "sniff pkt: iface required"
+  shift || true
+
+  have tcpdump || die "sniff pkt: tcpdump required"
+
+  local count="" seconds="" out="" noresolve=0 verbose=0 snaplen="96" rotate="" files="" promisc_on=1
+  local -a filter=()
+
+  while [[ "${1:-}" ]]; do
+    case "$1" in
+    --count) count="${2:-}"; shift 2 ;;
+    --seconds) seconds="${2:-}"; shift 2 ;;
+    --write) out="${2:-}"; shift 2 ;;
+    --no-resolve) noresolve=1; shift ;;
+    --verbose) verbose=1; shift ;;
+    --snaplen) snaplen="${2:-}"; shift 2 ;;
+    --rotate) rotate="${2:-}"; shift 2 ;;
+    --files) files="${2:-}"; shift 2 ;;
+    --promisc)
+      [[ "${2:-}" == "off" ]] && promisc_on=0 || promisc_on=1
+      shift 2
+      ;;
+    --) shift; break ;;
+    *) break ;;
+    esac
+  done
+
+  while [[ "${1:-}" ]]; do filter+=("$1"); shift; done
+
+  local SUDO=""
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    have sudo || die "sniff pkt: need root or sudo"
+    SUDO="sudo"
+  fi
+
+  local -a args=(tcpdump -i "$iface" -s "$snaplen")
+  ((noresolve)) && args+=(-n)
+  ((verbose)) && args+=(-vv)
+  ((promisc_on==0)) && args+=(-p)
+  [[ -n "$count" ]] && args+=(-c "$count")
+  [[ -n "$out" ]] && args+=(-w "$out")
+
+  if [[ -n "$rotate" ]]; then
+    args+=(-C "$rotate")
+    [[ -n "$files" ]] && args+=(-W "$files")
+  fi
+
+  if [[ -n "$seconds" ]] && have timeout; then
+    args=(timeout "$seconds" "${args[@]}")
+  fi
+
+  ((${#filter[@]})) && args+=("${filter[@]}")
+
+  echo "Running: ${SUDO:+$SUDO }${args[*]}" >&2
+  exec ${SUDO:+$SUDO } "${args[@]}"
+}
+
 # -------------------- 9. IP / Interface / Routes --------------------
 
 ip_cmd() {
@@ -1562,6 +1807,7 @@ route_cmd() {
   shift || true
   case "$sub" in
   show) route_show ;;
+  explain) route_explain "$@" ;;
   *) die "route: unknown subcommand '$sub'" ;;
   esac
 }
@@ -1577,6 +1823,61 @@ route_show() {
     [[ "$dst" == "default" ]] && typ="default"
     printf '%-8s %-20s %-12s %-s\n' "$typ" "$dst" "$dev" "$extra"
   done
+route_explain() {
+  local target="${1:-}"
+  [[ -n "$target" ]] || die "route explain: host required"
+
+  have ip || die "route explain: ip required"
+
+  local ip_addr=""
+  if have dig; then
+    ip_addr=$(dig +short "$target" A 2>/dev/null | head -n1 || true)
+    [[ -z "$ip_addr" ]] && ip_addr=$(dig +short "$target" AAAA 2>/dev/null | head -n1 || true)
+  fi
+  if [[ -z "$ip_addr" ]] && have getent; then
+    ip_addr=$(getent ahostsv4 "$target" 2>/dev/null | awk 'NR==1{print $1}' || true)
+    [[ -z "$ip_addr" ]] && ip_addr=$(getent ahostsv6 "$target" 2>/dev/null | awk 'NR==1{print $1}' || true)
+  fi
+  [[ -z "$ip_addr" ]] && ip_addr="$target"
+
+  local out
+  out=$(ip route get "$ip_addr" 2>/dev/null || true)
+
+  if ((NETX_QUIET)); then
+    local dev
+    dev=$(grep -oE ' dev [^ ]+' <<<"$out" | awk '{print $2}' || true)
+    [[ -n "$dev" ]] && { echo "$dev"; return 0; }
+    echo "$out"
+    return 0
+  fi
+
+  if ((NETX_JSON)); then
+    local dev gw src
+    dev=$(grep -oE ' dev [^ ]+' <<<"$out" | awk '{print $2}' || true)
+    gw=$(grep -oE ' via [^ ]+' <<<"$out" | awk '{print $2}' || true)
+    src=$(grep -oE ' src [^ ]+' <<<"$out" | awk '{print $2}' || true)
+    printf '{"target":"%s","ip":"%s","dev":"%s","via":"%s","src":"%s","raw":"%s"}\n' \
+      "$target" "$ip_addr" "${dev:-}" "${gw:-}" "${src:-}" "$(printf '%s' "$out" | sed 's/"/\\"/g')"
+    return 0
+  fi
+
+  section "Route explain"
+  kv "Target" "$target"
+  kv "Resolved IP" "$ip_addr"
+  if [[ -z "$out" ]]; then
+    echo "  ${c_err}No route found${c_reset}"
+    return 1
+  fi
+  echo "  $out"
+  local dev gw src
+  dev=$(grep -oE ' dev [^ ]+' <<<"$out" | awk '{print $2}' || true)
+  gw=$(grep -oE ' via [^ ]+' <<<"$out" | awk '{print $2}' || true)
+  src=$(grep -oE ' src [^ ]+' <<<"$out" | awk '{print $2}' || true)
+  [[ -n "$dev" ]] && kv "Interface" "$dev"
+  [[ -n "$gw" ]] && kv "Gateway" "$gw"
+  [[ -n "$src" ]] && kv "Source IP" "$src"
+}
+
 }
 
 # -------------------- 10. Watchers / Waiters --------------------
@@ -1912,6 +2213,18 @@ report_cmd() {
 # -------------------- Main dispatcher --------------------
 
 main() {
+  # Global flags
+  NETX_JSON=0
+  NETX_QUIET=0
+  while [[ "${1:-}" == --* ]]; do
+    case "$1" in
+    --json) NETX_JSON=1; shift ;;
+    --quiet) NETX_QUIET=1; shift ;;
+    --) shift; break ;;
+    *) break ;;
+    esac
+  done
+
   local cmd="${1:-}"
   [[ -z "$cmd" ]] && {
     usage
@@ -1944,6 +2257,11 @@ main() {
   tls)
     [[ $# -gt 0 ]] || die "tls subcommand required"
     tls_cmd "$@"
+    ;;
+
+  sniff)
+    [[ $# -gt 0 ]] || die "sniff mode required"
+    sniff_cmd "$@"
     ;;
 
   port)
@@ -1998,6 +2316,10 @@ main() {
   path)
     [[ $# -gt 0 ]] || die "path subcommand required"
     path_cmd "$@"
+    ;;
+
+  trace)
+    path_trace "$@"
     ;;
 
   fw)
