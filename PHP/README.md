@@ -280,7 +280,6 @@ Defaults:
 
 * excludes: `vendor`, `node_modules`
 * jobs: `nproc` (or `sysctl -n hw.ncpu`)
-* prints scanning progress on a single updating line (`\r`)
 * hides “No syntax errors detected” lines
 
 ---

@@ -5,6 +5,7 @@
 * End-to-end “doctor” checks for any host (DNS, ping, route, port, HTTP, TLS)
 * DNS helpers (resolve/dump/compare/trace/reverse/system)
 * HTTP latency breakdowns (DNS/connect/TLS/TTFB/total)
+* HTTP sniff (headers/body + curl timings) and packet sniff (tcpdump wrapper)
 * TLS certificate inspection, expiry checks and chain view
 * Port & connection inspection (with basic **risk scoring** for outbound flows)
 * Outbound connection **baseline + diff + watch** (“what just started talking out?”)
@@ -58,15 +59,110 @@ sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Network
 * `ufw` – if you want UFW summary
 * `ip netns` – for namespace listing and exec
 
+**Sniffing / pretty output (optional):**
+
+* `tcpdump` – for `netx sniff pkt` (packet capture)
+* `jq` – for pretty-printing JSON bodies in `netx sniff http`
+* `timeout` – to enforce `--seconds` limits for some long-running commands (if present)
+
 If a tool is missing, `netx` will tell you and skip or degrade that feature.
+
+### Tool matrix (what you actually need)
+
+This is a quick map from **netx features → external tools**.
+
+**Always required (netx won’t be very useful without these):**
+
+* `bash` (v4+ recommended)
+* `ip` (`iproute2`)
+* `ss` (**preferred**) or `netstat`
+* `awk`, `sed`, `grep`, `cut`, `tr`, `xargs`
+
+**Common (most people should have these installed):**
+
+* `curl` – HTTP/HTTPS probes, proxy tests, public IP, benchmarks, sniff http
+* `ping` – reachability + RTT (doctor/bench/watch)
+* `openssl` – TLS info/verify/chain
+
+**Feature-specific (install when you need the command):**
+
+* Path tracing (`netx trace`, `netx path trace`, doctor route section):
+  * `mtr` (**best**) or `traceroute` (fallback)
+* Port checks (`netx port check`, `netx wait port`, doctor port section):
+  * `nc` (netcat)
+* Packet capture (`netx sniff pkt`):
+  * `tcpdump` (**requires root/sudo**)
+  * `timeout` (optional) for `--seconds`
+* JSON pretty output (`netx sniff http` when body is JSON, or piping JSON output):
+  * `jq` (optional but recommended)
+* Firewall (`netx fw summary`, `netx fw list`):
+  * `nft` (**preferred**) or `iptables` / `iptables-save`
+  * `ufw` (optional; only if you want UFW status)
+* Network namespaces (`netx ns ...`):
+  * `ip netns` (part of `iproute2`)
+* Docker network awareness (doctor’s docker subnet summary):
+  * `docker` (optional)
+* Bench HTTP (`netx bench http`):
+  * `xargs` (for concurrency via `xargs -P`)
+
+### Quick install (common distros)
+
+**Debian/Ubuntu:**
+
+```bash
+sudo apt-get update && sudo apt-get install -y \
+  iproute2 iputils-ping curl openssl netcat-openbsd \
+  mtr-tiny traceroute tcpdump jq coreutils \
+  nftables iptables
+```
+
+**Alpine:**
+
+```bash
+sudo apk add --no-cache \
+  iproute2 iputils curl openssl netcat-openbsd \
+  mtr traceroute tcpdump jq coreutils \
+  nftables iptables
+```
+
+**Fedora/RHEL/CentOS (dnf):**
+
+```bash
+sudo dnf install -y \
+  iproute iputils curl openssl nmap-ncat \
+  mtr traceroute tcpdump jq coreutils \
+  nftables iptables
+```
+
+**Optional quality-of-life:**
+
+* `tput` – colored output (auto-detected)
+* `timeout` – timeboxing long/streaming commands in more places
 
 ---
 
 ## Usage
 
 ```bash
-netx <command> [subcommand] [options]
+netx [--json] [--quiet] <command> [subcommand] [options]
 ```
+
+
+### Global output flags
+
+`netx` supports two global flags that can be placed **before** the command:
+
+* `--quiet` – suppress banners/sections and print only the primary value where it makes sense (more script-friendly).
+* `--json` – emit machine-readable JSON where applicable.  
+  For long-running/streaming commands (e.g. `watch`, `wait`, `sniff pkt`, `guard watch`) output stays streaming (no capture), so `--json` is effectively passthrough.
+
+Examples:
+
+```bash
+netx --quiet ip public --ipv4
+netx --json route explain example.com | jq .
+```
+
 
 Examples:
 
@@ -122,6 +218,8 @@ Under `netx dns`:
 * `trace` – `dig +trace` style lookup
 * `reverse` – PTR lookup for an IP
 * `system` – show `/etc/resolv.conf` and `systemd-resolve --status` (if present)
+* `whoami` – show resolver-view + egress IP (best-effort, via a chosen resolver)
+* `flush` – flush DNS caches (best-effort: systemd-resolved/nscd/macOS)
 * `hosts` – check `/etc/hosts` for a given hostname
 
 Great for “DNS is lying” or “why is this host resolving differently here vs there?”.
@@ -447,6 +545,10 @@ Under `netx path`:
 
 * `trace <host> [--max-hops N]`:
 
+    * also available as a shortcut: `netx trace <host> [--max-hops N]`
+
+* `trace <host> [--max-hops N]`:
+
     * uses `mtr` if available, else `traceroute`.
     * default max hops: `15`.
 
@@ -495,6 +597,52 @@ Runs a compact mini-report and writes it to a file (default: `~/.netx/net-report
 Perfect to attach to tickets: “here’s the network state from this host at time X”.
 
 ---
+
+### 16. Sniff (HTTP + Packet)
+
+Under `netx sniff`:
+
+* `http <url> [curl-args...]`:
+
+    * performs a single HTTP probe using `curl` and prints:
+
+        * final effective URL (after redirects)
+        * timing breakdown (DNS/connect/TLS/TTFB/total)
+        * response headers
+        * response body (first ~400 lines)
+        * if `jq` is available and the body is JSON (or parses as JSON), it pretty-prints it
+
+  Examples:
+
+  ```bash
+  netx sniff http https://example.com
+  netx sniff http https://example.com -H 'Accept: application/json'
+  netx sniff http https://example.com -- -v   # pass any curl flags as usual
+  ```
+
+* `pkt <iface> [options] [-- <bpf-filter...>]`:
+
+    * thin wrapper over `tcpdump` (requires root/sudo)
+    * safe defaults: snaplen defaults to a small value for lower overhead unless overridden
+    * supports capture limits and rotating pcap output
+
+  Options:
+
+  * `--count N` – stop after N packets
+  * `--seconds N` – stop after N seconds (uses `timeout` if available)
+  * `--write file.pcap` – write capture to pcap
+  * `--rotate MB` + `--files N` – rotate pcap output (`tcpdump -C/-W`)
+  * `--snaplen N` – set snap length (capture bytes per packet)
+  * `--no-resolve` – no DNS/service name resolution (`-n`)
+  * `--verbose` – more decode (`-vv`)
+  * `--promisc off` – disable promiscuous mode (`-p`)
+
+  Examples:
+
+  ```bash
+  netx sniff pkt any --no-resolve --seconds 10 -- port 443
+  netx sniff pkt eth0 --write /tmp/cap.pcap --rotate 25 --files 4 -- 'tcp and (port 80 or port 443)'
+  ```
 
 ## Command Reference & Examples
 
@@ -560,7 +708,19 @@ netx ns ls
 netx ns inspect ns-docker
 netx ns exec ns-docker curl -sS http://10.0.0.5:8080/health
 
-# 13) Path & firewall & report
+# 13) Sniff
+netx sniff http https://example.com
+netx sniff pkt any --no-resolve --seconds 5 -- port 443
+
+# 14) Route explain / path trace shortcut
+netx route explain example.com
+netx trace 8.8.8.8
+
+# 15) DNS whoami / flush
+netx dns whoami --resolver 1.1.1.1
+netx dns flush
+
+# 16) Path & firewall & report
 netx path trace 8.8.8.8
 netx fw summary
 netx fw list --raw
