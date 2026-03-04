@@ -35,6 +35,8 @@ usage() {
   echo "      - branch2: The second branch to compare (optional, default: main)"
   echo ""
   echo "📦 Commit & Change Management:"
+  echo "  ai-commit                                        Auto-generate commit message using Gemini AI"
+  echo "      - Uses staged files to suggest a structured commit"
   echo "  commit                                           Interactive commit helper"
   echo "      - Allows selecting files and entering a commit message"
   echo "  amend                                            Amend the last commit message"
@@ -2130,6 +2132,159 @@ doctor_repo() {
     awk '{printf "%s bytes  %s\n", $1, $2}'
 }
 
+# -------------------------- AI Commit Generator --------------------------
+
+GITX_CONFIG_DIR="$HOME/.config/gitx"
+GITX_CONFIG_FILE="$GITX_CONFIG_DIR/settings"
+
+load_or_prompt_gemini_config() {
+  mkdir -p "$GITX_CONFIG_DIR"
+  if [[ -f "$GITX_CONFIG_FILE" ]]; then
+    source "$GITX_CONFIG_FILE"
+  fi
+
+  local updated=0
+
+  # 1. Ask for Token if missing
+  if [[ -z "$GEMINI_API_KEY" ]]; then
+    echo -e "${YELLOW}Gemini API Key not found.${NC}"
+    read -rp "Paste your Gemini API Token: " GEMINI_API_KEY
+    updated=1
+  fi
+
+  # 2. Ask for Model if missing (Fetches dynamically via API)
+  if [[ -z "$GEMINI_MODEL" ]]; then
+    echo "Fetching available Gemini models..."
+    local models_response
+    models_response=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY")
+
+    # Extract model names using grep/sed (filters for active Gemini models)
+    local available_models=($(echo "$models_response" | grep '"name": "models/gemini' | cut -d'"' -f4 | sed 's/models\///'))
+
+    if [[ ${#available_models[@]} -eq 0 ]]; then
+      echo -e "${RED}Could not fetch model list. Check your API key.${NC}"
+      GEMINI_MODEL="gemini-1.5-flash"
+      read -rp "Enter model manually (or press enter for $GEMINI_MODEL): " user_model
+      [[ -n "$user_model" ]] && GEMINI_MODEL="$user_model"
+    else
+      echo -e "${GREEN}Available Models:${NC}"
+      select model in "${available_models[@]}"; do
+        if [[ -n "$model" ]]; then
+          GEMINI_MODEL="$model"
+          break
+        else
+          echo "Invalid selection. Try again."
+        fi
+      done
+    fi
+    updated=1
+  fi
+
+  # Save configuration for future requests
+  if [[ "$updated" -eq 1 ]]; then
+    echo "GEMINI_API_KEY=\"$GEMINI_API_KEY\"" > "$GITX_CONFIG_FILE"
+    echo "GEMINI_MODEL=\"$GEMINI_MODEL\"" >> "$GITX_CONFIG_FILE"
+    chmod 600 "$GITX_CONFIG_FILE" # Secure the file
+    echo -e "${GREEN}Configuration saved to $GITX_CONFIG_FILE${NC}"
+  fi
+}
+
+generate_ai_commit() {
+  ensure_git_repo
+
+  # 1. Check for staged changes
+  if git diff --cached --quiet; then
+    echo -e "${RED}No staged changes found.${NC}"
+    echo "Please stage your changes first using 'git add <files>'."
+    exit 1
+  fi
+
+  # 2. Check for dependencies
+  if ! command -v jq &> /dev/null; then
+    echo -e "${RED}Error: 'jq' is required for JSON processing.${NC}"
+    echo "Please install it (e.g., sudo apt install jq)."
+    exit 1
+  fi
+
+  # 3. Load config and generate diff
+  load_or_prompt_gemini_config
+  echo "Analyzing staged changes..."
+  local diff_file="/tmp/gitx_staged_diff_$$.txt"
+  git diff --cached > "$diff_file"
+
+  # 4. Define the strict system instruction
+  local sys_instruction=$(cat << 'EOF'
+You are a commit message generator. Your only task is to read the contents of a git diff text file and produce a commit message that summarizes the changes. Your final response must not be enclosed in a code block. Your commit message must strictly follow the Conventional Commits Specification and use Gitmoji. Ensure your output contains a subject, body, and appropriate footers. Do not include the raw diff.
+EOF
+  )
+
+  local payload_file="/tmp/gitx_payload_$$.json"
+
+  # 5. Build JSON Payload safely with jq
+  jq -n \
+    --arg diff "$(<"$diff_file")" \
+    --arg sys "$sys_instruction" \
+    '{
+      "system_instruction": {
+        "parts": [{ "text": $sys }]
+      },
+      "contents": [{
+        "parts": [{ "text": ("Here is the git diff:\n\n" + $diff) }]
+      }],
+      "generation_config": {
+        "temperature": 0.1,
+        "topP": 0.9,
+        "topK": 1
+      }
+    }' > "$payload_file"
+
+  # 6. Call the Gemini API
+  echo "Generating commit message via Gemini ($GEMINI_MODEL)..."
+  local api_url="https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=$GEMINI_API_KEY"
+
+  local response
+  response=$(curl -s -X POST "$api_url" \
+    -H 'Content-Type: application/json' \
+    -d @"$payload_file")
+
+  # 7. Extract message
+  local commit_msg
+  commit_msg=$(echo "$response" | jq -r '.candidates[0].content.parts[0].text // empty')
+
+  # Cleanup temp files
+  rm -f "$diff_file" "$payload_file"
+
+  if [[ -z "$commit_msg" || "$commit_msg" == "null" ]]; then
+    echo -e "${RED}Error generating commit message. API Response:${NC}"
+    echo "$response" | jq .
+    exit 1
+  fi
+
+  # 8. Present output to user
+  echo -e "\n${YELLOW}================ Generated Commit Message ================${NC}\n"
+  echo "$commit_msg"
+  echo -e "\n${YELLOW}==========================================================${NC}\n"
+
+  read -rp "Do you want to commit with this message? (y/e/n) [y=yes, e=edit, n=no]: " action
+  case "$action" in
+  y|Y)
+    git commit -m "$commit_msg"
+    echo -e "${GREEN}Committed successfully.${NC}"
+    ;;
+  e|E)
+    local msg_file="/tmp/gitx_commit_msg_$$.txt"
+    echo "$commit_msg" > "$msg_file"
+    ${EDITOR:-vi} "$msg_file"
+    git commit -F "$msg_file"
+    rm -f "$msg_file"
+    echo -e "${GREEN}Committed successfully.${NC}"
+    ;;
+  *)
+    echo "Commit cancelled. Your changes remain staged."
+    ;;
+  esac
+}
+
 # Hooks initializer
 hooks_manager() {
   ensure_git_repo
@@ -2233,6 +2388,7 @@ cmd="${1:-}"
 shift || true
 
 case "$cmd" in
+ai-commit) generate_ai_commit ;;
 status) show_status ;;
 commit) interactive_commit ;;
 revert) revert_commit ;;
