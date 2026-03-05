@@ -2138,54 +2138,57 @@ GITX_CONFIG_DIR="$HOME/.config/gitx"
 GITX_CONFIG_FILE="$GITX_CONFIG_DIR/settings"
 GITX_INSTRUCTION_FILE="$GITX_CONFIG_DIR/instructions.b64"
 
+# Helper function to fetch, select, and save the Gemini model
+select_gemini_model() {
+  echo "Fetching available Gemini models..."
+  local models_response
+  models_response=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY")
+
+  local available_models=($(echo "$models_response" | grep '"name": "models/gemini' | cut -d'"' -f4 | sed 's/models\///'))
+
+  if [[ ${#available_models[@]} -eq 0 ]]; then
+    echo -e "${RED}Could not fetch model list. Check your API key.${NC}"
+    GEMINI_MODEL="gemini-1.5-flash"
+    read -rp "Enter model manually (or press enter for $GEMINI_MODEL): " user_model
+    [[ -n "$user_model" ]] && GEMINI_MODEL="$user_model"
+  else
+    echo -e "${GREEN}Available Models:${NC}"
+    local PS3="Select a model number: "
+    select model in "${available_models[@]}"; do
+      if [[ -n "$model" ]]; then
+        GEMINI_MODEL="$model"
+        break
+      else
+        echo "Invalid selection. Try again."
+      fi
+    done
+  fi
+
+  # Save updated config
+  echo "GEMINI_API_KEY=\"$GEMINI_API_KEY\"" > "$GITX_CONFIG_FILE"
+  echo "GEMINI_MODEL=\"$GEMINI_MODEL\"" >> "$GITX_CONFIG_FILE"
+  chmod 600 "$GITX_CONFIG_FILE"
+  echo -e "${GREEN}Model set to $GEMINI_MODEL and saved to $GITX_CONFIG_FILE${NC}"
+}
+
 load_or_prompt_gemini_config() {
   mkdir -p "$GITX_CONFIG_DIR"
   if [[ -f "$GITX_CONFIG_FILE" ]]; then
     source "$GITX_CONFIG_FILE"
   fi
 
-  local updated=0
+  local missing_key=0
 
   # 1. Ask for Token if missing
   if [[ -z "$GEMINI_API_KEY" ]]; then
     echo -e "${YELLOW}Gemini API Key not found.${NC}"
     read -rp "Paste your Gemini API Token: " GEMINI_API_KEY
-    updated=1
+    missing_key=1
   fi
 
-  # 2. Ask for Model if missing
-  if [[ -z "$GEMINI_MODEL" ]]; then
-    echo "Fetching available Gemini models..."
-    local models_response
-    models_response=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY")
-
-    local available_models=($(echo "$models_response" | grep '"name": "models/gemini' | cut -d'"' -f4 | sed 's/models\///'))
-
-    if [[ ${#available_models[@]} -eq 0 ]]; then
-      echo -e "${RED}Could not fetch model list. Check your API key.${NC}"
-      GEMINI_MODEL="gemini-1.5-flash"
-      read -rp "Enter model manually (or press enter for $GEMINI_MODEL): " user_model
-      [[ -n "$user_model" ]] && GEMINI_MODEL="$user_model"
-    else
-      echo -e "${GREEN}Available Models:${NC}"
-      select model in "${available_models[@]}"; do
-        if [[ -n "$model" ]]; then
-          GEMINI_MODEL="$model"
-          break
-        else
-          echo "Invalid selection. Try again."
-        fi
-      done
-    fi
-    updated=1
-  fi
-
-  # Save configuration for future requests
-  if [[ "$updated" -eq 1 ]]; then
-    echo "GEMINI_API_KEY=\"$GEMINI_API_KEY\"" > "$GITX_CONFIG_FILE"
-    echo "GEMINI_MODEL=\"$GEMINI_MODEL\"" >> "$GITX_CONFIG_FILE"
-    chmod 600 "$GITX_CONFIG_FILE"
-    echo -e "${GREEN}Configuration saved to $GITX_CONFIG_FILE${NC}"
+  # 2. Ask for Model if missing (or if we just entered a new key)
+  if [[ -z "$GEMINI_MODEL" || "$missing_key" -eq 1 ]]; then
+    select_gemini_model
   fi
 }
 
@@ -2270,27 +2273,47 @@ generate_ai_commit() {
       }
     }' > "$payload_file"
 
-  # 6. Call the Gemini API
-  echo "Generating commit message via Gemini ($GEMINI_MODEL)..."
-  local api_url="https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=$GEMINI_API_KEY"
+  # 6. Retry Loop for API Calls
+  local commit_msg=""
+  while true; do
+    echo "Generating commit message via Gemini ($GEMINI_MODEL)..."
+    local api_url="https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=$GEMINI_API_KEY"
 
-  local response
-  response=$(curl -s -X POST "$api_url" \
-    -H 'Content-Type: application/json' \
-    -d @"$payload_file")
+    local response
+    response=$(curl -s -X POST "$api_url" \
+      -H 'Content-Type: application/json' \
+      -d @"$payload_file")
 
-  # 7. Extract message
-  local commit_msg
-  commit_msg=$(echo "$response" | jq -r '.candidates[0].content.parts[0].text // empty')
+    # 7. Extract message
+    commit_msg=$(echo "$response" | jq -r '.candidates[0].content.parts[0].text // empty')
+
+    # Handle Errors
+    if [[ -z "$commit_msg" || "$commit_msg" == "null" ]]; then
+      local err_code=$(echo "$response" | jq -r '.error.code // "Unknown"')
+      local err_msg=$(echo "$response" | jq -r '.error.message // "Unknown error"')
+      local err_status=$(echo "$response" | jq -r '.error.status // "ERROR"')
+
+      echo -e "\n${RED}API Error: [${err_code}] ${err_status}${NC}"
+      echo -e "${YELLOW}Message: ${err_msg}${NC}\n"
+
+      read -rp "Do you want to try with a different model? (y/n): " retry_action
+      if [[ "$retry_action" =~ ^[Yy]$ ]]; then
+        select_gemini_model
+        echo "Retrying..."
+        continue
+      else
+        rm -f "$payload_file"
+        echo "Aborting commit generation."
+        exit 1
+      fi
+    fi
+
+    # Break out of loop on success
+    break
+  done
 
   # Cleanup temp files
   rm -f "$payload_file"
-
-  if [[ -z "$commit_msg" || "$commit_msg" == "null" ]]; then
-    echo -e "${RED}Error generating commit message. API Response:${NC}"
-    echo "$response" | jq .
-    exit 1
-  fi
 
   # 8. Present output to user
   echo -e "\n${YELLOW}================ Generated Commit Message ================${NC}\n"
