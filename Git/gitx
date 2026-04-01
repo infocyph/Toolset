@@ -50,7 +50,7 @@ usage() {
   echo "  stage-deleted-dir <directory>                    Stage deleted files in a specific directory"
   echo "      - directory: Path to the directory"
   echo "  diff [output_file]                               Interactive staged diff (view/save)"
-  echo "  diff <start> <end> [--stat|--name-only|--patch] [-- <path...>]"
+  echo "  diff <start> <end> [--stat|--name-only|--patch|--details] [--to-head] [-- <path...>]"
   echo "      - start/end: commit/tag OR YYYY-MM-DD YYYY-MM-DD"
   echo "      - tip: date diff is inclusive (start-commit parent → end-commit)"
   echo ""
@@ -1186,7 +1186,7 @@ diff_grouped_by_date() {
     --name-only)
       git --no-pager show --no-renames --pretty=format:'' --name-only "$commit" -- "$@" >>"$outfile" 2>/dev/null || true
       ;;
-    --patch)
+    --patch|--details)
       git --no-pager show --no-renames --pretty=format:'' "$commit" -- "$@" >>"$outfile" 2>/dev/null || true
       ;;
     *)
@@ -1210,24 +1210,29 @@ diff_between_refs_or_dates() {
   shift 2 || true
 
   if [[ -z "$a1" || -z "$a2" ]]; then
-    echo "Usage: gitx diff <start> <end> [--stat|--name-only|--patch] [--by-date] [-o <file>] [patch_file] [-- <path...>]"
+    echo "Usage: gitx diff <start> <end> [--stat|--name-only|--patch|--details] [--to-head] [--by-date] [-o <file>] [patch_file] [-- <path...>]"
     return 1
   fi
 
   # Default for range/date diff is --stat (stdout).
   local mode="--stat"
   local mode_set=0
-  if [[ "${1:-}" == "--stat" || "${1:-}" == "--name-only" || "${1:-}" == "--patch" ]]; then
+  if [[ "${1:-}" == "--stat" || "${1:-}" == "--name-only" || "${1:-}" == "--patch" || "${1:-}" == "--details" ]]; then
     mode="$1"
     mode_set=1
     shift || true
   fi
 
   local by_date=0
+  local to_head=0
   local outfile=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
+    --to-head|--head)
+      to_head=1
+      shift
+      ;;
     --by-date|--group-by-date|--daily)
       by_date=1
       shift
@@ -1238,12 +1243,14 @@ diff_between_refs_or_dates() {
       ;;
     --help|-h)
       echo "Usage:"
-      echo "  gitx diff <start> <end> [--stat|--name-only|--patch] [--by-date] [-o <file>] [patch_file] [-- <path...>]"
+      echo "  gitx diff <start> <end> [--stat|--name-only|--patch|--details] [--to-head] [--by-date] [-o <file>] [patch_file] [-- <path...>]"
       echo ""
       echo "Notes:"
       echo "  - <start>/<end> can be commit/tag OR YYYY-MM-DD YYYY-MM-DD (inclusive by commit boundaries)."
       echo "  - Default mode is --stat (printed to stdout, no pager)."
       echo "  - --patch saves to a file by default (you can pass a patch filename)."
+      echo "  - --details prints full unified diff directly to stdout."
+      echo "  - --to-head with date windows uses first-commit-in-window^..HEAD."
       echo "  - --by-date generates a date-grouped diff file (defaults to patch if no mode is explicitly set)."
       return 0
       ;;
@@ -1271,6 +1278,10 @@ diff_between_refs_or_dates() {
       ext="txt"
       [[ "$mode" == "--patch" ]] && ext="patch"
       outfile="diff_by_date_${safe_a1}_to_${safe_a2}.${ext}"
+    fi
+
+    if [[ "$mode" == "--details" ]]; then
+      mode="--patch"
     fi
 
     diff_grouped_by_date "$a1" "$a2" "$mode" "$outfile" "$@"
@@ -1307,8 +1318,20 @@ diff_between_refs_or_dates() {
     first="$(awk '{print $1}' <<<"$commits")"
     last="$(awk '{print $2}' <<<"$commits")"
     start_hash="$first"
-    end_hash="$last"
+    if [[ "$to_head" -eq 1 ]]; then
+      end_hash="$(git rev-parse --verify "HEAD^{commit}" 2>/dev/null)" || {
+        echo "Error: Unable to resolve HEAD."
+        return 1
+      }
+    else
+      end_hash="$last"
+    fi
   else
+    if [[ "$to_head" -eq 1 ]]; then
+      echo "Error: --to-head is only supported with date windows (YYYY-MM-DD YYYY-MM-DD)."
+      return 1
+    fi
+
     # Ref mode
     start_hash="$(git rev-parse --verify "$a1^{commit}" 2>/dev/null)" || {
       echo "Error: Invalid start ref: $a1"
@@ -1322,8 +1345,7 @@ diff_between_refs_or_dates() {
 
   # Inclusive: parent(start) -> end (includes the start commit changes)
   local from_ref to_ref parent_start
-  parent_start="$(git rev-parse "${start_hash}^" 2>/dev/null || true)"
-  if [[ -n "$parent_start" ]]; then
+  if parent_start="$(git rev-parse --verify "${start_hash}^" 2>/dev/null)"; then
     from_ref="$parent_start"
   else
     from_ref="$(_gitx_empty_tree)"
@@ -1334,12 +1356,15 @@ diff_between_refs_or_dates() {
   --stat|--name-only)
     git --no-pager diff --no-renames "$mode" "$from_ref" "$to_ref" -- "$@"
     ;;
+  --details)
+    git --no-pager diff --no-renames "$from_ref" "$to_ref" -- "$@"
+    ;;
   --patch)
     git --no-pager diff --no-renames "$from_ref" "$to_ref" -- "$@" >"$patch_file"
     echo "✅ Patch saved to: $patch_file" >&2
     ;;
   *)
-    echo "Invalid mode: $mode (use --stat, --name-only, or --patch)"
+    echo "Invalid mode: $mode (use --stat, --name-only, --patch, or --details)"
     return 1
     ;;
   esac
@@ -1347,6 +1372,11 @@ diff_between_refs_or_dates() {
 
 
 gitx_diff() {
+  if [[ $# -eq 1 && ( "${1:-}" == "--help" || "${1:-}" == "-h" ) ]]; then
+    diff_between_refs_or_dates "HEAD~1" "HEAD" --help
+    return $?
+  fi
+
   # Range/date diff if 2+ args are provided, otherwise keep existing staged diff UX.
   if [[ $# -ge 2 ]]; then
     diff_between_refs_or_dates "$@"
