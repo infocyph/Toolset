@@ -2246,11 +2246,13 @@ generate_ai_commit() {
 
   echo "Analyzing staged changes..."
 
-  # Generate base64 encoded diff (cross-platform clean)
-  local diff_b64
-  diff_b64=$(git diff --cached | base64 | tr -d '\n' || true)
+  # Generate base64 diff into a temp file to avoid "argument list too long"
+  # when passing large staged diffs to jq.
+  local diff_b64_file="/tmp/gitx_diff_b64_$$.txt"
+  git diff --cached | base64 | tr -d '\n' > "$diff_b64_file"
 
-  if [[ -z "$diff_b64" ]]; then
+  if [[ ! -s "$diff_b64_file" ]]; then
+    rm -f "$diff_b64_file"
     echo -e "${RED}Error: Failed to read or encode git diff.${NC}"
     exit 1
   fi
@@ -2280,7 +2282,7 @@ generate_ai_commit() {
   # 5. Build JSON Payload
   jq -n \
     --arg sys "$sys_instruction" \
-    --arg diff_b64 "$diff_b64" \
+    --rawfile diff_b64 "$diff_b64_file" \
     '{
       "system_instruction": {
         "parts": [{ "text": $sys }]
@@ -2301,7 +2303,13 @@ generate_ai_commit() {
         "topP": 0.9,
         "topK": 1
       }
-    }' > "$payload_file"
+      }' > "$payload_file"
+
+  if [[ ! -s "$payload_file" ]]; then
+    rm -f "$payload_file" "$diff_b64_file"
+    echo -e "${RED}Error: Failed to build Gemini request payload.${NC}"
+    exit 1
+  fi
 
   # 6. Retry Loop for API Calls
   local commit_msg=""
@@ -2332,7 +2340,7 @@ generate_ai_commit() {
         echo "Retrying..."
         continue
       else
-        rm -f "$payload_file"
+        rm -f "$payload_file" "$diff_b64_file"
         echo "Aborting commit generation."
         exit 1
       fi
@@ -2343,7 +2351,7 @@ generate_ai_commit() {
   done
 
   # Cleanup temp files
-  rm -f "$payload_file"
+  rm -f "$payload_file" "$diff_b64_file"
 
   # 8. Present output to user
   echo -e "\n${YELLOW}================ Generated Commit Message ================${NC}\n"
