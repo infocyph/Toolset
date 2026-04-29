@@ -513,10 +513,12 @@ gitx diff staged.patch
 2. **Range/date diff** (new)
 
 ```bash
-# Date window → defaults to --stat output (prints to stdout)
+# Date window -> defaults to --stat output (prints to stdout)
 gitx diff 2025-12-14 2025-12-24
 gitx diff 2025-12-14 2025-12-24 --name-only
 gitx diff 2025-12-14 2025-12-24 --stat
+gitx diff 2025-12-14 2025-12-24 --details
+gitx diff 2025-12-14 2025-12-24 --details --to-head
 
 # Refs (commit/tag/branch)
 gitx diff v1.0.0 v1.1.0
@@ -532,6 +534,17 @@ gitx diff cc08511 d5305c7 --name-only
   ```bash
   gitx diff 2025-12-14 2025-12-24 --stat > diff_stat.txt
   gitx diff 2025-12-14 2025-12-24 --name-only > files.txt
+  ```
+* `--details` prints full unified diff to **stdout** (no patch file generated):
+
+  ```bash
+  gitx diff 2025-12-14 2025-12-24 --details
+  ```
+* `--to-head` is available for date windows and matches:
+  `first-commit-in-window^..HEAD`
+
+  ```bash
+  gitx diff 2026-03-29 2026-04-01 --details --to-head
   ```
 * `--patch` saves to a file **by default**:
 
