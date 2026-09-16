@@ -1,4 +1,4 @@
-# final 2.0 contract sync
+# exact 2.0 final synchronization
 name: Sync Toolset 2.0 release plan once
 
 on:
@@ -20,10 +20,11 @@ jobs:
         with:
           ref: plan/toolset-linux-cli-hardening
           fetch-depth: 0
-      - name: Apply 2.0 contract synchronization
+      - name: Apply synchronized 2.0 contract
         run: |
           set -Eeuo pipefail
           python3 .github/scripts/sync-toolset-2.0-release-plan.py
+          python3 .github/scripts/finalize-exact-2.0.py
           bash -n install.sh Git/gitx PHP/phpx Clean/cleanx ChromaCat/chromacat tests/release-delivery.sh
       - name: Install validation dependencies
         run: |
