@@ -23,7 +23,16 @@ jobs:
           fetch-depth: 0
 
       - name: Apply sqlitex hardening
-        run: python3 tests/patch-sqlitex-phase2.py
+        run: |
+          python3 tests/patch-sqlitex-phase2.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Sqlite/sqlitex')
+          t = p.read_text()
+          t = t.replace('cmd_optimize() {\ncmd_optimize() {', 'cmd_optimize() {', 1)
+          t = t.replace('cmd_tune() {\ncmd_tune() {', 'cmd_tune() {', 1)
+          p.write_text(t)
+          PY
 
       - name: Validate sqlitex
         run: |
