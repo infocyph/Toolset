@@ -1,0 +1,42 @@
+name: Apply phpx version patch
+
+on:
+  push:
+    branches:
+      - plan/toolset-linux-cli-hardening
+    paths:
+      - .github/workflows/apply-phpx-version-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+        with:
+          ref: plan/toolset-linux-cli-hardening
+
+      - name: Apply source patch
+        run: python3 tests/patch-phpx-version.py
+
+      - name: Validate source patch
+        run: |
+          bash -n PHP/phpx
+          PHPX_NO_LOG=1 NO_COLOR=1 TERM=dumb bash PHP/phpx --version | grep -Eq '^phpx [0-9]+\.[0-9]+(\.[0-9]+)?([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$'
+
+      - name: Commit source patch
+        run: |
+          if git diff --quiet -- PHP/phpx; then
+            echo 'phpx version contract already patched.'
+            exit 0
+          fi
+          git config user.name 'A. B. M. Mahmudul Hasan'
+          git config user.email 'abmmhasan@users.noreply.github.com'
+          git add PHP/phpx
+          git commit -m 'fix: add canonical phpx version contract'
+          git push origin HEAD:plan/toolset-linux-cli-hardening
