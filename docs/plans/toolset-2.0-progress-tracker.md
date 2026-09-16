@@ -10,9 +10,9 @@ Legend: `[ ]` not started · `[-]` in progress · `[x]` done · `[!]` blocked / 
 
 ## Current Focus
 
-**Phase 1 — Repository contract**
+**Phase 2 — Critical destructive/data paths**
 
-Current task: validate the new manifest/release workflow, then replace mutable-`main` installation and self-update paths with the stable release contract.
+Current task: harden `cleanx` first, beginning with identity/config/locking and destructive execution boundaries, then add disposable-filesystem safety coverage before moving to the next high-impact tool.
 
 ## Phase 1 — Repository Contract
 
@@ -46,17 +46,24 @@ Current task: validate the new manifest/release workflow, then replace mutable-`
   - [x] Each standalone CLI exposes its own embedded tool version.
   - [x] Tool versions may evolve independently of the suite release.
   - [x] `manifest.json` records both suite identity and each tool's version/digest.
-- [-] Add immutable release workflow.
+- [x] Add immutable release workflow.
   - [x] Strict `vMAJOR.MINOR.PATCH` tag validation.
   - [x] Refuse to overwrite an existing GitHub release.
   - [x] Re-run static and CLI-contract validation from tagged source.
-  - [x] Build all seven standalone assets.
+  - [x] Build all seven standalone assets plus the installer.
   - [x] Publish `SHA256SUMS` and `manifest.json` with assets.
-  - [-] Validate workflow through PR `actionlint`/CI gate.
+  - [x] Validate workflow through PR `actionlint`/CI gate.
 - [x] Generate and verify `SHA256SUMS`.
 - [x] Generate deterministic `manifest.json`.
-- [ ] Replace stable install contract that points at mutable `main`.
-- [ ] Replace self-update stable channel that points at mutable `main`.
+- [x] Replace stable install contract that pointed at mutable `main`.
+  - [x] Add versioned `install.sh` release asset.
+  - [x] Support individual tools, multiple tools, `--all`, exact `--release`, latest stable and custom prefixes.
+  - [x] Verify checksums and Bash syntax before replacement.
+  - [x] Keep a `.previous` rollback copy during replacement.
+  - [x] Root and per-tool installation docs use release assets rather than mutable `main`.
+- [x] Replace self-update stable channel that pointed at mutable `main`.
+  - [x] `gitx`, `phpx`, `chromacat` and `cleanx` default to stable checksum-verified release assets.
+  - [x] Mutable branch/main development channels are not the stable default.
 
 ### CI Findings — Resolved
 
@@ -67,27 +74,28 @@ Current task: validate the new manifest/release workflow, then replace mutable-`
 - [x] `sqlitex`: added pre-database/pre-SQLite successful `--help` / `--version` handling.
 - [x] `phpx`: caught and fixed a CI false positive where `--version` returned exit 0 but printed full usage text.
 - [x] Version contract now requires exactly one canonical `<tool> <version>` stdout line and no stderr.
+- [x] Fixed incorrect `actionlint -color never` invocation; pinned `actionlint` workflow validation now passes.
 - [x] Debian 13 distro smoke passes.
 - [x] Ubuntu 24.04 distro smoke passes.
 - [x] Fedora 42 distro smoke passes.
 - [x] Alpine 3.22 (with Bash installed) distro smoke passes.
 - [x] Baseline non-TTY/no-color smoke passes.
-- [x] Standalone packaging plus `SHA256SUMS` verification passes.
-- [x] Full CI gate reached green after resolving the original static/contract failures.
+- [x] Standalone packaging plus `SHA256SUMS` and `manifest.json` verification passes.
+- [x] Full CI matrix and aggregate gate pass on the completed Phase 1 branch state.
 
 ### Phase 1 Gate
 
-- [x] Syntax/static/smoke CI passes completely on the resolved baseline.
+- [x] Syntax/static/workflow/smoke CI passes completely.
 - [x] All seven CLI artifacts are executable.
 - [x] All seven expose stable help/version behavior.
-- [-] Release assets can be built and published from an immutable tag; workflow added, final PR validation pending.
-- [ ] Stable installation and stable self-update no longer depend on mutable `main`.
+- [x] Immutable semantic-tag release workflow builds/publishes versioned assets with checksums and manifest; actual `v2.0.0` publication remains intentionally deferred until the full hardening cycle is complete.
+- [x] Stable installation and stable self-update no longer depend on mutable `main`.
 
 ## Phase 2 — Critical Destructive/Data Paths
 
 ### `cleanx`
 
-- [ ] Migrate legacy `cleanfy` identity/config paths to `cleanx` with compatibility handling.
+- [-] Migrate legacy `cleanfy` identity/config paths to `cleanx` with compatibility handling.
 - [ ] Replace race-prone `/tmp/.cleanfy.lock` with `flock`/safe fallback.
 - [ ] Remove string-built destructive shell execution.
 - [ ] Replace shell-sourced config with declarative parsing or safe compatibility boundary.
@@ -95,7 +103,7 @@ Current task: validate the new manifest/release workflow, then replace mutable-`
 - [ ] Add package-manager capability backends / explicit skips.
 - [ ] Harden target-user/home validation.
 - [ ] Make JSON output machine-clean.
-- [ ] Harden stable self-update.
+- [x] Harden stable self-update baseline through the Phase 1 release channel; review tool-specific behavior during `cleanx` hardening.
 - [ ] Add disposable-filesystem tests.
 
 ### `phpx`
@@ -109,7 +117,7 @@ Current task: validate the new manifest/release workflow, then replace mutable-`
 - [ ] Make generated config writes atomic + validated.
 - [ ] Make logging non-fatal for read-only commands and secret-safe.
 - [ ] Make root requirement operation-specific.
-- [ ] Harden stable self-update.
+- [x] Harden stable self-update baseline through the Phase 1 release channel; review tool-specific behavior during `phpx` hardening.
 - [ ] Add disposable distro-container tests.
 
 ### `dockex`
@@ -173,7 +181,7 @@ Current task: validate the new manifest/release workflow, then replace mutable-`
 - [ ] Make API-key persistence explicit opt-in.
 - [ ] Add API timeouts/response validation/payload limits.
 - [ ] Exclude/confirm likely secret/binary staged content for AI commit.
-- [ ] Harden stable self-update.
+- [x] Harden stable self-update baseline through the Phase 1 release channel; review tool-specific behavior during `gitx` hardening.
 - [ ] Add temporary Git repository/bare-remote tests.
 
 ### Phase 3 Gate
@@ -192,7 +200,7 @@ Current task: validate the new manifest/release workflow, then replace mutable-`
 - [ ] Review Unicode display-width behavior.
 - [ ] Keep streaming modes bounded and efficient.
 - [ ] Harden missing TERM/tput behavior.
-- [ ] Harden stable self-update.
+- [x] Harden stable self-update baseline through the Phase 1 release channel; review tool-specific behavior during `chromacat` hardening.
 - [ ] Add golden pipeline/no-color/stream tests.
 
 ### Phase 4 Gate
@@ -201,14 +209,14 @@ Current task: validate the new manifest/release workflow, then replace mutable-`
 
 ## Phase 5 — Documentation & Downstream Pins
 
-- [ ] Update root README to stable release installation model.
-- [ ] Normalize per-tool README sections.
+- [x] Update root README to stable release installation model.
+- [-] Normalize per-tool README sections; installation paths now use stable release assets, broader normalization remains.
 - [ ] Add dependency/capability matrix per tool.
 - [ ] Document destructive/security boundaries per tool.
 - [ ] Document output/exit contracts.
 - [ ] Verify docs against actual `--help`.
 - [ ] Build Toolset 2.0 release candidate.
-- [ ] Verify release asset checksums and self-update behavior.
+- [ ] Verify published release asset checksums and self-update behavior against the RC.
 - [ ] Select immutable Toolset ref for downstream Docker ecosystem.
 - [ ] Update LocalDevStack shared-foundations tracking with accepted Toolset ref.
 
@@ -222,7 +230,7 @@ Current task: validate the new manifest/release workflow, then replace mutable-`
 - [ ] Review secret/environment output.
 - [ ] Review unquoted expansion / missing `--` path delimiters.
 - [ ] Review `bash -c` command construction.
-- [ ] Review mutable `main`/`master` URLs.
+- [-] Review mutable `main`/`master` URLs; stable install/self-update paths are fixed, development/documentation leftovers will be reviewed in their owning phases.
 - [ ] Review root/sudo assumptions.
 - [ ] Review background processes/trap cleanup.
 
@@ -245,16 +253,16 @@ Current task: validate the new manifest/release workflow, then replace mutable-`
 - [x] Current repo originally had no validation workflow beyond `CODEOWNERS`.
 - [x] `Sqlite/sqlitex` was non-executable in git; fixed on implementation branch.
 - [x] `Clean/cleanx` was non-executable in git; fixed on implementation branch.
-- [x] Root/per-tool install docs currently use mutable `main` URLs.
-- [x] `gitx`, `phpx`, and `chromacat` currently self-update from mutable `main`.
-- [x] `gitx` uses predictable `/tmp` files in interactive flows.
-- [x] `gitx` sources a settings file containing Gemini configuration.
-- [x] `netx` has TLS command construction through `eval`.
-- [x] `netx guard --exec` currently executes through `eval`.
-- [x] `dockex info` currently exposes raw container environment values.
-- [x] `dockex` backup/restore currently installs zip/unzip dynamically in an Alpine helper container.
-- [x] `sqlitex` current backup is a raw file copy.
-- [x] `cleanx` still carries legacy `cleanfy` config/lock naming.
+- [x] Root/per-tool stable install paths formerly used mutable `main`; migrated to release assets.
+- [x] `gitx`, `phpx`, `chromacat`, and `cleanx` stable self-update behavior formerly depended on mutable branch paths; migrated to release assets.
+- [x] `gitx` uses predictable `/tmp` files in interactive flows; retained for Phase 3 hardening.
+- [x] `gitx` sources a settings file containing Gemini configuration; retained for Phase 3 hardening.
+- [x] `netx` has TLS command construction through `eval`; retained for Phase 3 hardening.
+- [x] `netx guard --exec` currently executes through `eval`; retained for Phase 3 hardening.
+- [x] `dockex info` currently exposes raw container environment values; queued for Phase 2.
+- [x] `dockex` backup/restore currently installs zip/unzip dynamically in an Alpine helper container; queued for Phase 2.
+- [x] `sqlitex` current backup is a raw file copy; queued for Phase 2.
+- [x] `cleanx` still carries legacy `cleanfy` config/lock naming; Phase 2 starts here.
 
 ## Work Log
 
@@ -268,11 +276,13 @@ Current task: validate the new manifest/release workflow, then replace mutable-`
 | 2026-09-16 | Expanded CI into static, CLI-contract, 4-distro smoke, distribution artifact and aggregate gate jobs. | done |
 | 2026-09-16 | Initial expanded CI found 2 ShellCheck blockers and 3 tools missing successful help/version contracts. | done |
 | 2026-09-16 | Fixed `netx`/`phpx` static defects and normalized `dockex`/`gitx`/`sqlitex` CLI contracts. | done |
-| 2026-09-16 | Full original CI matrix/gate reached green. | done |
 | 2026-09-16 | Strengthened version tests; discovered `phpx --version` false-positive usage output and fixed it. | done |
-| 2026-09-16 | Added deterministic release `manifest.json` generation from actual packaged tool version output and SHA-256 digests. | done |
-| 2026-09-16 | Added immutable semantic-tag release workflow and pinned actionlint workflow validation. | in progress |
+| 2026-09-16 | Added deterministic release `manifest.json`, release installer and SHA-256 verification. | done |
+| 2026-09-16 | Added immutable semantic-tag release workflow and pinned `actionlint` workflow validation. | done |
+| 2026-09-16 | Migrated stable installation and updater paths away from mutable `main`. | done |
+| 2026-09-16 | Fixed actionlint invocation and completed the full green Phase 1 CI gate. | done |
+| 2026-09-16 | Phase 1 closed; Phase 2 started with `cleanx`. | in progress |
 
 ## Next Task
 
-Validate the new release/actionlint path through PR #47, then replace mutable-`main` stable installation and self-update paths with exact release assets/checksum verification. After that, close the Phase 1 repository-contract gate and begin Phase 2 with `cleanx`.
+Harden `cleanx`: migrate the legacy `cleanfy` identity/config/lock paths with compatibility handling, replace the shared `/tmp` lock with a safe lock strategy, then remove string-built destructive execution and add disposable-filesystem tests before advancing to the next Phase 2 tool.
