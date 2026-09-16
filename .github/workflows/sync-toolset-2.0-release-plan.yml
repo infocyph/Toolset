@@ -1,3 +1,4 @@
+# retry after release-delivery URL diagnostics
 name: Sync Toolset 2.0 release plan once
 
 on:
