@@ -1153,7 +1153,7 @@ port_find() {
   section "Port find :$port"
   printf '%-5s %-24s %-24s %-6s %-s\n' "Proto" "Local" "Peer" "PID" "Process"
   if have ss; then
-    ss -nH -lntup 2>/dev/null | grep -E ":$port[[:space:]]" | \
+    ss -nH -lntup 2>/dev/null | grep -E ":${port}[[:space:]]" | \
       while read -r netid state recvq sendq local_addr peer_addr rest; do
         local pid="" comm=""
         if [[ "$rest" =~ pid=([0-9]+) ]]; then pid="${BASH_REMATCH[1]}"; fi

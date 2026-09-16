@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+VERSION="2.0.0-dev"
+
 # --------------------- dependencies --------------------- #
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -8,10 +10,6 @@ require_cmd() {
     exit 1
   }
 }
-
-require_cmd docker
-require_cmd jq
-require_cmd awk
 
 # ---------------------- usage --------------------------- #
 show_usage() {
@@ -89,6 +87,21 @@ show_usage() {
   echo "  dockex create nginx my_nginx"
   echo "  dockex shell my_container"
 }
+
+case "${1:-}" in
+-h | --help | help)
+  show_usage
+  exit 0
+  ;;
+-V | --version | version)
+  printf 'dockex %s\n' "$VERSION"
+  exit 0
+  ;;
+esac
+
+require_cmd docker
+require_cmd jq
+require_cmd awk
 
 # ------------------ container helpers ------------------- #
 

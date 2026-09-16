@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+VERSION="2.0.0-dev"
+
 # ===========================================
 # Global Configuration (with defaults)
 # ===========================================
@@ -873,8 +875,18 @@ Commands:
   sample           --table <name> [--limit N]
   tune             [--profile dev|prod|safe]
 EOF
-  exit 1
 }
+
+case "${1:-}" in
+-h | --help | help)
+  usage
+  exit 0
+  ;;
+-V | --version | version)
+  printf 'sqlitex %s\n' "$VERSION"
+  exit 0
+  ;;
+esac
 
 # Parse global options
 while [[ $# -gt 0 && "$1" == --* ]]; do

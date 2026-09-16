@@ -2742,16 +2742,13 @@ phpx_syntax() {
   _phpx_progress() {
     (( show_progress )) || return 0
     local msg="$1"
-    # 
- = carriage return, [2K = clear whole line
-    printf '
-[2K%-*.*s' "$cols" "$cols" "$msg" >&2
+    # \r = carriage return, \033[2K = clear whole line
+    printf '\r\033[2K%-*.*s' "$cols" "$cols" "$msg" >&2
   }
 
   _phpx_clear_line() {
     (( show_progress )) || return 0
-    printf '
-[2K' >&2
+    printf '\r\033[2K' >&2
   }
 
   # Collect file list (null-safe)
