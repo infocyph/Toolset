@@ -28,4 +28,17 @@ if old not in t:
     raise SystemExit('migrate_up return block not found')
 t = t.replace(old, new, 1)
 
+old = '''ensure_db_exists() { [[ ! -f "$DB" ]] && log_error "Database '$DB' does not exist. Use 'create-db' first."; }
+'''
+new = '''ensure_db_exists() {
+  if [[ ! -f "$DB" ]]; then
+    log_error "Database '$DB' does not exist. Use 'create-db' first."
+  fi
+  return 0
+}
+'''
+if old not in t:
+    raise SystemExit('ensure_db_exists block not found')
+t = t.replace(old, new, 1)
+
 p.write_text(t)
