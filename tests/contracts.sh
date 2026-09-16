@@ -66,6 +66,30 @@ run_flag() {
     return
   fi
 
+  if [[ "$flag" == "--version" ]]; then
+    if [[ -s "$stderr_file" ]]; then
+      printf 'FAIL: %s --version wrote to stderr\n' "$name" >&2
+      failures=$((failures + 1))
+      return
+    fi
+
+    local line_count version_output
+    line_count=$(wc -l <"$stdout_file" | tr -d ' ')
+    version_output=$(cat "$stdout_file")
+
+    if [[ "$line_count" != "1" ]]; then
+      printf 'FAIL: %s --version must emit exactly one line\n' "$name" >&2
+      failures=$((failures + 1))
+      return
+    fi
+
+    if ! [[ "$version_output" =~ ^${name}[[:space:]][0-9]+\.[0-9]+(\.[0-9]+)?([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+      printf 'FAIL: %s --version output is not canonical: %s\n' "$name" "$version_output" >&2
+      failures=$((failures + 1))
+      return
+    fi
+  fi
+
   pass "$name $flag"
 }
 
