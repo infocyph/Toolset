@@ -85,6 +85,7 @@ else
 fi
 
 # Syntax checking is a generic PHP capability and must not depend on apt/systemd.
+# Its public contract is failure-only output: success is exit 0, not a required summary line.
 php_stub="$TMP_ROOT/php-stub"
 cat >"$php_stub" <<'EOF'
 #!/usr/bin/env bash
@@ -95,8 +96,12 @@ chmod +x "$php_stub"
 project="$TMP_ROOT/project"
 mkdir -p -- "$project"
 printf '<?php echo "ok";\n' >"$project/example.php"
-syntax_output="$(cd "$project" && PHPX_NO_LOG=1 bash "$ROOT_DIR/PHP/phpx" syntax --php "$php_stub" --no-progress)"
-assert_contains "$syntax_output" "No syntax errors found" "syntax command should complete via explicit PHP binary"
+set +e
+syntax_output="$(cd "$project" && PHPX_NO_LOG=1 bash "$ROOT_DIR/PHP/phpx" syntax --php "$php_stub" --no-progress 2>&1)"
+syntax_rc=$?
+set -e
+assert_eq "0" "$syntax_rc" "syntax command should succeed via explicit PHP binary"
+[[ "$syntax_output" != *"Parse error"* && "$syntax_output" != *"Fatal error"* ]] || fail "successful syntax run emitted an error"
 pass "syntax checker is independent of package/service backends"
 
 # Unknown commands must fail with a dedicated command error.
