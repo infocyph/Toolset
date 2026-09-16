@@ -113,6 +113,25 @@ Then it runs the same logic as commit/tag ranges. This keeps outputs consistent 
 
 Advanced overrides: `GITX_AI_PROVIDER=ollama|gemini|auto`, `GITX_OLLAMA_URL=<url>`.
 
+### Gemini fallback and API key
+
+With the default `GITX_AI_PROVIDER=auto`, `gitx ai-commit` checks the configured Ollama endpoint first. If Ollama is unreachable or has no installed model, `gitx` automatically selects Gemini.
+
+Gemini credentials are resolved in this order:
+
+1. `GEMINI_API_KEY` from the current environment.
+2. The opt-in Gitx credential file (`${XDG_CONFIG_HOME:-~/.config}/gitx/credentials`).
+3. An interactive prompt when neither source contains a key.
+
+The recommended non-persistent setup is the environment variable:
+
+```bash
+export GEMINI_API_KEY="your-api-key"
+gitx ai-commit
+```
+
+The environment value takes precedence over a persisted credential. Gitx does not persist the key unless persistence is explicitly requested (for example, `gitx ai-commit --persist-api-key` or `GITX_PERSIST_API_KEY=1`). Gemini requests send the key in the `x-goog-api-key` header rather than putting it in the request URL.
+
 ## Command Overview
 
 ### Repository & Branch Management

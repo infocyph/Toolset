@@ -206,6 +206,16 @@ resolve_ai_provider
 assert_eq gemini "$GITX_SELECTED_AI_PROVIDER" "Gemini fallback when Ollama is unavailable"
 pass "Gemini fallback is selected only when Ollama is unavailable"
 unset -f curl
+
+# Environment GEMINI_API_KEY takes precedence over the optional credential file.
+mkdir -p -- "$GITX_CONFIG_DIR"
+printf 'GEMINI_API_KEY=file-key\n' > "$GITX_CREDENTIAL_FILE"
+GEMINI_API_KEY='environment-key'
+load_gitx_config
+assert_eq environment-key "$GEMINI_API_KEY" "Gemini environment key precedence"
+pass "Gemini environment key is preferred over persisted credential"
+rm -f -- "$GITX_CREDENTIAL_FILE"
+
 GITX_OLLAMA_URL='http://127.0.0.1:11434'
 GITX_AI_PROVIDER=auto
 
