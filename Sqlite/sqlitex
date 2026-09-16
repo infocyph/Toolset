@@ -46,7 +46,12 @@ is_dry_run() { [[ "$DRY_RUN" == "true" ]]; }
 # ===========================================
 ensure_sqlite() { command -v sqlite3 >/dev/null 2>&1 || log_error "sqlite3 is required."; }
 ensure_jq() { command -v jq >/dev/null 2>&1 || log_error "jq is required for JSON seeding."; }
-ensure_db_exists() { [[ ! -f "$DB" ]] && log_error "Database '$DB' does not exist. Use 'create-db' first."; }
+ensure_db_exists() {
+  if [[ ! -f "$DB" ]]; then
+    log_error "Database '$DB' does not exist. Use 'create-db' first."
+  fi
+  return 0
+}
 
 validate_identifier() {
   [[ "${1:-}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || log_error "Unsafe SQL identifier: ${1:-<empty>}"
@@ -140,7 +145,8 @@ run_transaction_with_file() {
   local -a args=()
   [[ "$USE_BUSY_TIMEOUT" == true ]] && args=(-cmd ".timeout $BUSY_TIMEOUT_MS")
   {
-    printf 'BEGIN IMMEDIATE;
+    printf '.bail on
+BEGIN IMMEDIATE;
 '
     cat -- "$file"
     printf '
@@ -252,7 +258,10 @@ migrate_up() {
     next_sequence=$((next_sequence + 1))
     log_success "Migrated: $name"
   done
-  [[ "$applied_any" == false ]] && log_info "No new migrations to apply."
+  if [[ "$applied_any" == false ]]; then
+    log_info "No new migrations to apply."
+  fi
+  return 0
 }
 
 rollback_migration() {
