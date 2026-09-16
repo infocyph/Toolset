@@ -1,4 +1,4 @@
-name: Publish Toolset 2.0 RC1 once
+name: Publish Toolset 2.0 RC2 once
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-toolset-2.0-rc1-once
+  group: publish-toolset-2.0-rc2-once
   cancel-in-progress: false
 
 jobs:
@@ -20,8 +20,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      RELEASE_TAG: v2.0.0-rc.1
-      EXPECTED_CANDIDATE: 33601122135a3963252b92127e8d800138104007
+      RELEASE_TAG: v2.0.0-rc.2
+      EXPECTED_CANDIDATE: 624f1b1a2b7323f1ec41a96ba3ef5165ca8b517a
       GH_TOKEN: ${{ github.token }}
 
     steps:
