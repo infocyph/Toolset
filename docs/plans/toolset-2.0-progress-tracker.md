@@ -12,61 +12,76 @@ Legend: `[ ]` not started · `[-]` in progress · `[x]` done · `[!]` blocked / 
 
 **Phase 1 — Repository contract**
 
-Current task: resolve CI-discovered static/CLI-contract defects, then finish standardized version metadata and immutable release flow.
+Current task: validate the new manifest/release workflow, then replace mutable-`main` installation and self-update paths with the stable release contract.
 
 ## Phase 1 — Repository Contract
 
-- [-] Add baseline CI workflow for all seven tools.
+- [x] Add baseline CI workflow for all seven tools.
   - [x] `bash -n` all executable sources.
-  - [x] ShellCheck error-level gate is wired and reporting real defects.
+  - [x] ShellCheck error-level gate.
   - [x] Verify executable mode on all distributable tools.
-  - [-] Smoke `--help` for every tool.
-  - [-] Smoke `--version` for every tool.
+  - [x] Smoke `--help` for every tool.
+  - [x] Smoke canonical `--version` for every tool.
   - [x] Non-TTY/no-color baseline checks.
   - [x] Independent jobs so one failure does not hide other findings.
   - [x] Aggregate CI gate/job summary.
   - [x] CI reports uploaded as artifacts.
+  - [x] GitHub Actions workflow validation added with pinned `actionlint` 1.7.12.
 - [x] Add lightweight Bash test harness under `tests/`.
 - [x] Add Debian/Ubuntu/Fedora/Alpine distro syntax/pipeline smoke matrix.
 - [x] Add standalone distribution packaging/checksum snapshot job.
 - [x] Fix executable git modes.
   - [x] `Sqlite/sqlitex` → `100755`.
   - [x] `Clean/cleanx` → `100755`.
-- [-] Standardize per-tool `--version` / help contract.
-  - [x] `chromacat` currently passes CI contract.
-  - [x] `cleanx` currently passes CI contract.
-  - [!] `dockex` — `--help` and `--version` currently exit `1`.
-  - [!] `gitx` — `--help` and `--version` currently exit `1`.
-  - [x] `netx` currently passes CI contract.
-  - [x] `phpx` currently passes CI contract; metadata semantics still need review.
-  - [!] `sqlitex` — `--help` and `--version` currently exit `1`.
-- [ ] Define suite/tool version metadata policy.
-- [ ] Add release workflow.
-- [ ] Publish/check generated `SHA256SUMS`.
-- [ ] Publish/check generated `manifest.json`.
+- [x] Standardize per-tool `--version` / help contract.
+  - [x] `chromacat`
+  - [x] `cleanx`
+  - [x] `dockex`
+  - [x] `gitx`
+  - [x] `netx`
+  - [x] `phpx`
+  - [x] `sqlitex`
+- [x] Define suite/tool version metadata policy.
+  - [x] Suite release version comes from immutable `vMAJOR.MINOR.PATCH` Git tag.
+  - [x] Each standalone CLI exposes its own embedded tool version.
+  - [x] Tool versions may evolve independently of the suite release.
+  - [x] `manifest.json` records both suite identity and each tool's version/digest.
+- [-] Add immutable release workflow.
+  - [x] Strict `vMAJOR.MINOR.PATCH` tag validation.
+  - [x] Refuse to overwrite an existing GitHub release.
+  - [x] Re-run static and CLI-contract validation from tagged source.
+  - [x] Build all seven standalone assets.
+  - [x] Publish `SHA256SUMS` and `manifest.json` with assets.
+  - [-] Validate workflow through PR `actionlint`/CI gate.
+- [x] Generate and verify `SHA256SUMS`.
+- [x] Generate deterministic `manifest.json`.
 - [ ] Replace stable install contract that points at mutable `main`.
 - [ ] Replace self-update stable channel that points at mutable `main`.
 
-### CI Findings — Current
+### CI Findings — Resolved
 
-- [!] `Network/netx`: ShellCheck `SC1087` at the `port find` regex; `$port` must be braced before `[[:space:]]`.
-- [!] `PHP/phpx`: ShellCheck `SC2275` near the progress renderer; a carriage-return explanation line is malformed and parsed as a command.
-- [!] `dockex`: public `--help` / `--version` contract missing or returns non-zero.
-- [!] `gitx`: public `--help` / `--version` contract missing or returns non-zero.
-- [!] `sqlitex`: public `--help` / `--version` contract missing or returns non-zero.
+- [x] `Network/netx`: fixed ShellCheck `SC1087` by bracing the port expansion.
+- [x] `PHP/phpx`: fixed ShellCheck `SC2275` in the progress renderer by using explicit `\r` / `\033[2K` escapes.
+- [x] `dockex`: added dependency-independent successful `--help` / `--version` handling.
+- [x] `gitx`: made usage informational, added canonical `--version`, and separated unknown-command failure.
+- [x] `sqlitex`: added pre-database/pre-SQLite successful `--help` / `--version` handling.
+- [x] `phpx`: caught and fixed a CI false positive where `--version` returned exit 0 but printed full usage text.
+- [x] Version contract now requires exactly one canonical `<tool> <version>` stdout line and no stderr.
 - [x] Debian 13 distro smoke passes.
 - [x] Ubuntu 24.04 distro smoke passes.
 - [x] Fedora 42 distro smoke passes.
 - [x] Alpine 3.22 (with Bash installed) distro smoke passes.
 - [x] Baseline non-TTY/no-color smoke passes.
 - [x] Standalone packaging plus `SHA256SUMS` verification passes.
+- [x] Full CI gate reached green after resolving the original static/contract failures.
 
 ### Phase 1 Gate
 
-- [ ] Syntax/static/smoke CI passes completely.
+- [x] Syntax/static/smoke CI passes completely on the resolved baseline.
 - [x] All seven CLI artifacts are executable.
-- [ ] All seven expose stable help/version behavior.
-- [ ] Release assets can be built from an immutable tag.
+- [x] All seven expose stable help/version behavior.
+- [-] Release assets can be built and published from an immutable tag; workflow added, final PR validation pending.
+- [ ] Stable installation and stable self-update no longer depend on mutable `main`.
 
 ## Phase 2 — Critical Destructive/Data Paths
 
@@ -221,6 +236,8 @@ Current task: resolve CI-discovered static/CLI-contract defects, then finish sta
 - [x] Development `main` update paths, if retained, are explicit opt-in only.
 - [x] Risk-first implementation order is preferred over Docker dependency order.
 - [x] Keep draft PR `#47` open throughout implementation so CI/review findings stay visible.
+- [x] Suite version and individual tool versions are separate identities.
+- [x] Release manifest is deterministic: no build timestamp or other volatile field.
 
 ## Findings / Follow-ups
 
@@ -249,8 +266,13 @@ Current task: resolve CI-discovered static/CLI-contract defects, then finish sta
 | 2026-09-16 | Added lightweight assertion/static/smoke harness. | done |
 | 2026-09-16 | Opened draft PR #47 for continuous CI/review visibility. | done |
 | 2026-09-16 | Expanded CI into static, CLI-contract, 4-distro smoke, distribution artifact and aggregate gate jobs. | done |
-| 2026-09-16 | Initial expanded CI found 2 ShellCheck blockers and 3 tools missing successful help/version contracts. | in progress |
+| 2026-09-16 | Initial expanded CI found 2 ShellCheck blockers and 3 tools missing successful help/version contracts. | done |
+| 2026-09-16 | Fixed `netx`/`phpx` static defects and normalized `dockex`/`gitx`/`sqlitex` CLI contracts. | done |
+| 2026-09-16 | Full original CI matrix/gate reached green. | done |
+| 2026-09-16 | Strengthened version tests; discovered `phpx --version` false-positive usage output and fixed it. | done |
+| 2026-09-16 | Added deterministic release `manifest.json` generation from actual packaged tool version output and SHA-256 digests. | done |
+| 2026-09-16 | Added immutable semantic-tag release workflow and pinned actionlint workflow validation. | in progress |
 
 ## Next Task
 
-Fix the two ShellCheck blockers (`netx`, `phpx`) and standardize `dockex`, `gitx`, and `sqlitex` `--help`/`--version` behavior so the foundational CI gate can turn green before deeper behavioral hardening begins.
+Validate the new release/actionlint path through PR #47, then replace mutable-`main` stable installation and self-update paths with exact release assets/checksum verification. After that, close the Phase 1 repository-contract gate and begin Phase 2 with `cleanx`.
