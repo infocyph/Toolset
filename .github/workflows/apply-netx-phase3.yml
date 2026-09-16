@@ -38,7 +38,7 @@ jobs:
         run: |
           bash -n Network/netx
           shellcheck --severity=error Network/netx tests/netx.sh
-          bash tests/netx.sh
+          bash -x tests/netx.sh
 
       - name: Commit netx hardening
         run: |
