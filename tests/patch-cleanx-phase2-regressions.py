@@ -71,4 +71,9 @@ replace_once(
     "    rpm -qa --qf '%{SIZE}\\t%{NAME}\\n' | sort -nr | sed -n '1,30p' |\n",
 )
 
+# Read-only reporting must remain useful on partially restricted systems.
+replace_once('  inode_top_current_dir\n', '  inode_top_current_dir || true\n')
+replace_once('  inode_hotspots_var\n', '  inode_hotspots_var || true\n')
+replace_once('  inode_deleted_open_files\n', '  inode_deleted_open_files || true\n')
+
 path.write_text(text)
