@@ -1,0 +1,54 @@
+name: Apply stable release channels
+
+on:
+  push:
+    branches:
+      - plan/toolset-linux-cli-hardening
+    paths:
+      - .github/workflows/apply-stable-release-channels.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+        with:
+          ref: plan/toolset-linux-cli-hardening
+
+      - name: Apply stable release migration
+        run: python3 tests/patch-stable-release-channels.py
+
+      - name: Validate changed shell sources
+        run: |
+          bash -n Git/gitx
+          bash -n PHP/phpx
+          bash -n ChromaCat/chromacat
+          bash -n Clean/cleanx
+
+      - name: Verify mutable main URLs are removed from stable paths
+        run: |
+          if grep -R -nF 'raw.githubusercontent.com/infocyph/Toolset/main' \
+            README.md ChromaCat Clean Docker Git Network PHP Sqlite; then
+            echo 'Mutable main URL remains in a stable path.' >&2
+            exit 1
+          fi
+
+      - name: Commit migration
+        run: |
+          if git diff --quiet; then
+            echo 'Stable release channel migration already applied.'
+            exit 0
+          fi
+          git config user.name 'A. B. M. Mahmudul Hasan'
+          git config user.email 'abmmhasan@users.noreply.github.com'
+          git add ChromaCat/chromacat Clean/cleanx Git/gitx PHP/phpx \
+            ChromaCat/README.md Clean/README.md Docker/README.md Git/README.md \
+            Network/README.md PHP/README.md Sqlite/README.md
+          git commit -m 'fix: move installs and self-updates to stable releases'
+          git push origin HEAD:plan/toolset-linux-cli-hardening
