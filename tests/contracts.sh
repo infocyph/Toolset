@@ -24,6 +24,7 @@ mkdir -p -- "$REPORT_DIR"
 TMP_HOME="$(mktemp -d)"
 trap 'rm -rf -- "$TMP_HOME"' EXIT
 
+EXPECTED_VERSION="${TOOLSET_EXPECTED_VERSION:-2.0}"
 failures=0
 
 run_flag() {
@@ -83,8 +84,8 @@ run_flag() {
       return
     fi
 
-    if ! [[ "$version_output" =~ ^${name}[[:space:]][0-9]+\.[0-9]+(\.[0-9]+)?([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
-      printf 'FAIL: %s --version output is not canonical: %s\n' "$name" "$version_output" >&2
+    if [[ "$version_output" != "$name $EXPECTED_VERSION" ]]; then
+      printf 'FAIL: %s --version must report suite version %s: %s\n' "$name" "$EXPECTED_VERSION" "$version_output" >&2
       failures=$((failures + 1))
       return
     fi

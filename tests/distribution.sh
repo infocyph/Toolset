@@ -43,7 +43,7 @@ pass "packaged installer asset: install.sh"
 pass "SHA256SUMS generated and verified"
 
 DIST_DIR="$DIST_DIR" \
-SUITE_VERSION="${SUITE_VERSION:-2.0.0-dev}" \
+SUITE_VERSION="${SUITE_VERSION:-2.0}" \
 RELEASE_TAG="${RELEASE_TAG:-}" \
 SOURCE_COMMIT="${SOURCE_COMMIT:-}" \
   python3 tests/generate-manifest.py >/dev/null
@@ -69,7 +69,7 @@ for entry in manifest["tools"]:
     artifact = manifest_path.parent / entry["asset"]
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
     assert entry["sha256"] == digest
-    assert entry["version"]
+    assert entry["version"] == manifest["suite"]["version"]
 
 installer = manifest["installer"]
 installer_path = manifest_path.parent / installer["asset"]
