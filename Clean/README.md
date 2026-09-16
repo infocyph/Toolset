@@ -1,5 +1,67 @@
 # cleanx
 
+<!-- TOOLSET2-CONTRACT:START -->
+## Purpose
+
+Safe modular disk/inode cleanup with reporting, quota controls and explicit application of destructive actions.
+
+## Install
+
+Latest stable (checksum-verifying installer):
+
+```bash
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh cleanx
+```
+
+Exact reproducible release:
+
+```bash
+bash install.sh --release v2.0.0 cleanx
+```
+
+## Requirements
+
+Bash and standard Linux filesystem/core utilities. Package/journal/container/cache cleanup commands are capability-gated.
+
+## Supported platforms/capabilities
+
+Generic Linux for filesystem/report functions, with explicit package-manager and service-specific capabilities where available.
+
+See [`../docs/cli-contracts.md`](../docs/cli-contracts.md) for the suite capability matrix.
+
+## Quick start
+
+```bash
+cleanx --report
+cleanx --report --json
+cleanx --help
+```
+
+## Command reference
+
+`cleanx --help` is the authoritative live command reference. `cleanx --version` prints the installed tool version. The detailed reference below expands on command-specific behavior.
+
+## Destructive/security behavior
+
+Dry-run is the default; actual deletion requires explicit approval. Delete roots and target users are validated, config is declarative, locking is private/atomic, and overwrite-style secure erase is not guaranteed on SSD/COW/snapshot storage.
+
+## Exit/output contract
+
+Exit `0` means success; non-zero means the requested operation did not complete successfully. Machine-readable modes reserve stdout for data and send diagnostics to stderr. Do not parse undocumented human wording as a stable API.
+
+## Self-update
+
+Where `cleanx` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=vX.Y.Z[-rc.N]` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
+
+## Examples
+
+```bash
+cleanx --report
+sudo cleanx --yes logs tmp
+```
+<!-- TOOLSET2-CONTRACT:END -->
+
 `cleanx` is a **safe, modular, dry-run-by-default** disk & inode cleaner for Linux.
 Think “CCleaner for servers,” but **Bash-only, scriptable, and fast**.
 

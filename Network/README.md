@@ -1,5 +1,67 @@
 # netx
 
+<!-- TOOLSET2-CONTRACT:START -->
+## Purpose
+
+Capability-driven Linux networking diagnostics covering endpoints, DNS, TLS, HTTP, routes, firewall inspection, capture and security-oriented guards.
+
+## Install
+
+Latest stable (checksum-verifying installer):
+
+```bash
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh netx
+```
+
+Exact reproducible release:
+
+```bash
+bash install.sh --release v2.0.0 netx
+```
+
+## Requirements
+
+Bash plus only the dependency needed by the selected subcommand, such as `ip`, `ss`, `dig`/`getent`, `curl`, `openssl`, `nft`/`iptables` or `tcpdump`.
+
+## Supported platforms/capabilities
+
+Generic Linux. Privileged firewall/capture/namespace features are capability-gated; nftables is preferred with iptables fallback where applicable.
+
+See [`../docs/cli-contracts.md`](../docs/cli-contracts.md) for the suite capability matrix.
+
+## Quick start
+
+```bash
+netx --help
+netx ip info
+netx route show
+```
+
+## Command reference
+
+`netx --help` is the authoritative live command reference. `netx --version` prints the installed tool version. The detailed reference below expands on command-specific behavior.
+
+## Destructive/security behavior
+
+TLS and guard execution are argv-safe, bounded network operations have finite timeout defaults, JSON paths are validated, and suspicious scoring is heuristic evidence rather than authoritative malware detection.
+
+## Exit/output contract
+
+Exit `0` means success; non-zero means the requested operation did not complete successfully. Machine-readable modes reserve stdout for data and send diagnostics to stderr. Do not parse undocumented human wording as a stable API.
+
+## Self-update
+
+Where `netx` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=vX.Y.Z[-rc.N]` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
+
+## Examples
+
+```bash
+netx route explain 127.0.0.1
+netx --json route explain 127.0.0.1
+```
+<!-- TOOLSET2-CONTRACT:END -->
+
 `netx` is a **network toolbox CLI** for diagnostics, security and quick benchmarks:
 
 * End-to-end “doctor” checks for any host (DNS, ping, route, port, HTTP, TLS)

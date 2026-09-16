@@ -1,5 +1,68 @@
 # gitx
 
+<!-- TOOLSET2-CONTRACT:START -->
+## Purpose
+
+Repository workflow, reporting, safe interactive Git operations and optional Gemini-assisted commit generation.
+
+## Install
+
+Latest stable (checksum-verifying installer):
+
+```bash
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh gitx
+```
+
+Exact reproducible release:
+
+```bash
+bash install.sh --release v2.0.0 gitx
+```
+
+## Requirements
+
+Bash and Git. Gemini-backed commands additionally need network access, `curl`, a valid API key and the JSON helpers used by that command.
+
+## Supported platforms/capabilities
+
+Generic Linux Git workflows are distro-independent. Editor/pager and optional AI behavior follow the capabilities available on the host.
+
+See [`../docs/cli-contracts.md`](../docs/cli-contracts.md) for the suite capability matrix.
+
+## Quick start
+
+```bash
+gitx status
+gitx summary HEAD~20
+gitx doctor
+```
+
+## Command reference
+
+`gitx --help` is the authoritative live command reference. `gitx --version` prints the installed tool version. The detailed reference below expands on command-specific behavior.
+
+## Destructive/security behavior
+
+Repository-changing commands mutate the current Git repository. Interactive path handling is NUL-safe. Gemini settings are declarative, API-key persistence is explicit opt-in, sensitive-looking staged paths are rejected by default, and AI requests are timeout/size bounded.
+
+## Exit/output contract
+
+Exit `0` means success; non-zero means the requested operation did not complete successfully. Machine-readable modes reserve stdout for data and send diagnostics to stderr. Do not parse undocumented human wording as a stable API.
+
+## Self-update
+
+Where `gitx` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=vX.Y.Z[-rc.N]` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
+
+## Examples
+
+```bash
+gitx commit
+gitx worklog HEAD~20..HEAD
+gitx ai-commit
+```
+<!-- TOOLSET2-CONTRACT:END -->
+
 `gitx` is an opinionated Git helper focused on:
 
 * Branch workflows (`feature` / `bugfix` / `hotfix` / `release` / `docs` / `ci` / `experiment`)

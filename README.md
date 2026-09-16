@@ -95,6 +95,19 @@ install -m 0755 "$tool" "$HOME/.local/bin/$tool"
 
 Release tags follow strict `vMAJOR.MINOR.PATCH` versioning. Published release assets are treated as immutable.
 
+
+<!-- TOOLSET2-ROOT-CONTRACT:START -->
+## Support, Safety & Automation Contracts
+
+- [CLI dependency/capability, security and output contracts](docs/cli-contracts.md)
+- [Toolset 2.0 implementation plan](docs/plans/toolset-2.0-standalone-linux-cli-hardening-plan.md)
+- [Live 2.0 implementation tracker](docs/plans/toolset-2.0-progress-tracker.md)
+- [2.0 security review](docs/security-review.md)
+
+Toolset targets Linux with capability-gated features rather than claiming identical behavior on every distribution. CI smoke-covers Debian 13, Ubuntu 24.04, Fedora 42 and Alpine 3.22 with Bash. High-impact operations remain tool-specific and are documented in each tool README and the suite contract.
+
+Released consumers should pin an immutable release tag or commit SHA. Release candidates are GitHub prereleases used for acceptance/downstream integration; stable `vMAJOR.MINOR.PATCH` assets remain immutable.
+<!-- TOOLSET2-ROOT-CONTRACT:END -->
 ---
 
 ## Development Builds

@@ -1,5 +1,65 @@
 # sqlitex
 
+<!-- TOOLSET2-CONTRACT:START -->
+## Purpose
+
+SQLite administration, queries, migrations, seeds, import/export, backup/restore and tuning.
+
+## Install
+
+Latest stable (checksum-verifying installer):
+
+```bash
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh sqlitex
+```
+
+Exact reproducible release:
+
+```bash
+bash install.sh --release v2.0.0 sqlitex
+```
+
+## Requirements
+
+Bash and `sqlite3`; import/export helpers may require additional utilities documented by the selected command.
+
+## Supported platforms/capabilities
+
+Generic Linux anywhere Bash and SQLite are available. Database/path permissions determine whether elevation is required.
+
+See [`../docs/cli-contracts.md`](../docs/cli-contracts.md) for the suite capability matrix.
+
+## Quick start
+
+```bash
+sqlitex --help
+sqlitex --version
+```
+
+## Command reference
+
+`sqlitex --help` is the authoritative live command reference. `sqlitex --version` prints the installed tool version. The detailed reference below expands on command-specific behavior.
+
+## Destructive/security behavior
+
+Database mutation is explicit. Backups use SQLite-native consistent snapshots, migration SQL/tracking are transactional where SQLite permits, identifiers are validated/quoted, and raw SQL/expression options remain intentionally powerful.
+
+## Exit/output contract
+
+Exit `0` means success; non-zero means the requested operation did not complete successfully. Machine-readable modes reserve stdout for data and send diagnostics to stderr. Do not parse undocumented human wording as a stable API.
+
+## Self-update
+
+Where `sqlitex` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=vX.Y.Z[-rc.N]` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
+
+## Examples
+
+```bash
+sqlitex --help
+```
+<!-- TOOLSET2-CONTRACT:END -->
+
 `sqlitex` is a non-interactive, flag-based SQLite CLI:
 
 * CRUD operations
