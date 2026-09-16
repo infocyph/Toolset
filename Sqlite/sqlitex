@@ -12,8 +12,8 @@ MIGRATIONS_PATH="./migrations"
 SEEDS_PATH="./seeds"
 BACKUP_DIR="./db_backups"
 EXPORT_DIR="./exports"
-USE_LOCK="false"
-BUSY_TIMEOUT_MS=5000 # Used when --use-lock is enabled
+USE_BUSY_TIMEOUT="false"
+BUSY_TIMEOUT_MS=5000
 DRY_RUN="false"      # Global dry-run flag
 
 # Computed later after parsing ENV
@@ -48,40 +48,55 @@ ensure_sqlite() { command -v sqlite3 >/dev/null 2>&1 || log_error "sqlite3 is re
 ensure_jq() { command -v jq >/dev/null 2>&1 || log_error "jq is required for JSON seeding."; }
 ensure_db_exists() { [[ ! -f "$DB" ]] && log_error "Database '$DB' does not exist. Use 'create-db' first."; }
 
+validate_identifier() {
+  [[ "${1:-}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || log_error "Unsafe SQL identifier: ${1:-<empty>}"
+}
+
+quote_identifier() {
+  validate_identifier "$1"
+  printf '"%s"' "$1"
+}
+
+sql_literal() {
+  local value="$1"
+  value=${value//\'/\'\'}
+  printf "'%s'" "$value"
+}
+
 human_size() {
-  local bytes=$1
-  local unit="B"
-  local value=$bytes
-
-  if ((bytes >= 1099511627776)); then
-    unit="TB"
-    value=$((bytes / 1099511627776))
-  elif ((bytes >= 1073741824)); then
-    unit="GB"
-    value=$((bytes / 1073741824))
-  elif ((bytes >= 1048576)); then
-    unit="MB"
-    value=$((bytes / 1048576))
-  elif ((bytes >= 1024)); then
-    unit="KB"
-    value=$((bytes / 1024))
-  fi
-
+  local bytes=$1 unit=B value=$bytes
+  if ((bytes >= 1099511627776)); then unit=TB; value=$((bytes / 1099511627776));
+  elif ((bytes >= 1073741824)); then unit=GB; value=$((bytes / 1073741824));
+  elif ((bytes >= 1048576)); then unit=MB; value=$((bytes / 1048576));
+  elif ((bytes >= 1024)); then unit=KB; value=$((bytes / 1024)); fi
   echo "${value}${unit}"
 }
 
+sqlite_invoke() {
+  local -a args=()
+  if [[ "$USE_BUSY_TIMEOUT" == true ]]; then args+=(-cmd ".timeout $BUSY_TIMEOUT_MS"); fi
+  sqlite3 "${args[@]}" "$DB" "$@"
+}
+
+integrity_ok() {
+  [[ "$(sqlite_invoke 'PRAGMA integrity_check;' 2>/dev/null)" == ok ]]
+}
+
 backup_db() {
-  mkdir -p "$BACKUP_DIR"
-  local base ts file
+  local base ts file escaped
   base=$(basename "${DB%.db}")
-  ts=$(date +%Y%m%d_%H%M%S)
+  ts=$(date +%Y%m%d_%H%M%S_%N)
   file="$BACKUP_DIR/${base}_${ts}.db"
   if is_dry_run; then
-    log_info "DRY-RUN: would create backup at: $file"
-  else
-    cp "$DB" "$file"
-    log_info "Backup created at: $file"
+    log_info "DRY-RUN: would create SQLite-consistent backup at: $file"
+    return 0
   fi
+  mkdir -p -- "$BACKUP_DIR"
+  escaped=${file//\'/\'\'}
+  sqlite_invoke ".backup '$escaped'" || log_error "SQLite backup failed."
+  [[ -s "$file" ]] || log_error "SQLite backup is empty: $file"
+  [[ "$(sqlite3 "$file" 'PRAGMA integrity_check;' 2>/dev/null)" == ok ]] || log_error "Backup integrity check failed: $file"
+  log_info "Backup created at: $file"
 }
 
 # ===========================================
@@ -98,130 +113,163 @@ timer_end() {
 # ===========================================
 # SQL Execution Helpers (with optional timeout)
 # ===========================================
-run_sql() {
-  local sql="$1"
-  if [[ "$USE_LOCK" == "true" ]]; then
-    sqlite3 "$DB" -cmd ".timeout $BUSY_TIMEOUT_MS" "$sql"
-  else
-    sqlite3 "$DB" "$sql"
-  fi
-}
-
+run_sql() { sqlite_invoke "$1"; }
 run_sql_file() {
-  local file="$1"
-  if [[ "$USE_LOCK" == "true" ]]; then
-    sqlite3 "$DB" -cmd ".timeout $BUSY_TIMEOUT_MS" <"$file"
-  else
-    sqlite3 "$DB" <"$file"
-  fi
+  local file="$1" args=()
+  [[ "$USE_BUSY_TIMEOUT" == true ]] && args=(-cmd ".timeout $BUSY_TIMEOUT_MS")
+  sqlite3 "${args[@]}" "$DB" <"$file"
 }
 
 execute_sql_mutating() {
   local sql="$1"
-  if is_dry_run; then
-    log_info "DRY-RUN SQL: $sql"
-  else
-    run_sql "$sql"
-  fi
+  if is_dry_run; then log_info "DRY-RUN SQL: $sql"; else run_sql "$sql"; fi
 }
 
 execute_file_mutating() {
   local file="$1"
+  if is_dry_run; then log_info "DRY-RUN FILE: $file"; else run_sql_file "$file"; fi
+}
+
+run_transaction_with_file() {
+  local file="$1" trailing_sql="$2"
   if is_dry_run; then
-    log_info "DRY-RUN FILE: $file"
-  else
-    run_sql_file "$file"
+    log_info "DRY-RUN TRANSACTION FILE: $file"
+    log_info "DRY-RUN TRANSACTION SQL: $trailing_sql"
+    return 0
   fi
+  local -a args=()
+  [[ "$USE_BUSY_TIMEOUT" == true ]] && args=(-cmd ".timeout $BUSY_TIMEOUT_MS")
+  {
+    printf 'BEGIN IMMEDIATE;
+'
+    cat -- "$file"
+    printf '
+%s
+COMMIT;
+' "$trailing_sql"
+  } | sqlite3 "${args[@]}" "$DB"
 }
 
 # ===========================================
 # JSON/CSV Import Helpers
 # ===========================================
 detect_columns() {
-  sqlite3 "$DB" "PRAGMA table_info($1);" | awk -F'|' '{print $2}' | xargs
+  local table="$1" qtable
+  qtable="$(quote_identifier "$table")"
+  sqlite_invoke "PRAGMA table_info($qtable);" | awk -F'|' '{print $2}'
 }
 
 import_csv() {
-  local file="$1" table="$2"
-
-  if is_dry_run; then
-    log_info "DRY-RUN: would import CSV '$file' into table '$table'"
-    return 0
-  fi
-
-  sqlite3 "$DB" <<EOF
+  local file="$1" table="$2" skip_header="${3:-1}"
+  validate_identifier "$table"
+  [[ -f "$file" ]] || log_error "CSV seed not found: $file"
+  if is_dry_run; then log_info "DRY-RUN: would import CSV '$file' into table '$table' (header-skip=$skip_header)"; return 0; fi
+  local tmp
+  tmp=$(mktemp) || log_error "Unable to allocate CSV import temp file."
+  trap 'rm -f -- "$tmp"' RETURN
+  cp -- "$file" "$tmp"
+  if [[ "$skip_header" == 1 ]]; then
+    sqlite_invoke <<EOF
 .mode csv
-.import '$file' $table
+.import --skip 1 "$tmp" "$table"
 EOF
+  else
+    sqlite_invoke <<EOF
+.mode csv
+.import "$tmp" "$table"
+EOF
+  fi
 }
 
 import_json() {
   local file="$1" table="$2"
   ensure_jq
+  validate_identifier "$table"
+  [[ -f "$file" ]] || log_error "JSON seed not found: $file"
+  jq -e 'type == "array" and all(.[]; type == "object")' "$file" >/dev/null || log_error "JSON seed must be an array of objects."
+  if is_dry_run; then log_info "DRY-RUN: would import JSON '$file' into table '$table' preserving JSON null as SQL NULL"; return 0; fi
+  [[ "$(sqlite_invoke "SELECT json_valid('[]');" 2>/dev/null)" == 1 ]] || log_error "SQLite JSON functions are required for JSON import."
+  [[ "$(jq 'length' "$file")" != 0 ]] || return 0
 
-  if is_dry_run; then
-    log_info "DRY-RUN: would import JSON '$file' into table '$table'"
-    return 0
-  fi
-
-  local tmp
-  tmp=$(mktemp)
-  jq -r '(.[0] | keys_unsorted) as $k | $k, (.[] | [.[ $k[] ]])[] | @csv' "$file" >"$tmp"
-  import_csv "$tmp" "$table"
-  rm "$tmp"
+  local -a keys=() actual=()
+  mapfile -t keys < <(jq -r '[.[] | keys[]] | unique[]' "$file")
+  mapfile -t actual < <(detect_columns "$table")
+  ((${#keys[@]})) || return 0
+  local key found columns='' expressions='' sep='' qtable path_literal file_abs file_literal
+  for key in "${keys[@]}"; do
+    validate_identifier "$key"
+    found=0
+    local col
+    for col in "${actual[@]}"; do [[ "$col" == "$key" ]] && found=1 && break; done
+    ((found)) || log_error "JSON key '$key' is not a column in table '$table'."
+    columns+="$sep\"$key\""
+    path_literal="$(sql_literal "$.${key}")"
+    expressions+="$sep json_extract(value, $path_literal)"
+    sep=','
+  done
+  qtable="$(quote_identifier "$table")"
+  file_abs="$(cd -- "$(dirname -- "$file")" && pwd)/$(basename -- "$file")"
+  file_literal="$(sql_literal "$file_abs")"
+  sqlite_invoke "INSERT INTO $qtable ($columns) SELECT $expressions FROM json_each(CAST(readfile($file_literal) AS TEXT));"
 }
 
 # ===========================================
 # Migration Functions
 # ===========================================
 ensure_migration_table() {
-  execute_sql_mutating "CREATE TABLE IF NOT EXISTS $MIG_TABLE (
-    migration_file TEXT PRIMARY KEY,
-    applied_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+  if is_dry_run; then return 0; fi
+  sqlite_invoke "CREATE TABLE IF NOT EXISTS $MIG_TABLE (
+    migration_file TEXT NOT NULL UNIQUE,
+    sequence INTEGER,
+    applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   );"
+  local has_sequence
+  has_sequence=$(sqlite_invoke "PRAGMA table_info($MIG_TABLE);" | awk -F'|' '$2=="sequence"{print 1}')
+  if [[ -z "$has_sequence" ]]; then sqlite_invoke "ALTER TABLE $MIG_TABLE ADD COLUMN sequence INTEGER;"; fi
+  sqlite_invoke "UPDATE $MIG_TABLE SET sequence=rowid WHERE sequence IS NULL;"
+  sqlite_invoke "CREATE UNIQUE INDEX IF NOT EXISTS ${MIG_TABLE}_sequence_uq ON $MIG_TABLE(sequence);"
 }
 
 migrate_up() {
   ensure_db_exists
   ensure_migration_table
-
-  local applied name safe_name applied_any=false
-  applied=$(sqlite3 "$DB" "SELECT migration_file FROM $MIG_TABLE;")
-
-  for file in "$MIGRATIONS_PATH"/*.sql; do
-    [[ -f "$file" ]] || continue
-    [[ "$file" =~ \.down\.sql$ ]] && continue
-    name=$(basename "$file")
-
-    if ! grep -qx "$name" <<<"$applied"; then
-      applied_any=true
-      log_info "Applying migration: $name"
-      execute_file_mutating "$file"
-      safe_name=${name//\'/\'\'}
-      execute_sql_mutating "INSERT INTO $MIG_TABLE(migration_file) VALUES('$safe_name');"
-      log_success "Migrated: $name"
-    fi
-  done
-
-  if [[ "$applied_any" == "false" ]]; then
-    log_info "No new migrations to apply."
+  local applied='' file name safe_name applied_any=false next_sequence=1
+  if ! is_dry_run && [[ "$(sqlite_invoke "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=$(sql_literal "$MIG_TABLE");")" != 0 ]]; then
+    applied=$(sqlite_invoke "SELECT migration_file FROM $MIG_TABLE;")
+    next_sequence=$(sqlite_invoke "SELECT COALESCE(MAX(sequence),0)+1 FROM $MIG_TABLE;")
   fi
+  local -a files=()
+  if [[ -d "$MIGRATIONS_PATH" ]]; then mapfile -d '' -t files < <(find "$MIGRATIONS_PATH" -maxdepth 1 -type f -name '*.sql' ! -name '*.down.sql' -print0 | sort -z); fi
+  for file in "${files[@]}"; do
+    name=$(basename -- "$file")
+    grep -Fxq "$name" <<<"$applied" && continue
+    applied_any=true
+    safe_name="$(sql_literal "$name")"
+    log_info "Applying migration: $name"
+    run_transaction_with_file "$file" "INSERT INTO $MIG_TABLE(migration_file,sequence) VALUES($safe_name,$next_sequence);" || log_error "Migration failed and was rolled back: $name"
+    applied+=$'
+'"$name"
+    next_sequence=$((next_sequence + 1))
+    log_success "Migrated: $name"
+  done
+  [[ "$applied_any" == false ]] && log_info "No new migrations to apply."
 }
 
 rollback_migration() {
   ensure_db_exists
   ensure_migration_table
-  local last down_file
-  last=$(sqlite3 "$DB" "SELECT migration_file FROM $MIG_TABLE ORDER BY applied_at DESC LIMIT 1;")
-  [[ -z "$last" ]] && log_info "No migrations to rollback." && return
-
+  if is_dry_run; then
+    log_info "DRY-RUN: would rollback the most recently sequenced migration."
+    return 0
+  fi
+  local last down_file safe_last
+  last=$(sqlite_invoke "SELECT migration_file FROM $MIG_TABLE ORDER BY sequence DESC LIMIT 1;")
+  [[ -z "$last" ]] && { log_info "No migrations to rollback."; return 0; }
   down_file="$MIGRATIONS_PATH/${last%.sql}.down.sql"
   [[ -f "$down_file" ]] || log_error "Down script not found: $down_file"
-
+  safe_last="$(sql_literal "$last")"
   log_info "Rolling back: $last"
-  execute_file_mutating "$down_file"
-  local safe_last=${last//\'/\'\'}
-  execute_sql_mutating "DELETE FROM $MIG_TABLE WHERE migration_file='$safe_last';"
+  run_transaction_with_file "$down_file" "DELETE FROM $MIG_TABLE WHERE migration_file=$safe_last;" || log_error "Rollback failed; migration history was preserved."
   log_success "Rolled back: $last"
 }
 
@@ -259,15 +307,10 @@ seed_all() {
 # ===========================================
 reset_db() {
   ensure_db_exists
-
-  if is_dry_run; then
-    log_info "DRY-RUN: would reset database '$DB' (drop file, migrate, seed)."
-    return 0
-  fi
-
+  if is_dry_run; then log_info "DRY-RUN: would backup and reset '$DB', including WAL/SHM sidecars, then migrate and seed."; return 0; fi
   backup_db
-  rm "$DB"
-  : >"$DB"
+  rm -f -- "$DB" "${DB}-wal" "${DB}-shm" "${DB}-journal"
+  sqlite3 "$DB" '' || log_error "Failed to recreate database: $DB"
   log_success "Database reset: $DB"
   migrate_up
   seed_all
@@ -278,6 +321,7 @@ reset_db() {
 # ===========================================
 show_schema() {
   ensure_db_exists
+  validate_identifier "$1"
   sqlite3 "$DB" ".schema $1"
 }
 
@@ -285,41 +329,34 @@ show_schema() {
 # Record Operations
 # ===========================================
 select_records() {
-  local table="$1" where_clause="${2:-1=1}" export_fmt="${3:-}"
-  ensure_db_exists
-  timer_start
-  if [[ "$export_fmt" == "csv" ]]; then
-    mkdir -p "$EXPORT_DIR"
-    local f="$EXPORT_DIR/${table}_$(date +%Y%m%d_%H%M%S).csv"
-    sqlite3 -header -csv "$DB" "SELECT * FROM $table WHERE $where_clause;" >"$f"
-    log_success "Exported CSV: $f"
-  elif [[ "$export_fmt" == "json" ]]; then
-    local json_data
-    json_data=$(sqlite3 -json "$DB" "SELECT * FROM $table WHERE $where_clause;")
-    echo "$json_data"
+  local table="$1" where_clause="${2:-1=1}" export_fmt="${3:-}" qtable
+  ensure_db_exists; qtable="$(quote_identifier "$table")"; timer_start
+  if [[ -n "$export_fmt" ]]; then
+    [[ "$export_fmt" == csv || "$export_fmt" == json ]] || log_error "select: --export must be csv or json"
+    local f="$EXPORT_DIR/${table}_$(date +%Y%m%d_%H%M%S).${export_fmt}"
+    if is_dry_run; then log_info "DRY-RUN: would export $table as $export_fmt to $f"; timer_end; return 0; fi
+    mkdir -p -- "$EXPORT_DIR"
+    if [[ "$export_fmt" == csv ]]; then sqlite3 -header -csv "$DB" "SELECT * FROM $qtable WHERE $where_clause;" >"$f"; else sqlite3 -json "$DB" "SELECT * FROM $qtable WHERE $where_clause;" >"$f"; fi
+    log_success "Exported ${export_fmt^^}: $f"
   else
-    sqlite3 -header -column "$DB" "SELECT * FROM $table WHERE $where_clause;"
+    sqlite3 -header -column "$DB" "SELECT * FROM $qtable WHERE $where_clause;"
   fi
   timer_end
 }
 
 update_record() {
-  local table="$1" set_clause="$2" where_clause="$3"
-  ensure_db_exists
-  backup_db
-  timer_start
-  execute_sql_mutating "UPDATE $table SET $set_clause WHERE $where_clause"
-  timer_end
+  local table="$1" set_clause="$2" where_clause="$3" qtable
+  ensure_db_exists; qtable="$(quote_identifier "$table")"
+  is_dry_run || backup_db
+  timer_start; execute_sql_mutating "UPDATE $qtable SET $set_clause WHERE $where_clause"; timer_end
   log_success "Updated table: $table"
 }
 
 delete_record() {
-  local table="$1" where_clause="$2"
-  ensure_db_exists
-  backup_db
-  timer_start
-  execute_sql_mutating "DELETE FROM $table WHERE $where_clause"
-  timer_end
+  local table="$1" where_clause="$2" qtable
+  ensure_db_exists; qtable="$(quote_identifier "$table")"
+  is_dry_run || backup_db
+  timer_start; execute_sql_mutating "DELETE FROM $qtable WHERE $where_clause"; timer_end
   log_success "Deleted from: $table"
 }
 
@@ -327,11 +364,11 @@ delete_record() {
 # Command Implementations (cmd_*)
 # ===========================================
 cmd_create_db() {
-  mkdir -p "$(dirname "$DB")"
   if is_dry_run; then
     log_info "DRY-RUN: would create database: $DB"
     return 0
   fi
+  mkdir -p -- "$(dirname "$DB")"
   sqlite3 "$DB" "" &&
     log_success "Database created: $DB"
 }
@@ -352,8 +389,9 @@ cmd_create_table() {
     esac
   done
   [[ -z $table || -z $cols ]] && usage
+  validate_identifier "$table"
   ensure_db_exists
-  execute_sql_mutating "CREATE TABLE IF NOT EXISTS $table ($cols)" &&
+  execute_sql_mutating "CREATE TABLE IF NOT EXISTS "$table" ($cols)" &&
     log_success "Table created: $table"
 }
 
@@ -373,8 +411,9 @@ cmd_insert() {
     esac
   done
   [[ -z $table || -z $vals ]] && usage
+  validate_identifier "$table"
   ensure_db_exists
-  execute_sql_mutating "INSERT INTO $table VALUES ($vals)" &&
+  execute_sql_mutating "INSERT INTO "$table" VALUES ($vals)" &&
     log_success "Inserted into: $table"
 }
 
@@ -580,6 +619,8 @@ cmd_info() {
   echo "Foreign keys:   $([[ "$fk_enabled" == "1" ]] && echo "ON" || echo "OFF")"
   echo "User tables:    ${n_tables}"
 
+  is_dry_run || mkdir -p -- "$EXPORT_DIR"
+
   local tables
   tables=$(sqlite3 "$DB" "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 20;")
   if [[ -n "$tables" ]]; then
@@ -641,18 +682,14 @@ cmd_doctor() {
 
 cmd_optimize() {
   ensure_db_exists
-  if is_dry_run; then
-    log_info "DRY-RUN: would backup database and run: VACUUM; ANALYZE; PRAGMA optimize;"
-    return 0
-  fi
-
+  if is_dry_run; then log_info "DRY-RUN: would integrity-check, backup, VACUUM, ANALYZE, PRAGMA optimize, then integrity-check again."; return 0; fi
+  integrity_ok || log_error "Pre-optimization integrity check failed."
   backup_db
   log_info "Running VACUUM; ANALYZE; PRAGMA optimize; ..."
   timer_start
-  run_sql "VACUUM;"
-  run_sql "ANALYZE;"
-  sqlite3 "$DB" "PRAGMA optimize;" >/dev/null 2>&1 || true
+  run_sql "VACUUM; ANALYZE; PRAGMA optimize;"
   timer_end
+  integrity_ok || log_error "Post-optimization integrity check failed. Restore the backup."
   log_success "Optimization complete."
 }
 
@@ -680,7 +717,6 @@ cmd_migrate_create() {
   local name_safe ts up_file down_file
   name_safe=${name//[^0-9A-Za-z_]/_}
   ts=$(date +%Y%m%d_%H%M%S)
-  mkdir -p "$MIGRATIONS_PATH"
   up_file="$MIGRATIONS_PATH/${ts}_${name_safe}.sql"
   down_file="$MIGRATIONS_PATH/${ts}_${name_safe}.down.sql"
 
@@ -691,6 +727,7 @@ cmd_migrate_create() {
     return 0
   fi
 
+  mkdir -p -- "$MIGRATIONS_PATH"
   cat >"$up_file" <<EOF
 -- UP: $name_safe
 -- Write your migration here
@@ -721,7 +758,6 @@ cmd_export_all() {
   done
 
   ensure_db_exists
-  mkdir -p "$EXPORT_DIR"
 
   case "$format" in
   csv | json) ;;
@@ -786,51 +822,28 @@ cmd_sample() {
   done
   [[ -z "$table" ]] && log_error "sample requires --table <name>"
   ensure_db_exists
-  sqlite3 -header -column "$DB" "SELECT * FROM $table LIMIT $limit;"
+  validate_identifier "$table"
+  [[ "$limit" =~ ^[1-9][0-9]*$ ]] || log_error "sample: --limit must be a positive integer"
+  sqlite3 -header -column "$DB" "SELECT * FROM "$table" LIMIT $limit;"
 }
 
 cmd_tune() {
   local profile="safe"
   while [[ $# -gt 0 ]]; do
-    case "$1" in
-    --profile)
-      profile="$2"
-      shift 2
-      ;;
-    *) log_error "tune: unknown option $1" ;;
-    esac
+    case "$1" in --profile) profile="$2"; shift 2 ;; *) log_error "tune: unknown option $1" ;; esac
   done
-
+  case "$profile" in dev|prod|safe) ;; *) log_error "tune: unknown profile '$profile' (use dev|prod|safe)" ;; esac
   ensure_db_exists
-
+  if is_dry_run; then log_info "DRY-RUN: would integrity-check, backup, and apply '$profile' PRAGMAs."; return 0; fi
+  integrity_ok || log_error "Pre-tune integrity check failed."
+  backup_db
   case "$profile" in
-  dev)
-    log_info "Applying 'dev' tuning profile (WAL, synchronous=NORMAL, foreign_keys=ON, temp_store=MEMORY)..."
-    execute_sql_mutating "PRAGMA journal_mode = WAL;"
-    execute_sql_mutating "PRAGMA synchronous = NORMAL;"
-    execute_sql_mutating "PRAGMA foreign_keys = ON;"
-    execute_sql_mutating "PRAGMA temp_store = MEMORY;"
-    ;;
-  prod)
-    log_info "Applying 'prod' tuning profile (WAL, synchronous=FULL, foreign_keys=ON)..."
-    execute_sql_mutating "PRAGMA journal_mode = WAL;"
-    execute_sql_mutating "PRAGMA synchronous = FULL;"
-    execute_sql_mutating "PRAGMA foreign_keys = ON;"
-    ;;
-  safe | *)
-    if [[ "$profile" != "safe" ]]; then
-      log_warn "Unknown profile '$profile', defaulting to 'safe'."
-    fi
-    log_info "Applying 'safe' tuning profile (foreign_keys=ON)..."
-    execute_sql_mutating "PRAGMA foreign_keys = ON;"
-    ;;
+    dev) run_sql "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY;" ;;
+    prod) run_sql "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;" ;;
+    safe) run_sql "PRAGMA foreign_keys=ON;" ;;
   esac
-
-  if is_dry_run; then
-    log_success "DRY-RUN: tune complete (no changes applied)."
-  else
-    log_success "Tuning complete."
-  fi
+  integrity_ok || log_error "Post-tune integrity check failed. Restore the backup."
+  log_success "Tuning complete."
 }
 
 # ===========================================
@@ -847,7 +860,8 @@ Global Options:
   --seeds-path <path>         Seeds directory (default: ./seeds or ./seeds/<env> if exists)
   --backup-path <path>        Backup directory (default: ./db_backups)
   --export-path <path>        Export directory (default: ./exports)
-  --use-lock                  Enable timeout-based lock handling (.timeout ${BUSY_TIMEOUT_MS}ms)
+  --busy-timeout <ms>         Set SQLite busy timeout for lock contention (default when enabled: ${BUSY_TIMEOUT_MS}ms)
+  --use-lock                  Deprecated alias for --busy-timeout ${BUSY_TIMEOUT_MS}
   --dry-run                   Print SQL / actions for mutating operations without applying changes
 
 Commands:
@@ -876,6 +890,10 @@ Commands:
   tune             [--profile dev|prod|safe]
 EOF
 }
+
+if [[ "${SQLITEX_LIBRARY_MODE:-0}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 case "${1:-}" in
 -h | --help | help)
@@ -915,8 +933,15 @@ while [[ $# -gt 0 && "$1" == --* ]]; do
     EXPORT_DIR="$2"
     shift 2
     ;;
+  --busy-timeout)
+    [[ "${2:-}" =~ ^[0-9]+$ ]] || log_error "--busy-timeout requires a non-negative integer in milliseconds."
+    BUSY_TIMEOUT_MS="$2"
+    USE_BUSY_TIMEOUT="true"
+    shift 2
+    ;;
   --use-lock)
-    USE_LOCK="true"
+    USE_BUSY_TIMEOUT="true"
+    log_warn "--use-lock is deprecated; use --busy-timeout $BUSY_TIMEOUT_MS."
     shift
     ;;
   --dry-run)
