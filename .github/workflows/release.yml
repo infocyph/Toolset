@@ -83,6 +83,7 @@ jobs:
           assert suite['version'] == expected_version
           assert suite['release_tag'] == os.environ['RELEASE_TAG']
           assert suite['source_commit'] == os.environ['SOURCE_COMMIT']
+          assert manifest['installer']['asset'] == 'install.sh'
           assert len(manifest['tools']) == 7
           PY
 
@@ -100,6 +101,7 @@ jobs:
             dist/netx \
             dist/phpx \
             dist/sqlitex \
+            dist/install.sh \
             dist/SHA256SUMS \
             dist/manifest.json \
             --repo "$GITHUB_REPOSITORY" \
