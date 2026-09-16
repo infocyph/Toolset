@@ -34,8 +34,13 @@ replacement = r'''json_escape() {
 }
 
 validate_json_file()'''
-t2, count = re.subn(pattern, lambda _m: replacement, t, count=1, flags=re.S)
+t, count = re.subn(pattern, lambda _m: replacement, t, count=1, flags=re.S)
 if count != 1:
     raise SystemExit('generated JSON escape function not found')
 
-p.write_text(t2)
+# The primary transform intentionally lives in a Python triple-quoted string;
+# normalize its format string to one printf escape so the JSON document ends
+# with an actual newline rather than a literal backslash-n token.
+t = t.replace(r"printf '}\\n'", r"printf '}\n'", 1)
+
+p.write_text(t)
