@@ -1,5 +1,7 @@
 #!/bin/bash
 
+VERSION="2.0.0-dev"
+
 ################################################################################
 # Color Constants
 ################################################################################
@@ -3527,8 +3529,19 @@ trap "echo -e '${RED}Process interrupted. Exiting.${NC}'; log_action 'ERROR' 'Pr
 ################################################################################
 # Main Script Execution
 ################################################################################
+case "${1:-}" in
+-h | --help | help)
+  display_usage
+  exit 0
+  ;;
+-V | --version | version)
+  printf 'phpx %s\n' "$VERSION"
+  exit 0
+  ;;
+esac
+
 setup_logging
-perform_system_checks "$1"
+perform_system_checks "${1:-}"
 
 case "$1" in
 list)
