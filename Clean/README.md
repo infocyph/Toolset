@@ -1,6 +1,6 @@
 # cleanx
 
-`cleanx` is a **safe, modular, dry-run-by-default** disk & inode cleaner for Linux (Debian/Ubuntu focused).
+`cleanx` is a **safe, modular, dry-run-by-default** disk & inode cleaner for Linux.
 Think “CCleaner for servers,” but **Bash-only, scriptable, and fast**.
 
 * One file, zero exotic deps (just `bash`, `coreutils`, and common tools).
@@ -13,18 +13,18 @@ Think “CCleaner for servers,” but **Bash-only, scriptable, and fast**.
 ## ✨ Features
 
 * **Dry-run by default** — prints actions; apply with `--yes`.
-* **Safety preflight** — refuses to run if `/` is ≥98% used (override with `--force`).
+* **Safety preflight** — warns when `/` is ≥98% used but still permits reclaim operations; `--force` suppresses that warning.
 * **Low-impact mode** — `ionice` + `nice` with `--low-impact`.
-* **Tasks** for: APT, logs, journald, `/tmp`, user caches, language caches (Composer/npm/pnpm/yarn/pip), Snap/Flatpak, Docker/Podman/containerd, old kernels, coredumps, build caches, browser caches, Timeshift, package size view, FS hints.
+* **Tasks** for: package cleanup (APT/DNF/Zypper with explicit safe skips elsewhere), logs, journald, `/tmp`, user caches, language caches (Composer/npm/pnpm/yarn/pip), Snap/Flatpak, Docker/Podman/containerd, old kernels where supported, coredumps, build caches, browser caches, Timeshift, package size view, FS hints.
 * **Inode tooling** — inode df, hotspots, parameterized deep scans.
-* **Configurable** — global & user config files + `--config=FILE`; include/exclude globs.
+* **Configurable** — declarative `KEY=VALUE` global/user config + `--config=FILE`; config files are never sourced as shell code.
 * **Secure erase** — `--secure-erase` to `shred` files before removal.
 * **Quota** — stop when freed `SIZE`, e.g. `--quota=5G`.
-* **JSON report** — `--json` prints a machine-friendly summary.
-* **Self-update** — `--check-update`, `--update`, with `--channel` support.
+* **JSON report** — `--json` reserves stdout for one parseable JSON document; operational output is sent to stderr.
+* **Self-update** — `--update` uses the checksum-verified latest stable release; `--channel` can be used for explicit branch/tag version checks.
 * **Shell completions** — `--completions=bash|zsh`.
 * **Doctor** — `--doctor` checks environment & prints quick FS state.
-* **Locking** — prevents concurrent runs via `/tmp/.cleanfy.lock`.
+* **Locking** — prevents concurrent mutation runs with `flock` in the runtime/lock directory and an atomic private-directory fallback.
 
 ---
 
@@ -83,14 +83,14 @@ sudo cleanx --yes logs tmp usercache
 | Task            | What it does                                                                                                                                                                                           |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `report`        | Prints FS usage (blocks & inodes), top dirs by size & inode count, hotspots, deleted-but-open files                                                                                                    |
-| `apt`           | `apt autoremove --purge -y` + `apt clean`                                                                                                                                                              |
+| `packages` / `apt` | Package cleanup backend: APT (`autoremove` + `clean`), DNF (`autoremove` + `clean all`), Zypper cache cleanup, or an explicit safe skip when no supported automatic policy exists                                                                                                                                                              |
 | `apt-residuals` | Purges “rc” packages (residual configs)                                                                                                                                                                |
 | `journal`       | Rotates and vacuums journald (`--vacuum-time` or `--vacuum-size` via `--journal-keep`)                                                                                                                 |
 | `logs`          | Deletes rotated logs (`*.gz`) older than 14 days; truncates `*.log` over `--log-max`                                                                                                                   |
 | `tmp`           | Deletes `/tmp` entries older than `--tmp-days` (via `find ... -mtime +N`)                                                                                                                              |
 | `tmpfiles`      | Runs `systemd-tmpfiles --clean` if available                                                                                                                                                           |
 | `usercache`     | Clears `$HOME/.cache`, thumbnails, and Trash for `--user` (default: `SUDO_USER`/`$USER`)                                                                                                               |
-| `langcaches`    | Clears Composer/npm/pnpm/yarn/pip caches for target user via `su -`                                                                                                                                    |
+| `langcaches`    | Clears Composer/npm/pnpm/yarn/pip caches for the validated target user via `runuser` when available                                                                                                                                    |
 | `snap`          | Retains `--snap-retain` revisions; removes disabled snaps & saved snapshots                                                                                                                            |
 | `flatpak`       | `flatpak uninstall --unused` and `flatpak remove --delete-data -y --unused`                                                                                                                            |
 | `docker`        | `docker system prune -af`; with `--aggressive` also prunes `--volumes`                                                                                                                                 |
@@ -129,7 +129,7 @@ These affect *how* cleanx runs:
   Wraps actions in `ionice -c3 nice -n 10` to reduce IO/CPU pressure.
 
 * `--force`
-  Run even if root filesystem (`/`) is ≥98% used. Without this, `cleanx` bails out as a safety precaution.
+  Suppress the ≥98% root-filesystem warning. Reclaim tasks are allowed to continue without this flag so a full filesystem does not disable the cleaner.
 
 * `--secure-erase`
   Use `shred -zuf` for files before deleting directories in tasks that delete files. Slower but more privacy-friendly.
@@ -139,7 +139,7 @@ These affect *how* cleanx runs:
   Internally uses `df -B1 /` before & after tasks and compares.
 
 * `--json`
-  Print a JSON summary at the end with before/after usage, reclaimed bytes, tasks, etc.
+  Emit exactly one JSON document on stdout with before/after usage, reclaimed bytes, tasks, etc. Human/progress output is redirected to stderr.
 
 ### Scope & Tuning
 
@@ -185,10 +185,10 @@ These control *what* is targeted and thresholds:
 ### Config, Update & Utility
 
 * `--config=PATH`
-  Extra config file to source (evaluated after global/user config, before CLI overrides).
+  Extra declarative `KEY=VALUE` config file. It is parsed, never sourced; command-line options retain highest precedence.
 
 * `--channel=NAME`
-  Self-update/check channel (branch/tag). Default: `main`. Affects `--check-update` and `--update`.
+  Version-check channel (branch/tag) for `--check-update`. Default: `stable`. `--update` intentionally remains on the checksum-verified stable release path.
 
 * `--version`
   Print version and exit.
@@ -241,11 +241,11 @@ These control *what* is targeted and thresholds:
 * **Dry-run first**
   Every run is read-only unless you explicitly add `--yes`.
 
-* **RootFS guard**
-  If `/` is ≥98% used, `cleanx` exits with a warning (unless `--force` is set). This prevents making a full-disk situation worse.
+* **Full-filesystem behavior**
+  If `/` is ≥98% used, `cleanx` warns but continues with reclaim tasks. `--force` suppresses the warning; it is not required to recover disk space.
 
 * **Locking**
-  `cleanx` uses `/tmp/.cleanfy.lock` to guard against concurrent runs. If the lock exists, it refuses to start (you can manually remove the file if it’s stale).
+  Mutating runs use non-blocking `flock` in `$XDG_RUNTIME_DIR`, `/run/lock`, or a private per-UID temporary directory. If `flock` is unavailable, an atomic lock directory is used. Read-only report-only runs do not take the mutation lock.
 
 * **Exclusions**
   `--exclude-glob` globs are honored across destructive `find` calls so you can protect sensitive paths.
@@ -257,37 +257,36 @@ These control *what* is targeted and thresholds:
 
 ## ⚙️ Configuration
 
-`cleanx` sources config files **after internal defaults but before CLI args**, in this order:
+`cleanx` parses configuration as data; it never `source`s configuration files. Files use one `KEY=VALUE` assignment per line. Empty lines and `#` comments are ignored, unknown keys are warned and ignored, and shell syntax is never evaluated.
 
-1. `/etc/cleanfy.conf`
-2. `~/.config/cleanfy.conf`
-3. `--config=/path/to/custom.conf` (highest precedence)
+Configuration is loaded in this order, with later entries overriding earlier scalar values:
 
-These files are just shell snippets; they can set any of the global variables the script uses.
+1. `/etc/cleanfy.conf` — legacy compatibility
+2. `~/.config/cleanfy.conf` — legacy compatibility
+3. `/etc/cleanx.conf` — preferred system path
+4. `~/.config/cleanx.conf` (or `$XDG_CONFIG_HOME/cleanx.conf`) — preferred user path
+5. `--config=/path/to/custom.conf`
+6. command-line options — highest precedence
 
-Example:
+Legacy shell-array assignments are deliberately not executed. Use repeated singular entries for include/exclude patterns:
 
-```bash
-# /etc/cleanfy.conf
-JOURNAL_KEEP="200M"
-LOG_MAX_SIZE="50M"
+```text
+# /etc/cleanx.conf
+JOURNAL_KEEP=200M
+LOG_MAX_SIZE=50M
 TMP_DAYS=5
 SNAP_RETAIN=3
+CHANNEL=stable
 
-EXCLUDE_GLOBS=(
-  "/var/log/private/*"
-  "/var/tmp/keep/*"
-)
-INCLUDE_GLOBS=(
-  "*.log"
-  "*.gz"
-)
-
-# Set default channel for self-update
-CHANNEL="stable"
+EXCLUDE_GLOB=/var/log/private/*
+EXCLUDE_GLOB=/var/tmp/keep/*
+INCLUDE_GLOB=*.log
+INCLUDE_GLOB=*.gz
 ```
 
-See your effective runtime config:
+`TARGET_HOME` cannot be supplied by config. `cleanx` resolves the home directory from the system account database for the validated `TARGET_USER` and refuses nonexistent users, non-absolute homes, or `/` as a target home.
+
+See the effective runtime config:
 
 ```bash
 cleanx --print-config
@@ -309,15 +308,15 @@ Example structure:
 {
   "tool": "cleanx",
   "version": "1.7.0",
-  "channel": "main",
+  "channel": "stable",
   "timestamp": "2025-12-03T06:00:00Z",
   "mode": "apply",
-  "aggressive": 0,
-  "low_impact": 1,
-  "secure_erase": 0,
+  "aggressive": false,
+  "low_impact": true,
+  "secure_erase": false,
   "user": "hasan",
   "quota_bytes": 0,
-  "quota_reached": 0,
+  "quota_reached": false,
   "before_used_bytes": 1234567890,
   "after_used_bytes": 987654321,
   "reclaimed_bytes": 247914569,
@@ -345,16 +344,16 @@ Check remote version vs local:
 cleanx --check-update        # exit 10 if newer version exists
 ```
 
-Update to the latest version from a channel (default: `main`):
+Update to the latest checksum-verified stable release:
 
 ```bash
 sudo cleanx --update
 ```
 
-Use an alternate branch/tag as the channel:
+Compare against an explicit development branch/tag without changing the stable updater path:
 
 ```bash
-sudo cleanx --channel=develop --update
+cleanx --channel=develop --check-update
 ```
 
 ---

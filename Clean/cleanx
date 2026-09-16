@@ -1135,7 +1135,7 @@ General Options:
   --quota=SIZE              stop after reclaiming SIZE (e.g., 2G, 800M)
   --json                    emit only JSON on stdout; operational output goes to stderr
   --config=PATH             extra declarative KEY=VALUE config file
-  --channel=NAME            update/check channel (default: stable)
+  --channel=NAME            channel for --check-update (default: stable); --update stays stable
 
 Tuning:
   --journal-keep=VAL        e.g., 7d or 200M (default: ${JOURNAL_KEEP})
@@ -1152,7 +1152,7 @@ Tuning:
 Utility:
   --version                 print version and exit
   --check-update            compare local version with remote (uses --channel)
-  --update                  self-update to latest from --channel
+  --update                  self-update from the latest checksum-verified stable release
   --print-config            show effective configuration
   --doctor                  environment/requirements check
   --completions=bash|zsh    print shell completions to stdout
