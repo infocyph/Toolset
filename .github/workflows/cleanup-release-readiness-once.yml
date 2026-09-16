@@ -1,0 +1,37 @@
+name: Clean release-readiness branch once
+
+on:
+  push:
+    branches:
+      - plan/toolset-linux-cli-hardening
+    paths:
+      - .github/workflows/cleanup-release-readiness-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: plan/toolset-linux-cli-hardening
+          fetch-depth: 0
+      - name: Remove generated and one-shot artifacts
+        run: |
+          set -Eeuo pipefail
+          rm -rf -- reports
+          rm -f -- .github/workflows/publish-toolset-rc-once.yml
+          rm -f -- .github/workflows/cleanup-release-readiness-once.yml
+          grep -qxF 'reports/' .gitignore || printf '\nreports/\n' >> .gitignore
+      - name: Commit clean candidate state
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m 'chore: clean release-readiness artifacts'
+          git push origin HEAD:plan/toolset-linux-cli-hardening
