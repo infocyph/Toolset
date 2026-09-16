@@ -1,0 +1,38 @@
+name: Apply Phase 2 tracker closeout
+
+on:
+  push:
+    branches:
+      - plan/toolset-linux-cli-hardening
+    paths:
+      - tests/patch-tracker-phase2-close.py
+      - .github/workflows/apply-tracker-phase2-close.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+        with:
+          ref: plan/toolset-linux-cli-hardening
+          fetch-depth: 0
+      - name: Apply tracker closeout
+        run: python3 tests/patch-tracker-phase2-close.py
+      - name: Validate tracker
+        run: |
+          grep -Fq '**Phase 3 — Security / Automation Paths**' docs/plans/toolset-2.0-progress-tracker.md
+          grep -Fq -- '- [x] High-impact tools have disposable functional safety tests.' docs/plans/toolset-2.0-progress-tracker.md
+          grep -Fq -- '- [x] No known unsafe default destructive behavior remains.' docs/plans/toolset-2.0-progress-tracker.md
+      - name: Commit tracker closeout
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'A. B. M. Mahmudul Hasan'
+          git config user.email 'abmmhasan@users.noreply.github.com'
+          git add docs/plans/toolset-2.0-progress-tracker.md
+          git diff --cached --quiet && exit 0
+          git commit -m 'docs: close phase 2 and start phase 3'
+          git push origin HEAD:plan/toolset-linux-cli-hardening
