@@ -22,6 +22,7 @@ SELF_PREFIX="$TMP_ROOT/self-update"
 WRAPPER_BIN="$TMP_ROOT/bin"
 FAIL_STATE="$TMP_ROOT/curl-failed-once"
 HTTP_LOG="$TMP_ROOT/http.log"
+CURL_TRACE="$TMP_ROOT/curl-trace.log"
 REAL_CURL="$(command -v curl)"
 SERVER_PID=""
 
@@ -75,15 +76,23 @@ set -Eeuo pipefail
 : "${RELEASE_TAG:?}"
 : "${LOCAL_BASE:?}"
 : "${CURL_FAIL_STATE:?}"
+: "${CURL_TRACE:?}"
 
 args=("$@")
 target=0
-prefix="https://github.com/infocyph/Toolset/releases/download/${RELEASE_TAG}/"
+expected_prefix="https://github.com/infocyph/Toolset/releases/download/${RELEASE_TAG}/"
+release_root="https://github.com/infocyph/Toolset/releases/"
 for i in "${!args[@]}"; do
-  if [[ "${args[$i]}" == "$prefix"* ]]; then
+  value="${args[$i]}"
+  if [[ "$value" == "$expected_prefix"* ]]; then
     target=1
-    asset="${args[$i]#"$prefix"}"
+    asset="${value#"$expected_prefix"}"
+    printf 'expected %s\n' "$value" >>"$CURL_TRACE"
     args[$i]="$LOCAL_BASE/$asset"
+  elif [[ "$value" == "$release_root"* ]]; then
+    printf 'unexpected %s\n' "$value" >>"$CURL_TRACE"
+    printf 'release-delivery: unexpected Toolset release URL: %s\n' "$value" >&2
+    exit 86
   fi
 done
 
@@ -102,6 +111,7 @@ release_env=(
   "RELEASE_TAG=$TAG"
   "LOCAL_BASE=$LOCAL_BASE"
   "CURL_FAIL_STATE=$FAIL_STATE"
+  "CURL_TRACE=$CURL_TRACE"
   "TOOLSET_DOWNLOAD_ATTEMPTS=2"
 )
 
@@ -132,10 +142,15 @@ verify_self_update() {
   local tool="$1"
   shift
   rm -f -- "$FAIL_STATE"
-  env "${release_env[@]}" \
+  : >"$CURL_TRACE"
+  if ! env "${release_env[@]}" \
     TOOLSET_SELF_UPDATE_RELEASE="$TAG" \
     PHPX_NO_LOG=1 NO_COLOR=1 TERM=dumb \
-    "$SELF_PREFIX/$tool" "$@" >/dev/null
+    "$SELF_PREFIX/$tool" "$@" >/dev/null; then
+    printf '%s self-update curl trace:\n' "$tool" >&2
+    cat "$CURL_TRACE" >&2 || true
+    return 1
+  fi
   [[ -e "$FAIL_STATE" ]] || fail "$tool self-update did not exercise transient retry"
 
   local expected actual
