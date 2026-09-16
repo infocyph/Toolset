@@ -35,3 +35,6 @@ for name in chromacat cleanx dockex gitx netx phpx sqlitex; do
   assert_contains "$installer_list" "$name" "installer lists $name"
 done
 pass "installer tool catalog"
+
+# Critical destructive-path regression coverage stays in the baseline gate.
+bash tests/cleanx.sh
