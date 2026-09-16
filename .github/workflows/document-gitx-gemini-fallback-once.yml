@@ -1,0 +1,48 @@
+name: Document gitx Gemini fallback once
+
+on:
+  push:
+    branches:
+      - plan/toolset-linux-cli-hardening
+    paths:
+      - .github/workflows/document-gitx-gemini-fallback-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: plan/toolset-linux-cli-hardening
+          fetch-depth: 0
+
+      - name: Apply documentation and regression test
+        run: |
+          set -Eeuo pipefail
+          python3 .github/scripts/document-gitx-gemini-fallback.py
+          bash -n tests/gitx.sh
+
+      - name: Install validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq shellcheck
+
+      - name: Validate gitx AI provider contract
+        run: |
+          set -Eeuo pipefail
+          shellcheck -S error Git/gitx tests/gitx.sh
+          bash tests/gitx.sh
+
+      - name: Commit permanent documentation and test
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Git/README.md tests/gitx.sh
+          git diff --cached --quiet && exit 0
+          git commit -m 'docs: clarify gitx Gemini environment fallback'
+          git push origin HEAD:plan/toolset-linux-cli-hardening
