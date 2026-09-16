@@ -48,6 +48,7 @@ must_be_absent 'Raw curl piped to a shell' 'curl[^|\n]*\|[[:space:]]*(sudo[[:spa
 must_be_absent 'World-writable chmod' 'chmod[[:space:]]+(-[^[:space:]]+[[:space:]]+)*777([[:space:]]|$)'
 must_be_absent 'Mutable Toolset raw main/master URL' 'raw\.githubusercontent\.com/infocyph/Toolset/(main|master)/'
 must_be_absent 'Predictable shared sensitive temp file' '/tmp/\.?((git|net|toolset|phpx|dockex|sqlitex|cleanx|chromacat)[A-Za-z0-9._-]*\.(tmp|txt|json|lock|state))(["[:space:]]|$)'
+must_be_absent 'Interpolated shell -c command string' '(bash|sh)[[:space:]]+-c[[:space:]]+"'
 
 # Reviewed high-impact constructs are retained only where they serve the tool's
 # explicit purpose. Keep them visible in the uploaded report for every CI run.
