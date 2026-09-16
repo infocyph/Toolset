@@ -1,0 +1,43 @@
+name: Apply sqlitex Phase 2
+
+on:
+  push:
+    branches:
+      - plan/toolset-linux-cli-hardening
+    paths:
+      - tests/patch-sqlitex-phase2.py
+      - .github/workflows/apply-sqlitex-phase2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+        with:
+          ref: plan/toolset-linux-cli-hardening
+          fetch-depth: 0
+
+      - name: Apply sqlitex hardening
+        run: python3 tests/patch-sqlitex-phase2.py
+
+      - name: Validate sqlitex
+        run: |
+          bash -n Sqlite/sqlitex
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck sqlite3 jq
+          shellcheck --severity=error Sqlite/sqlitex
+
+      - name: Commit sqlitex hardening
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'A. B. M. Mahmudul Hasan'
+          git config user.email 'abmmhasan@users.noreply.github.com'
+          git add Sqlite/sqlitex
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix(sqlitex): harden SQLite consistency and transactions'
+          git push origin HEAD:plan/toolset-linux-cli-hardening
