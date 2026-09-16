@@ -12,7 +12,7 @@ Legend: `[ ]` not started · `[-]` in progress · `[x]` done · `[!]` blocked / 
 
 **Phase 2 — Critical destructive/data paths**
 
-Current task: harden `cleanx` first, beginning with identity/config/locking and destructive execution boundaries, then add disposable-filesystem safety coverage before moving to the next high-impact tool.
+Current task: harden `phpx`, starting with capability/package/service boundaries and operation-specific privilege checks, then make installer/config mutation paths transactional and add disposable distro-container coverage.
 
 ## Phase 1 — Repository Contract
 
@@ -95,16 +95,16 @@ Current task: harden `cleanx` first, beginning with identity/config/locking and 
 
 ### `cleanx`
 
-- [-] Migrate legacy `cleanfy` identity/config paths to `cleanx` with compatibility handling.
-- [ ] Replace race-prone `/tmp/.cleanfy.lock` with `flock`/safe fallback.
-- [ ] Remove string-built destructive shell execution.
-- [ ] Replace shell-sourced config with declarative parsing or safe compatibility boundary.
-- [ ] Fix full-disk preflight so reclaim-only operations remain possible.
-- [ ] Add package-manager capability backends / explicit skips.
-- [ ] Harden target-user/home validation.
-- [ ] Make JSON output machine-clean.
+- [x] Migrate legacy `cleanfy` identity/config paths to `cleanx` with compatibility handling.
+- [x] Replace race-prone `/tmp/.cleanfy.lock` with `flock`/safe fallback.
+- [x] Remove string-built destructive shell execution.
+- [x] Replace shell-sourced config with declarative parsing or safe compatibility boundary.
+- [x] Fix full-disk preflight so reclaim-only operations remain possible.
+- [x] Add package-manager capability backends / explicit skips.
+- [x] Harden target-user/home validation.
+- [x] Make JSON output machine-clean.
 - [x] Harden stable self-update baseline through the Phase 1 release channel; review tool-specific behavior during `cleanx` hardening.
-- [ ] Add disposable-filesystem tests.
+- [x] Add disposable-filesystem tests.
 
 ### `phpx`
 
@@ -262,7 +262,7 @@ Current task: harden `cleanx` first, beginning with identity/config/locking and 
 - [x] `dockex info` currently exposes raw container environment values; queued for Phase 2.
 - [x] `dockex` backup/restore currently installs zip/unzip dynamically in an Alpine helper container; queued for Phase 2.
 - [x] `sqlitex` current backup is a raw file copy; queued for Phase 2.
-- [x] `cleanx` still carries legacy `cleanfy` config/lock naming; Phase 2 starts here.
+- [x] `cleanx` legacy `cleanfy` config paths now have data-only compatibility, preferred `cleanx` paths, safe runtime locking, argv-safe deletion, validated target identity and permanent disposable safety tests.
 
 ## Work Log
 
@@ -281,8 +281,10 @@ Current task: harden `cleanx` first, beginning with identity/config/locking and 
 | 2026-09-16 | Added immutable semantic-tag release workflow and pinned `actionlint` workflow validation. | done |
 | 2026-09-16 | Migrated stable installation and updater paths away from mutable `main`. | done |
 | 2026-09-16 | Fixed actionlint invocation and completed the full green Phase 1 CI gate. | done |
-| 2026-09-16 | Phase 1 closed; Phase 2 started with `cleanx`. | in progress |
+| 2026-09-16 | Phase 1 closed; Phase 2 started with `cleanx`. | done |
+| 2026-09-16 | Completed `cleanx` Phase 2 hardening: declarative config, safe locking/deletion, package capability handling, clean JSON, resilient reports, docs and permanent safety tests. | done |
+| 2026-09-16 | Started `phpx` Phase 2 capability and mutation-path hardening. | in progress |
 
 ## Next Task
 
-Harden `cleanx`: migrate the legacy `cleanfy` identity/config/lock paths with compatibility handling, replace the shared `/tmp` lock with a safe lock strategy, then remove string-built destructive execution and add disposable-filesystem tests before advancing to the next Phase 2 tool.
+Harden `phpx`: separate read-only PHP capabilities from package/service mutation, formalize package-manager and service-manager backends, make privilege checks operation-specific, then harden repository/Composer/PECL/config-write flows with disposable distro-container tests.
