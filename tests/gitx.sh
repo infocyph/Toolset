@@ -127,10 +127,11 @@ git switch main >/dev/null
 
 # Writable settings are data, never shell code.
 mkdir -p -- "$GITX_CONFIG_DIR"
-printf 'GEMINI_MODEL=gemini-test\nMALICIOUS=$(touch %s/pwned)\n' "$TMP_ROOT" > "$GITX_CONFIG_FILE"
+printf 'GEMINI_MODEL=gemini-test\nOLLAMA_MODEL=qwen-test:3b\nMALICIOUS=$(touch %s/pwned)\n' "$TMP_ROOT" > "$GITX_CONFIG_FILE"
 unset GEMINI_MODEL GEMINI_API_KEY || true
 load_gitx_config
-assert_eq gemini-test "${GEMINI_MODEL:-}" "declarative model load"
+assert_eq gemini-test "${GEMINI_MODEL:-}" "declarative Gemini model load"
+assert_eq qwen-test:3b "${OLLAMA_MODEL:-}" "declarative Ollama model load"
 [[ ! -e "$TMP_ROOT/pwned" ]] || fail "Gemini settings were shell-sourced"
 pass "Gemini settings parser is declarative"
 
@@ -167,6 +168,47 @@ pass "AI diff payload bounds"
 git reset --hard HEAD >/dev/null
 git clean -fd >/dev/null
 
+
+# AI provider order: reachable local Ollama wins; absent Ollama falls back to Gemini.
+OLLAMA_MODEL=""
+GITX_OLLAMA_TAGS_JSON=""
+GITX_AI_PROVIDER=auto
+GITX_OLLAMA_COMMAND=ollama_mock
+GITX_OLLAMA_URL='http://127.0.0.1:11434'
+ollama_mock() { :; }
+curl() {
+  printf '%s\n' "$@" > "${GITX_OLLAMA_CURL_ARGS:?}"
+  case " $* " in
+    *'/api/tags'*) printf '{"models":[{"name":"qwen2.5:3b"},{"name":"llama3.2:3b"}]}' ;;
+    *'/api/generate'*) printf '{"response":"feat: local ollama","done":true}' ;;
+    *) return 22 ;;
+  esac
+}
+export GITX_OLLAMA_CURL_ARGS="$TMP_ROOT/ollama-curl.args"
+resolve_ai_provider
+assert_eq ollama "$GITX_SELECTED_AI_PROVIDER" "local Ollama is preferred"
+assert_eq qwen2.5:3b "$OLLAMA_MODEL" "first installed Ollama model selected"
+printf 'diff --git a/a b/a\n+local\n' > "$TMP_ROOT/ollama.diff"
+build_ollama_payload "$OLLAMA_MODEL" 'system prompt' "$TMP_ROOT/ollama.diff" "$TMP_ROOT/ollama.json"
+jq -e '.model == "qwen2.5:3b" and .system == "system prompt" and .stream == false and (.prompt | contains("+local"))' "$TMP_ROOT/ollama.json" >/dev/null || fail "Ollama payload contract invalid"
+response="$(ollama_api_request "$TMP_ROOT/ollama.json")"
+assert_eq 'feat: local ollama' "$(jq -r '.response' <<<"$response")" "Ollama response extraction"
+grep -Fx -- '--connect-timeout' "$GITX_OLLAMA_CURL_ARGS" >/dev/null || fail "Ollama connect timeout missing"
+grep -Fx -- '--max-time' "$GITX_OLLAMA_CURL_ARGS" >/dev/null || fail "Ollama operation timeout missing"
+grep -F '/api/generate' "$GITX_OLLAMA_CURL_ARGS" >/dev/null || fail "Ollama generate endpoint missing"
+pass "local Ollama provider is preferred and bounded"
+
+unset -f ollama_mock curl
+GITX_OLLAMA_COMMAND=gitx-ollama-definitely-missing
+GITX_OLLAMA_TAGS_JSON=""
+OLLAMA_MODEL=""
+GITX_AI_PROVIDER=auto
+resolve_ai_provider
+assert_eq gemini "$GITX_SELECTED_AI_PROVIDER" "Gemini fallback when Ollama is unavailable"
+pass "Gemini fallback is selected only when Ollama is unavailable"
+GITX_OLLAMA_COMMAND=ollama
+GITX_AI_PROVIDER=auto
+
 # API helper must carry finite connect/operation/response limits and key via header, not URL.
 MOCK_BIN="$TMP_ROOT/mock-bin"
 mkdir -p "$MOCK_BIN"
@@ -189,4 +231,4 @@ grep -F 'x-goog-api-key: header-secret' "$GITX_CURL_ARGS" >/dev/null || fail "AP
 if grep -Fq 'key=header-secret' "$GITX_CURL_ARGS"; then fail "API key leaked into URL"; fi
 pass "Gemini API request is bounded and header-authenticated"
 
-printf '\nAll gitx Phase 3 checks passed.\n'
+printf '\nAll gitx security and AI-provider checks passed.\n'

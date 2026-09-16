@@ -3,7 +3,7 @@
 <!-- TOOLSET2-CONTRACT:START -->
 ## Purpose
 
-Repository workflow, reporting, safe interactive Git operations and optional Gemini-assisted commit generation.
+Repository workflow, reporting, safe interactive Git operations and optional AI-assisted commit generation with local Ollama preferred over Gemini.
 
 ## Install
 
@@ -22,7 +22,7 @@ bash install.sh --release 2.0 gitx
 
 ## Requirements
 
-Bash and Git. Gemini-backed commands additionally need network access, `curl`, a valid API key and the JSON helpers used by that command.
+Bash and Git. `ai-commit` additionally needs `curl`, `jq`, and `base64`. When the `ollama` CLI is present, a reachable local Ollama service with at least one installed model is preferred automatically. If Ollama is unavailable, Gemini is used and requires a valid API key/network access.
 
 ## Supported platforms/capabilities
 
@@ -44,7 +44,7 @@ gitx doctor
 
 ## Destructive/security behavior
 
-Repository-changing commands mutate the current Git repository. Interactive path handling is NUL-safe. Gemini settings are declarative, API-key persistence is explicit opt-in, sensitive-looking staged paths are rejected by default, and AI requests are timeout/size bounded.
+Repository-changing commands mutate the current Git repository. Interactive path handling is NUL-safe. AI provider selection is local-first: reachable Ollama is used automatically, otherwise Gemini is selected. Gemini settings are declarative, API-key persistence is explicit opt-in, sensitive-looking staged paths are rejected by default, and both Ollama/Gemini requests are timeout/size bounded. A failed Ollama generation is not silently resent to Gemini.
 
 ## Exit/output contract
 
@@ -102,6 +102,16 @@ For commands that accept **date windows** (`YYYY-MM-DD YYYY-MM-DD`), `gitx` reso
 Then it runs the same logic as commit/tag ranges. This keeps outputs consistent across repos and avoids off-by-one issues.
 
 ---
+
+
+### AI commit provider order
+
+`gitx ai-commit` defaults to `GITX_AI_PROVIDER=auto`:
+
+1. If the `ollama` command exists, the local Ollama API is reachable (default `http://127.0.0.1:11434`), and at least one local model is installed, `gitx` uses Ollama. `OLLAMA_MODEL`/`GITX_OLLAMA_MODEL` can pin a model; otherwise the first installed model is selected.
+2. If Ollama is unavailable at provider selection, `gitx` falls back to Gemini. Gemini credentials remain opt-in and are never required for the local Ollama path.
+
+Advanced overrides: `GITX_AI_PROVIDER=ollama|gemini|auto`, `GITX_OLLAMA_URL=<url>`, and `GITX_OLLAMA_COMMAND=<command>`.
 
 ## Command Overview
 
