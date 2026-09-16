@@ -24,8 +24,8 @@ It’s **non-invasive** – just thin wrappers over `ip`, `ss`/`netstat`, `curl`
 ## Installation
 
 ```bash
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Network/netx" \
-  -o /usr/local/bin/netx && sudo chmod +x /usr/local/bin/netx
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh netx
 ```
 
 (Adjust the path if your repo layout is different.)

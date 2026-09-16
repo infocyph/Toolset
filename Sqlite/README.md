@@ -26,8 +26,8 @@ It’s ideal for scripts and CI where you want explicit flags instead of interac
 ## Installation
 
 ```bash
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Sqlite/sqlitex" \
-  -o /usr/local/bin/sqlitex && sudo chmod +x /usr/local/bin/sqlitex
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh sqlitex
 ```
 
 ---

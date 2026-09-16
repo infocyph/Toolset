@@ -3354,43 +3354,60 @@ perform_system_checks() {
 ################################################################################
 # Self-Update
 ################################################################################
-self_update() {
-  require_sudo
-  local script_url="https://raw.githubusercontent.com/infocyph/Toolset/main/PHP/phpx"
-  local temp_file="/tmp/phpx_latest"
-  local local_file="/usr/local/bin/phpx"
+self_update() (
+  set -Eeuo pipefail
+  local tool="phpx"
+  local invoked="$0"
+  local current_path prefix tmp_dir checksum_line
+  local base="https://github.com/infocyph/Toolset/releases/latest/download"
 
-  echo -e "${YELLOW}Checking for updates to phpx...${NC}"
-  log_action "INFO" "Checking for phpx updates from $script_url."
+  for cmd in curl sha256sum mktemp install mv awk; do
+    command -v "$cmd" >/dev/null 2>&1 || {
+      printf '%s: self-update requires %s
+' "$tool" "$cmd" >&2
+      return 1
+    }
+  done
 
-  if ! curl -fsSL "$script_url" -o "$temp_file"; then
-    echo -e "${RED}Failed to download the latest phpx script from GitHub.${NC}"
-    log_action "ERROR" "Failed to download the latest phpx from $script_url."
+  if [[ "$invoked" != */* ]]; then
+    invoked="$(command -v -- "$invoked" 2>/dev/null || printf '%s' "$invoked")"
+  fi
+  current_path="$(readlink -f -- "$invoked" 2>/dev/null || realpath -- "$invoked" 2>/dev/null || printf '%s' "$invoked")"
+  prefix="$(dirname -- "$current_path")"
+
+  [[ -w "$prefix" ]] || {
+    printf '%s: install directory is not writable: %s
+' "$tool" "$prefix" >&2
+    printf '%s: rerun with appropriate privileges or reinstall to a writable prefix.
+' "$tool" >&2
     return 1
-  fi
+  }
 
-  # Optional: Compare local vs remote with sha256sum if you want to check for changes
-  local remote_hash local_hash
-  remote_hash="$(sha256sum "$temp_file" | awk '{print $1}')"
-  local_hash="$(sha256sum "$local_file" 2>/dev/null | awk '{print $1}')"
-  if [[ "$remote_hash" == "$local_hash" ]]; then
-    echo -e "${GREEN}phpx is already up-to-date.${NC}"
-    log_action "INFO" "No updates found; phpx is already the latest."
-    rm -f "$temp_file"
-    return 0
-  fi
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf -- "$tmp_dir"' EXIT INT TERM
 
-  if ! mv "$temp_file" "$local_file"; then
-    echo -e "${RED}Failed to overwrite $local_file with the new phpx script.${NC}"
-    log_action "ERROR" "Failed to move updated script into place."
+  curl --fail --location --silent --show-error --retry 3 \
+    --connect-timeout 10 --max-time 120 \
+    "$base/SHA256SUMS" --output "$tmp_dir/SHA256SUMS"
+  curl --fail --location --silent --show-error --retry 3 \
+    --connect-timeout 10 --max-time 120 \
+    "$base/install.sh" --output "$tmp_dir/install.sh"
+
+  checksum_line="$(awk '$2 == "install.sh" {print; exit}' "$tmp_dir/SHA256SUMS")"
+  [[ -n "$checksum_line" ]] || {
+    printf '%s: install.sh checksum is missing from latest stable release.
+' "$tool" >&2
     return 1
-  fi
+  }
 
-  chmod +x "$local_file"
-
-  echo -e "${GREEN}phpx has been updated successfully to the latest version.${NC}"
-  log_action "INFO" "phpx script updated successfully."
-}
+  (
+    cd "$tmp_dir"
+    printf '%s
+' "$checksum_line" | sha256sum -c - >/dev/null
+  )
+  bash -n "$tmp_dir/install.sh"
+  bash "$tmp_dir/install.sh" --latest --prefix "$prefix" "$tool"
+)
 
 ################################################################################
 # Config Generator

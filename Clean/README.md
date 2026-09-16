@@ -33,8 +33,8 @@ Think “CCleaner for servers,” but **Bash-only, scriptable, and fast**.
 Single-file install (matches Toolset layout):
 
 ```bash
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Clean/cleanx" \
-  -o /usr/local/bin/cleanx && sudo chmod +x /usr/local/bin/cleanx
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh cleanx
 ```
 
 ---

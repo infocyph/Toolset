@@ -101,45 +101,60 @@ take_val() {
   esac
 }
 
-self_update() {
-  require curl
-  local script_url="https://raw.githubusercontent.com/infocyph/Toolset/main/ChromaCat/chromacat"
-  local tmp
-  if ! tmp=$(mktemp /tmp/chromacat.XXXXXX 2>/dev/null); then tmp="/tmp/chromacat.$$"; fi
+self_update() (
+  set -Eeuo pipefail
+  local tool="chromacat"
+  local invoked="$0"
+  local current_path prefix tmp_dir checksum_line
+  local base="https://github.com/infocyph/Toolset/releases/latest/download"
 
-  local target="${CHROMACAT_PATH:-}"
-  if [[ -z $target ]]; then
-    if command -v chromacat >/dev/null 2>&1; then target=$(command -v chromacat); else target="$0"; fi
+  for cmd in curl sha256sum mktemp install mv awk; do
+    command -v "$cmd" >/dev/null 2>&1 || {
+      printf '%s: self-update requires %s
+' "$tool" "$cmd" >&2
+      return 1
+    }
+  done
+
+  if [[ "$invoked" != */* ]]; then
+    invoked="$(command -v -- "$invoked" 2>/dev/null || printf '%s' "$invoked")"
   fi
+  current_path="$(readlink -f -- "$invoked" 2>/dev/null || realpath -- "$invoked" 2>/dev/null || printf '%s' "$invoked")"
+  prefix="$(dirname -- "$current_path")"
 
-  echo "Checking for updates..."
-  if ! curl -fsSL "$script_url" -o "$tmp"; then
-    echo "Failed to download latest script." >&2
-    rm -f "$tmp" || true
+  [[ -w "$prefix" ]] || {
+    printf '%s: install directory is not writable: %s
+' "$tool" "$prefix" >&2
+    printf '%s: rerun with appropriate privileges or reinstall to a writable prefix.
+' "$tool" >&2
     return 1
-  fi
+  }
 
-  if command -v sha256sum >/dev/null 2>&1 && [[ -f "$target" ]]; then
-    local rh lh
-    rh="$(sha256sum "$tmp" | awk '{print $1}')"
-    lh="$(sha256sum "$target" 2>/dev/null | awk '{print $1}')"
-    if [[ -n $rh && "$rh" == "$lh" ]]; then
-      echo "Already up-to-date."
-      rm -f "$tmp" || true
-      return 0
-    fi
-  fi
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf -- "$tmp_dir"' EXIT INT TERM
 
-  if ! mv "$tmp" "$target" 2>/dev/null; then
-    echo "Failed to overwrite $target (try sudo or CHROMACAT_PATH)." >&2
-    rm -f "$tmp" || true
+  curl --fail --location --silent --show-error --retry 3 \
+    --connect-timeout 10 --max-time 120 \
+    "$base/SHA256SUMS" --output "$tmp_dir/SHA256SUMS"
+  curl --fail --location --silent --show-error --retry 3 \
+    --connect-timeout 10 --max-time 120 \
+    "$base/install.sh" --output "$tmp_dir/install.sh"
+
+  checksum_line="$(awk '$2 == "install.sh" {print; exit}' "$tmp_dir/SHA256SUMS")"
+  [[ -n "$checksum_line" ]] || {
+    printf '%s: install.sh checksum is missing from latest stable release.
+' "$tool" >&2
     return 1
-  fi
+  }
 
-  chmod +x "$target" || true
-  echo "Updated."
-  return 0
-}
+  (
+    cd "$tmp_dir"
+    printf '%s
+' "$checksum_line" | sha256sum -c - >/dev/null
+  )
+  bash -n "$tmp_dir/install.sh"
+  bash "$tmp_dir/install.sh" --latest --prefix "$prefix" "$tool"
+)
 
 # ------------------------- option parsing (portable) -------------------------
 while [[ $# -gt 0 ]]; do

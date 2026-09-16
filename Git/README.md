@@ -17,8 +17,8 @@ It never hides Git – it just wires composable commands into practical workflow
 ## Installation
 
 ```bash
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Git/gitx" \
-  -o /usr/local/bin/gitx && sudo chmod +x /usr/local/bin/gitx
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh gitx
 ````
 
 ## Usage

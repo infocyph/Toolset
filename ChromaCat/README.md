@@ -20,8 +20,8 @@ When it can’t safely colour (or you didn’t ask for anything special), it beh
 ## Installation
 
 ```bash
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/ChromaCat/chromacat" \
-  -o /usr/local/bin/chromacat && sudo chmod +x /usr/local/bin/chromacat
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh chromacat
 ```
 
 Or keep it in your `$HOME/bin` and add that to `PATH`.

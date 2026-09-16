@@ -22,8 +22,8 @@ It is **non-invasive** – everything is just thin wrappers over `docker` + a fe
 ## Installation
 
 ```bash
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Docker/dockex" \
-  -o /usr/local/bin/dockex && sudo chmod +x /usr/local/bin/dockex
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh dockex
 ````
 
 ---

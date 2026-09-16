@@ -50,8 +50,8 @@ High-impact commands (`switch`, `install`, `remove`, `sury`, `self-update`) run 
 ## Installation
 
 ```bash
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/PHP/phpx" \
-  -o /usr/local/bin/phpx && sudo chmod +x /usr/local/bin/phpx
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh phpx
 ```
 
 ---
