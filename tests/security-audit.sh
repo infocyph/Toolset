@@ -35,6 +35,16 @@ must_be_absent() {
   fi
 }
 
+must_be_present() {
+  local label="$1" regex="$2" path="$3"
+  section "$label"
+  if grep -nE -- "$regex" "$path" | tee -a "$report"; then
+    return 0
+  fi
+  printf 'BLOCKED: required release-safety pattern missing from %s\n' "$path" | tee -a "$report" >&2
+  failed=1
+}
+
 report_only() {
   local label="$1" regex="$2"
   section "$label"
@@ -49,6 +59,14 @@ must_be_absent 'World-writable chmod' 'chmod[[:space:]]+(-[^[:space:]]+[[:space:
 must_be_absent 'Mutable Toolset raw main/master URL' 'raw\.githubusercontent\.com/infocyph/Toolset/(main|master)/'
 must_be_absent 'Predictable shared sensitive temp file' '/tmp/\.?((git|net|toolset|phpx|dockex|sqlitex|cleanx|chromacat)[A-Za-z0-9._-]*\.(tmp|txt|json|lock|state))(["[:space:]]|$)'
 must_be_absent 'Interpolated shell -c command string' '(bash|sh)[[:space:]]+-c[[:space:]]+"'
+
+# Stable delivery must survive transient transport errors without depending on
+# newer curl-only retry flags. These assertions keep the portable Bash retry
+# boundary present in the installer and every built-in self-updater.
+must_be_present 'Installer bounded release retry' '^download_with_retry\(\)' install.sh
+for updater in Git/gitx PHP/phpx Clean/cleanx ChromaCat/chromacat; do
+  must_be_present "Self-update bounded release retry: $updater" '^  toolset_download_with_retry\(\)' "$updater"
+done
 
 # Reviewed high-impact constructs are retained only where they serve the tool's
 # explicit purpose. Keep them visible in the uploaded report for every CI run.
