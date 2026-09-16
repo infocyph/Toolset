@@ -8,16 +8,12 @@ cd "$ROOT_DIR"
 source tests/lib/assert.sh
 
 # ChromaCat is the presentation/pipeline tool and must preserve plain text in
-# a non-TTY/no-color path. This is intentionally small for the baseline gate;
-# per-tool smoke coverage will grow as each CLI is hardened.
+# a non-TTY/no-color path.
 plain_input=$'toolset smoke\nsecond line'
 plain_output="$(printf '%s\n' "$plain_input" | NO_COLOR=1 ChromaCat/chromacat --no-color)"
 assert_eq "$plain_input" "$plain_output" "chromacat no-color pipeline must preserve text"
 pass "chromacat non-TTY/no-color pipeline"
 
-# Verify each script can be loaded far enough for Bash parsing without executing
-# commands that may mutate the host. Full --help/--version checks are added once
-# their public contracts are standardized in Phase 1.
 for tool in \
   ChromaCat/chromacat \
   Clean/cleanx \
@@ -29,3 +25,13 @@ for tool in \
   [[ -s "$tool" ]] || fail "tool is empty: $tool"
 done
 pass "all distributable scripts are present and non-empty"
+
+installer_help="$(HOME="$(mktemp -d)" bash install.sh --help)"
+assert_contains "$installer_help" "Install one or more standalone Toolset CLIs" "installer help contract"
+pass "installer --help works without network access"
+
+installer_list="$(bash install.sh --list)"
+for name in chromacat cleanx dockex gitx netx phpx sqlitex; do
+  assert_contains "$installer_list" "$name" "installer lists $name"
+done
+pass "installer tool catalog"
