@@ -1,0 +1,44 @@
+name: Apply cleanx Phase 2 regressions
+
+on:
+  push:
+    branches:
+      - plan/toolset-linux-cli-hardening
+    paths:
+      - tests/patch-cleanx-phase2-regressions.py
+      - .github/workflows/apply-cleanx-phase2-regressions.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+        with:
+          ref: plan/toolset-linux-cli-hardening
+          fetch-depth: 0
+
+      - name: Apply regression fixes
+        run: python3 tests/patch-cleanx-phase2-regressions.py
+
+      - name: Validate cleanx safety tests
+        run: |
+          bash -n Clean/cleanx
+          bash -n tests/cleanx.sh
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck --severity=error Clean/cleanx tests/cleanx.sh
+          bash tests/cleanx.sh
+
+      - name: Commit regression fixes
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'A. B. M. Mahmudul Hasan'
+          git config user.email 'abmmhasan@users.noreply.github.com'
+          git add Clean/cleanx
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix(cleanx): preserve CLI config precedence'
+          git push origin HEAD:plan/toolset-linux-cli-hardening
