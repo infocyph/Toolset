@@ -40,3 +40,5 @@ jobs:
           git diff --cached --quiet && exit 0
           git commit -m 'fix(cleanx): make destructive execution argv-safe'
           git push origin HEAD:plan/toolset-linux-cli-hardening
+
+# Triggered after Phase 2 foundation hardening landed.
