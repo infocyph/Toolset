@@ -26,6 +26,16 @@ if old not in text:
     raise SystemExit('manifest generator: suite version default not found')
 path.write_text(text.replace(old, new, 1))
 
+path = Path('tests/distribution.sh')
+text = path.read_text()
+old = 'SUITE_VERSION="${SUITE_VERSION:-2.0.0-dev}" \\\n'
+new = 'SUITE_VERSION="${SUITE_VERSION:-2.0}" \\\n'
+if old not in text:
+    raise SystemExit('distribution: suite version default not found')
+text = text.replace(old, new, 1)
+text = text.replace('    assert entry["version"]\n', '    assert entry["version"] == manifest["suite"]["version"]\n', 1)
+path.write_text(text)
+
 path = Path('tests/contracts.sh')
 text = path.read_text()
 anchor = 'failures=0\n\n'
