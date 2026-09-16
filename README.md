@@ -48,9 +48,13 @@ bash install.sh gitx netx sqlitex
 bash install.sh --all
 ```
 
-### Single-tool one-liners
+### One liners
 
-For a quick individual install, use the same checksum-verifying installer in one command. This intentionally avoids `curl | bash`:
+For a quick all/individual install, use the same checksum-verifying installer in one command.
+
+```bash
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh --all && rm -f install.sh
+```
 
 ```bash
 curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh chromacat && rm -f install.sh
