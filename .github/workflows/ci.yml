@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   static:
-    name: Static shell validation
+    name: Static and workflow validation
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -28,6 +28,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Install actionlint 1.7.12
+        run: |
+          set -Eeuo pipefail
+          asset='actionlint_1.7.12_linux_amd64.tar.gz'
+          curl -fsSLO "https://github.com/rhysd/actionlint/releases/download/v1.7.12/$asset"
+          printf '%s  %s\n' \
+            '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
+            "$asset" | sha256sum -c -
+          tar -xzf "$asset" actionlint
+          ./actionlint -version
+
+      - name: Validate GitHub Actions workflows
+        run: ./actionlint -color never
 
       - name: Run static checks
         run: |
@@ -170,7 +184,7 @@ jobs:
             echo
             echo '| Check | Result |'
             echo '|---|---|'
-            echo "| Static | $STATIC_RESULT |"
+            echo "| Static/workflows | $STATIC_RESULT |"
             echo "| Baseline smoke | $SMOKE_RESULT |"
             echo "| CLI contracts | $CONTRACT_RESULT |"
             echo "| Distro smoke | $DISTRO_RESULT |"
