@@ -173,9 +173,7 @@ git clean -fd >/dev/null
 OLLAMA_MODEL=""
 GITX_OLLAMA_TAGS_JSON=""
 GITX_AI_PROVIDER=auto
-GITX_OLLAMA_COMMAND=ollama_mock
-GITX_OLLAMA_URL='http://127.0.0.1:11434'
-ollama_mock() { :; }
+GITX_OLLAMA_URL='http://ollama.example.test:2244'
 curl() {
   printf '%s\n' "$@" > "${GITX_OLLAMA_CURL_ARGS:?}"
   case " $* " in
@@ -195,18 +193,20 @@ response="$(ollama_api_request "$TMP_ROOT/ollama.json")"
 assert_eq 'feat: local ollama' "$(jq -r '.response' <<<"$response")" "Ollama response extraction"
 grep -Fx -- '--connect-timeout' "$GITX_OLLAMA_CURL_ARGS" >/dev/null || fail "Ollama connect timeout missing"
 grep -Fx -- '--max-time' "$GITX_OLLAMA_CURL_ARGS" >/dev/null || fail "Ollama operation timeout missing"
-grep -F '/api/generate' "$GITX_OLLAMA_CURL_ARGS" >/dev/null || fail "Ollama generate endpoint missing"
+grep -F 'http://ollama.example.test:2244/api/generate' "$GITX_OLLAMA_CURL_ARGS" >/dev/null || fail "custom Ollama generate endpoint missing"
 pass "local Ollama provider is preferred and bounded"
 
-unset -f ollama_mock curl
-GITX_OLLAMA_COMMAND=gitx-ollama-definitely-missing
+unset -f curl
+curl() { return 7; }
+GITX_OLLAMA_URL='http://127.0.0.1:65534'
 GITX_OLLAMA_TAGS_JSON=""
 OLLAMA_MODEL=""
 GITX_AI_PROVIDER=auto
 resolve_ai_provider
 assert_eq gemini "$GITX_SELECTED_AI_PROVIDER" "Gemini fallback when Ollama is unavailable"
 pass "Gemini fallback is selected only when Ollama is unavailable"
-GITX_OLLAMA_COMMAND=ollama
+unset -f curl
+GITX_OLLAMA_URL='http://127.0.0.1:11434'
 GITX_AI_PROVIDER=auto
 
 # API helper must carry finite connect/operation/response limits and key via header, not URL.

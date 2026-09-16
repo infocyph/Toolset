@@ -22,7 +22,7 @@ bash install.sh --release 2.0 gitx
 
 ## Requirements
 
-Bash and Git. `ai-commit` additionally needs `curl`, `jq`, and `base64`. When the `ollama` CLI is present, a reachable local Ollama service with at least one installed model is preferred automatically. If Ollama is unavailable, Gemini is used and requires a valid API key/network access.
+Bash and Git. `ai-commit` additionally needs `curl`, `jq`, and `base64`. A reachable Ollama API with at least one installed model is preferred automatically. The default endpoint is `http://127.0.0.1:11434`; `GITX_OLLAMA_URL` can point to any trusted local or remote Ollama base URL. If the configured/default Ollama endpoint is unavailable, Gemini is used and requires a valid API key/network access.
 
 ## Supported platforms/capabilities
 
@@ -108,10 +108,10 @@ Then it runs the same logic as commit/tag ranges. This keeps outputs consistent 
 
 `gitx ai-commit` defaults to `GITX_AI_PROVIDER=auto`:
 
-1. If the `ollama` command exists, the local Ollama API is reachable (default `http://127.0.0.1:11434`), and at least one local model is installed, `gitx` uses Ollama. `OLLAMA_MODEL`/`GITX_OLLAMA_MODEL` can pin a model; otherwise the first installed model is selected.
+1. If the Ollama API is reachable (default `http://127.0.0.1:11434`) and at least one model is installed, `gitx` uses Ollama. `GITX_OLLAMA_URL` may point to a custom trusted Ollama endpoint. `OLLAMA_MODEL`/`GITX_OLLAMA_MODEL` can pin a model; otherwise the first installed model is selected.
 2. If Ollama is unavailable at provider selection, `gitx` falls back to Gemini. Gemini credentials remain opt-in and are never required for the local Ollama path.
 
-Advanced overrides: `GITX_AI_PROVIDER=ollama|gemini|auto`, `GITX_OLLAMA_URL=<url>`, and `GITX_OLLAMA_COMMAND=<command>`.
+Advanced overrides: `GITX_AI_PROVIDER=ollama|gemini|auto`, `GITX_OLLAMA_URL=<url>`.
 
 ## Command Overview
 
