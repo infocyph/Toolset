@@ -73,6 +73,30 @@ jobs:
       - name: Run smoke checks
         run: bash tests/smoke.sh
 
+  safety:
+    name: High-impact safety integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install integration dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq sqlite3
+
+      - name: Run phpx safety checks
+        run: sudo -E bash tests/phpx.sh
+
+      - name: Run dockex ephemeral Docker checks
+        run: bash tests/dockex.sh
+
+      - name: Run sqlitex disposable database checks
+        if: ${{ hashFiles('tests/sqlitex.sh') != '' }}
+        run: bash tests/sqlitex.sh
+
   contracts:
     name: Standalone CLI contracts
     runs-on: ubuntu-latest
@@ -167,6 +191,7 @@ jobs:
     needs:
       - static
       - smoke
+      - safety
       - contracts
       - distro
       - distribution
@@ -178,6 +203,7 @@ jobs:
         env:
           STATIC_RESULT: ${{ needs.static.result }}
           SMOKE_RESULT: ${{ needs.smoke.result }}
+          SAFETY_RESULT: ${{ needs.safety.result }}
           CONTRACT_RESULT: ${{ needs.contracts.result }}
           DISTRO_RESULT: ${{ needs.distro.result }}
           DISTRIBUTION_RESULT: ${{ needs.distribution.result }}
@@ -189,6 +215,7 @@ jobs:
             echo '|---|---|'
             echo "| Static/workflows | $STATIC_RESULT |"
             echo "| Baseline smoke | $SMOKE_RESULT |"
+            echo "| High-impact safety | $SAFETY_RESULT |"
             echo "| CLI contracts | $CONTRACT_RESULT |"
             echo "| Distro smoke | $DISTRO_RESULT |"
             echo "| Distribution | $DISTRIBUTION_RESULT |"
@@ -197,6 +224,7 @@ jobs:
           for result in \
             "$STATIC_RESULT" \
             "$SMOKE_RESULT" \
+            "$SAFETY_RESULT" \
             "$CONTRACT_RESULT" \
             "$DISTRO_RESULT" \
             "$DISTRIBUTION_RESULT"; do
