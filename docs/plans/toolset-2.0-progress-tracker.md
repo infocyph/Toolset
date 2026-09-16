@@ -10,9 +10,9 @@ Legend: `[ ]` not started · `[-]` in progress · `[x]` done · `[!]` blocked / 
 
 ## Current Focus
 
-**Phase 3 — Security / Automation Paths**
+**Phase 4 — Presentation Path**
 
-Current task: harden `netx` first: remove user-controlled `eval`, make state creation XDG/lazy, correct endpoint/address handling, bound network operations, and add local safety fixtures before moving to `gitx`.
+Current task: harden `chromacat`: preserve faithful non-TTY/plain pipeline output, tighten option/no-color/Unicode/TERM behavior, keep streaming bounded, and add golden pipeline/stream fixtures.
 
 ## Phase 1 — Repository Contract
 
@@ -156,39 +156,39 @@ Current task: harden `netx` first: remove user-controlled `eval`, make state cre
 
 ### `netx`
 
-- [ ] Remove TLS `eval` command construction.
-- [ ] Redesign `guard --exec` argv/shell boundary.
-- [ ] Correct IPv4/IPv6 endpoint parsing.
-- [ ] Harden private/public address classification.
-- [ ] Remove state-directory creation from stateless startup paths.
-- [ ] Adopt XDG state/config paths where appropriate.
-- [ ] Add per-command privilege/capability diagnostics.
-- [ ] Add finite timeout defaults to bounded network operations.
-- [ ] Validate every JSON path.
-- [ ] Document heuristic nature of suspicious scoring.
-- [ ] Prefer nftables with iptables fallback.
-- [ ] Add local endpoint/network namespace tests.
+- [x] Remove TLS `eval` command construction.
+- [x] Redesign `guard --exec` argv/shell boundary.
+- [x] Correct IPv4/IPv6 endpoint parsing.
+- [x] Harden private/public address classification.
+- [x] Remove state-directory creation from stateless startup paths.
+- [x] Adopt XDG state/config paths where appropriate.
+- [x] Add per-command privilege/capability diagnostics.
+- [x] Add finite timeout defaults to bounded network operations.
+- [x] Validate every JSON path.
+- [x] Document heuristic nature of suspicious scoring.
+- [x] Prefer nftables with iptables fallback.
+- [x] Add local endpoint/network namespace tests.
 
 ### `gitx`
 
-- [ ] Make path/file selection NUL-safe.
-- [ ] Replace predictable `/tmp` files with secure temp state.
-- [ ] Remove avoidable internal `eval`.
-- [ ] Harden remote/main-branch/worktree behavior.
-- [ ] Harden cherry-pick/revert conflict/recovery behavior.
-- [ ] Add fixture validation for report/worklog/summary/range commands.
-- [ ] Stop sourcing arbitrary settings file for Gemini config.
-- [ ] Make API-key persistence explicit opt-in.
-- [ ] Add API timeouts/response validation/payload limits.
-- [ ] Exclude/confirm likely secret/binary staged content for AI commit.
+- [x] Make path/file selection NUL-safe.
+- [x] Replace predictable `/tmp` files with secure temp state.
+- [x] Remove avoidable internal `eval`.
+- [x] Harden remote/main-branch/worktree behavior.
+- [x] Harden cherry-pick/revert conflict/recovery behavior.
+- [x] Add fixture validation for report/worklog/summary/range commands.
+- [x] Stop sourcing arbitrary settings file for Gemini config.
+- [x] Make API-key persistence explicit opt-in.
+- [x] Add API timeouts/response validation/payload limits.
+- [x] Exclude/confirm likely secret/binary staged content for AI commit.
 - [x] Harden stable self-update baseline through the Phase 1 release channel; review tool-specific behavior during `gitx` hardening.
-- [ ] Add temporary Git repository/bare-remote tests.
+- [x] Add temporary Git repository/bare-remote tests.
 
 ### Phase 3 Gate
 
-- [ ] No unintended `eval` remains around user-controlled values.
-- [ ] No predictable shared temp state remains for sensitive/interactively generated data.
-- [ ] Network/AI automation paths have bounded failures.
+- [x] No unintended `eval` remains around user-controlled values.
+- [x] No predictable shared temp state remains for sensitive/interactively generated data.
+- [x] Network/AI automation paths have bounded failures.
 
 ## Phase 4 — Presentation Path
 
@@ -255,10 +255,10 @@ Current task: harden `netx` first: remove user-controlled `eval`, make state cre
 - [x] `Clean/cleanx` was non-executable in git; fixed on implementation branch.
 - [x] Root/per-tool stable install paths formerly used mutable `main`; migrated to release assets.
 - [x] `gitx`, `phpx`, `chromacat`, and `cleanx` stable self-update behavior formerly depended on mutable branch paths; migrated to release assets.
-- [x] `gitx` uses predictable `/tmp` files in interactive flows; retained for Phase 3 hardening.
-- [x] `gitx` sources a settings file containing Gemini configuration; retained for Phase 3 hardening.
-- [x] `netx` has TLS command construction through `eval`; retained for Phase 3 hardening.
-- [x] `netx guard --exec` currently executes through `eval`; retained for Phase 3 hardening.
+- [x] `gitx` predictable shared `/tmp` state was replaced with private `mktemp` directories and NUL-safe interactive path handling.
+- [x] `gitx` Gemini settings are parsed declaratively; API-key persistence is explicit opt-in with private credential permissions.
+- [x] `netx` TLS execution is argv-safe, timeout-bounded, and no longer uses `eval`.
+- [x] `netx guard --exec` now has an argv-only hook boundary with alert data on stdin; shell `eval` was removed.
 - [x] `dockex info` currently exposes raw container environment values; queued for Phase 2.
 - [x] `dockex` backup/restore currently installs zip/unzip dynamically in an Alpine helper container; queued for Phase 2.
 - [x] `sqlitex` current backup is a raw file copy; queued for Phase 2.
@@ -268,6 +268,7 @@ Current task: harden `netx` first: remove user-controlled `eval`, make state cre
 
 | Date | Change | Status |
 |---|---|---|
+| 2026-09-16 | Completed Phase 3: hardened `netx`/`gitx`, added permanent security/automation integration tests, and passed the full aggregate CI gate. | done |
 | 2026-09-16 | Full Toolset audit and 2.0 hardening plan created. | done |
 | 2026-09-16 | Progress tracker created; Phase 1 started. | done |
 | 2026-09-16 | Fixed executable git modes for `cleanx` and `sqlitex`. | done |
