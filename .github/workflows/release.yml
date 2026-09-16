@@ -65,14 +65,17 @@ jobs:
       - name: Build release assets
         run: |
           set -Eeuo pipefail
-          export RELEASE_TAG="$GITHUB_REF_NAME"
-          export SOURCE_COMMIT="$(git rev-parse HEAD)"
-          export SUITE_VERSION="${RELEASE_TAG#v}"
+          RELEASE_TAG="$GITHUB_REF_NAME"
+          SOURCE_COMMIT="$(git rev-parse HEAD)"
+          SUITE_VERSION="${RELEASE_TAG#v}"
+          export RELEASE_TAG SOURCE_COMMIT SUITE_VERSION
           bash tests/distribution.sh
 
       - name: Verify release manifest identity
         run: |
-          RELEASE_TAG="$GITHUB_REF_NAME" SOURCE_COMMIT="$(git rev-parse HEAD)" python3 - <<'PY'
+          set -Eeuo pipefail
+          source_commit="$(git rev-parse HEAD)"
+          RELEASE_TAG="$GITHUB_REF_NAME" SOURCE_COMMIT="$source_commit" python3 - <<'PY'
           import json
           import os
           from pathlib import Path
@@ -138,7 +141,8 @@ jobs:
             sha256sum -c SHA256SUMS
           )
 
-          RELEASE_TAG="$GITHUB_REF_NAME" SOURCE_COMMIT="$(git rev-parse HEAD)" \
+          source_commit="$(git rev-parse HEAD)"
+          RELEASE_TAG="$GITHUB_REF_NAME" SOURCE_COMMIT="$source_commit" \
             VERIFY_DIR="$verify_dir" python3 - <<'PY'
           import hashlib
           import json
