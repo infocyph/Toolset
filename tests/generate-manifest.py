@@ -84,6 +84,10 @@ for name, source_path in TOOLS:
         }
     )
 
+installer = DIST / "install.sh"
+if not installer.is_file():
+    raise FileNotFoundError(f"missing packaged installer: {installer}")
+
 manifest = {
     "schema_version": 1,
     "suite": {
@@ -92,6 +96,11 @@ manifest = {
         "release_tag": RELEASE_TAG or None,
         "repository": "infocyph/Toolset",
         "source_commit": source_commit(),
+    },
+    "installer": {
+        "asset": "install.sh",
+        "source_path": "install.sh",
+        "sha256": sha256(installer),
     },
     "tools": entries,
 }
