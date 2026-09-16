@@ -1,0 +1,48 @@
+name: Apply gitx Phase 3
+
+on:
+  push:
+    branches:
+      - plan/toolset-linux-cli-hardening
+    paths:
+      - tests/patch-gitx-phase3.py
+      - tests/gitx.sh
+      - .github/workflows/apply-gitx-phase3.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+        with:
+          ref: plan/toolset-linux-cli-hardening
+          fetch-depth: 0
+
+      - name: Apply gitx hardening
+        run: python3 tests/patch-gitx-phase3.py
+
+      - name: Install validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck jq file
+
+      - name: Validate gitx
+        run: |
+          bash -n Git/gitx
+          shellcheck --severity=error Git/gitx tests/gitx.sh
+          bash tests/gitx.sh
+
+      - name: Commit gitx hardening
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'A. B. M. Mahmudul Hasan'
+          git config user.email 'abmmhasan@users.noreply.github.com'
+          git add Git/gitx
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix(gitx): harden repository and AI automation paths'
+          git push origin HEAD:plan/toolset-linux-cli-hardening
