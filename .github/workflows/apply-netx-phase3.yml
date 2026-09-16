@@ -24,7 +24,26 @@ jobs:
           fetch-depth: 0
 
       - name: Apply netx hardening
-        run: python3 tests/patch-netx-phase3.py
+        run: |
+          python3 tests/patch-netx-phase3.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Network/netx')
+          t = p.read_text()
+          old = '''        local proto local remote pid comm user local_ip local_port remote_ip remote_port
+                  IFS='|' read -r proto local remote pid comm user <<<"$line"
+                  IFS='|' read -r local_ip local_port < <(split_endpoint "$local")
+                  IFS='|' read -r remote_ip remote_port < <(split_endpoint "$remote")
+          '''
+          new = '''        local proto local_ep remote_ep pid comm user local_ip local_port remote_ip remote_port
+                  IFS='|' read -r proto local_ep remote_ep pid comm user <<<"$line"
+                  IFS='|' read -r local_ip local_port < <(split_endpoint "$local_ep")
+                  IFS='|' read -r remote_ip remote_port < <(split_endpoint "$remote_ep")
+          '''
+          if old not in t:
+              raise SystemExit('generated guard variable block not found')
+          p.write_text(t.replace(old, new, 1))
+          PY
 
       - name: Install validation dependencies
         run: |
