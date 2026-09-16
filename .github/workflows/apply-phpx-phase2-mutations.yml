@@ -1,0 +1,44 @@
+name: Apply phpx Phase 2 mutations
+
+on:
+  push:
+    branches:
+      - plan/toolset-linux-cli-hardening
+    paths:
+      - tests/patch-phpx-phase2-mutations.py
+      - .github/workflows/apply-phpx-phase2-mutations.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+        with:
+          ref: plan/toolset-linux-cli-hardening
+          fetch-depth: 0
+
+      - name: Apply phpx mutation hardening
+        run: python3 tests/patch-phpx-phase2-mutations.py
+
+      - name: Validate phpx
+        run: |
+          bash -n PHP/phpx
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck --severity=error PHP/phpx
+          bash tests/phpx.sh
+
+      - name: Commit phpx mutation hardening
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'A. B. M. Mahmudul Hasan'
+          git config user.email 'abmmhasan@users.noreply.github.com'
+          git add PHP/phpx
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix(phpx): harden mutation and upstream trust paths'
+          git push origin HEAD:plan/toolset-linux-cli-hardening
