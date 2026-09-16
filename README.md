@@ -2,7 +2,7 @@
 
 A collection of small, focused, shell-based CLIs to streamline day-to-day development and ops on Linux.
 
-All tools are standalone Bash scripts and can be installed with a single `curl + chmod`.
+Every tool is a standalone Bash script. Install only the tools you need; no shared Toolset runtime is required.
 
 ## Tools at a Glance
 
@@ -18,70 +18,128 @@ All tools are standalone Bash scripts and can be installed with a single `curl +
 
 ### Tool Documentation
 
-- **dockex** – Docker helper: [Docker](Docker/README.md)  
-- **phpx** – PHP manager / doctor: [PHP](PHP/README.md)  
-- **gitx** – Git workflow helper: [Git](Git/README.md)  
-- **chromacat** – colourful terminal text: [ChromaCat](ChromaCat/README.md)  
-- **sqlitex** – SQLite CLI: [Sqlite](Sqlite/README.md)  
-- **cleanx** – disk & inode cleaner: [Clean](Clean/README.md)  
+- **dockex** – Docker helper: [Docker](Docker/README.md)
+- **phpx** – PHP manager / doctor: [PHP](PHP/README.md)
+- **gitx** – Git workflow helper: [Git](Git/README.md)
+- **chromacat** – colourful terminal text: [ChromaCat](ChromaCat/README.md)
+- **sqlitex** – SQLite CLI: [Sqlite](Sqlite/README.md)
+- **cleanx** – disk & inode cleaner: [Clean](Clean/README.md)
 - **netx** – network toolbox (DNS/TLS/HTTP/ports/firewall): [Net](Network/README.md)
 
 ---
 
 ## Installation
 
-Each tool lives in its own directory. Install only what you need:
+Stable installations use **GitHub release assets**, not the mutable `main` branch. Each release publishes the seven standalone CLIs, `install.sh`, `SHA256SUMS`, and `manifest.json`.
+
+### Latest stable release
+
+The release installer defaults to `~/.local/bin` and verifies every selected tool against `SHA256SUMS` before installation:
 
 ```bash
-# dockex – Docker helper
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Docker/dockex" \
-  -o /usr/local/bin/dockex && sudo chmod +x /usr/local/bin/dockex
-````
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh gitx
+```
+
+Install several tools or the whole suite:
 
 ```bash
-# phpx – PHP manager
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/PHP/phpx" \
-  -o /usr/local/bin/phpx && sudo chmod +x /usr/local/bin/phpx
+bash install.sh gitx netx sqlitex
+bash install.sh --all
+```
+
+### One liners
+
+For a quick all/individual install, use the same checksum-verifying installer in one command.
+
+```bash
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh --all && rm -f install.sh
 ```
 
 ```bash
-# gitx – Git workflow helper
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Git/gitx" \
-  -o /usr/local/bin/gitx && sudo chmod +x /usr/local/bin/gitx
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh chromacat && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh cleanx && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh dockex && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh gitx && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh netx && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh phpx && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh sqlitex && rm -f install.sh
 ```
+
+For an exact Toolset 2.0 install, replace `releases/latest/download` with `releases/download/2.0` and pass `--release 2.0`, for example:
 
 ```bash
-# chromacat – colourful terminal text / banners
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/ChromaCat/chromacat" \
-  -o /usr/local/bin/chromacat && sudo chmod +x /usr/local/bin/chromacat
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/download/2.0/install.sh" && bash install.sh --release 2.0 chromacat && rm -f install.sh
 ```
+
+Use another writable installation directory when needed:
 
 ```bash
-# sqlitex – SQLite CLI (CRUD, migrations, seeds, tuning)
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Sqlite/sqlitex" \
-  -o /usr/local/bin/sqlitex && sudo chmod +x /usr/local/bin/sqlitex
+bash install.sh --prefix "$HOME/bin" gitx
 ```
+
+For a system-wide directory, privilege elevation is explicit; the installer never invokes `sudo` itself:
 
 ```bash
-# cleanx – disk & inode cleaner (dry-run by default; use --yes to apply)
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Clean/cleanx" \
-  -o /usr/local/bin/cleanx && sudo chmod +x /usr/local/bin/cleanx
+sudo bash install.sh --prefix /usr/local/bin gitx
 ```
+
+### Exact reproducible release
+
+Pin the suite release and verify the installer itself before running it:
 
 ```bash
-# netx – network toolbox (diagnostics, TLS, DNS, firewall, outbound guard)
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Network/netx" \
-  -o /usr/local/bin/netx && sudo chmod +x /usr/local/bin/netx
+release="2.0"
+base="https://github.com/infocyph/Toolset/releases/download/${release}"
+
+curl -fsSLO "${base}/install.sh"
+curl -fsSLO "${base}/SHA256SUMS"
+grep '  install.sh$' SHA256SUMS | sha256sum -c -
+
+bash install.sh --release "$release" gitx netx
 ```
 
-See each tool’s README (linked above) for full command reference and examples.
+The installer also verifies each requested CLI, syntax-checks it, validates its `--version` contract, stages the replacement in the destination directory, and preserves an existing installation as `<tool>.previous`.
+
+### Direct single-file installation
+
+You can install a release asset without the installer:
+
+```bash
+release="2.0"
+tool="gitx"
+base="https://github.com/infocyph/Toolset/releases/download/${release}"
+
+curl -fsSLO "${base}/${tool}"
+curl -fsSLO "${base}/SHA256SUMS"
+grep "  ${tool}$" SHA256SUMS | sha256sum -c -
+
+install -m 0755 "$tool" "$HOME/.local/bin/$tool"
+```
+
+Stable Toolset suite tags use `MAJOR.MINOR`; Toolset 2.0 is published from immutable tag `2.0`.
+
+<!-- TOOLSET2-ROOT-CONTRACT:START -->
+## Support, Safety & Automation Contracts
+
+- [CLI dependency/capability, security and output contracts](docs/cli-contracts.md)
+- [2.0 security review](docs/security-review.md)
+
+Toolset targets Linux with capability-gated features rather than claiming identical behavior on every distribution. CI smoke-covers Debian 13, Ubuntu 24.04, Fedora 42 and Alpine 3.22 with Bash. High-impact operations remain tool-specific and are documented in each tool README and the suite contract.
+
+Released consumers should pin immutable stable tag `2.0` or the tagged commit SHA; published assets are immutable.
+<!-- TOOLSET2-ROOT-CONTRACT:END -->
+---
+
+## Development Builds
+
+The `main` branch is development state and is intentionally **not** the stable installation channel. If you explicitly test a development snapshot, pin a commit SHA rather than relying on a moving branch URL.
 
 ---
 
 ## Contributing
 
-Bug fixes, small UX improvements, new subcommands or better docs are all welcome.
-Open an issue or PR against this repo.
+Bug fixes, small UX improvements, new subcommands or better docs are welcome. Open an issue or PR against this repository.
 
 ---
 

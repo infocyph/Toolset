@@ -1,5 +1,7 @@
 #!/bin/bash
 
+VERSION="2.0"
+
 # Fallback colors/log_action if not provided by environment
 : "${RED:=}"
 : "${GREEN:=}"
@@ -9,6 +11,166 @@
 if ! declare -F log_action >/dev/null 2>&1; then
   log_action() { :; }
 fi
+
+
+GITX_CONFIG_DIR="${GITX_CONFIG_DIR:-${XDG_CONFIG_HOME:-${HOME:-/tmp}/.config}/gitx}"
+GITX_CONFIG_FILE="${GITX_CONFIG_FILE:-$GITX_CONFIG_DIR/settings}"
+GITX_CREDENTIAL_FILE="${GITX_CREDENTIAL_FILE:-$GITX_CONFIG_DIR/credentials}"
+GITX_INSTRUCTION_FILE="${GITX_INSTRUCTION_FILE:-$GITX_CONFIG_DIR/instructions.b64}"
+GITX_API_TIMEOUT="${GITX_API_TIMEOUT:-30}"
+GITX_CONNECT_TIMEOUT="${GITX_CONNECT_TIMEOUT:-10}"
+GITX_MAX_API_RESPONSE_BYTES="${GITX_MAX_API_RESPONSE_BYTES:-1048576}"
+GITX_MAX_DIFF_BYTES="${GITX_MAX_DIFF_BYTES:-524288}"
+GEMINI_API_KEY="${GEMINI_API_KEY:-}"
+GEMINI_MODEL="${GEMINI_MODEL:-}"
+GITX_AI_PROVIDER="${GITX_AI_PROVIDER:-auto}"
+GITX_OLLAMA_URL="${GITX_OLLAMA_URL:-http://127.0.0.1:11434}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-${GITX_OLLAMA_MODEL:-}}"
+GITX_SELECTED_AI_PROVIDER=""
+GITX_OLLAMA_TAGS_JSON=""
+
+is_uint() { [[ "${1:-}" =~ ^[0-9]+$ ]]; }
+
+gitx_mktemp_dir() {
+  local base="${TMPDIR:-/tmp}" dir
+  mkdir -p -- "$base" || return 1
+  dir="$(mktemp -d "$base/gitx.XXXXXX")" || return 1
+  chmod 700 "$dir" || { rm -rf -- "$dir"; return 1; }
+  printf '%s\n' "$dir"
+}
+
+gitx_remote() {
+  local requested="${GITX_REMOTE:-}"
+  if [[ -n "$requested" ]] && git remote get-url "$requested" >/dev/null 2>&1; then printf '%s\n' "$requested"; return 0; fi
+  if git remote get-url origin >/dev/null 2>&1; then printf '%s\n' origin; return 0; fi
+  git remote | head -n1
+}
+
+branch_checked_out_elsewhere() {
+  local branch="$1" current_root line
+  current_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  local worktree=""
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *) worktree="${line#worktree }" ;;
+      "branch refs/heads/$branch") [[ "$worktree" != "$current_root" ]] && return 0 ;;
+    esac
+  done < <(git worktree list --porcelain 2>/dev/null)
+  return 1
+}
+
+require_clean_worktree() {
+  [[ -z "$(git status --porcelain --untracked-files=no)" ]] || {
+    echo "Error: tracked working-tree changes must be committed or stashed first." >&2
+    return 1
+  }
+}
+
+gitx_status_paths() {
+  local rec status path
+  while IFS= read -r -d '' rec; do
+    status="${rec:0:2}"
+    path="${rec:3}"
+    printf '%s\0' "$path"
+    if [[ "$status" == *R* || "$status" == *C* ]]; then
+      IFS= read -r -d '' _old || true
+    fi
+  done < <(git status --porcelain=v1 -z --untracked-files=all)
+}
+
+stage_status_indices() {
+  local selection="$1" token idx
+  local -a files=()
+  mapfile -d '' -t files < <(gitx_status_paths)
+  [[ ${#files[@]} -gt 0 ]] || return 0
+  IFS=',' read -r -a tokens <<<"$selection"
+  for token in "${tokens[@]}"; do
+    token="${token//[[:space:]]/}"
+    is_uint "$token" && ((10#$token >= 1 && 10#$token <= ${#files[@]})) || {
+      echo "Invalid file selection: $token" >&2
+      return 2
+    }
+    idx=$((10#$token - 1))
+    git add -- "${files[$idx]}" || return 1
+  done
+}
+
+load_gitx_config() {
+  local key value
+  if [[ -f "$GITX_CONFIG_FILE" ]]; then
+    while IFS='=' read -r key value; do
+      case "$key" in
+        GEMINI_MODEL) [[ "$value" != *$'\n'* ]] && GEMINI_MODEL="$value" ;;
+        OLLAMA_MODEL) [[ "$value" != *$'\n'* ]] && OLLAMA_MODEL="$value" ;;
+      esac
+    done < "$GITX_CONFIG_FILE"
+  fi
+  if [[ -z "${GEMINI_API_KEY:-}" && -f "$GITX_CREDENTIAL_FILE" ]]; then
+    while IFS='=' read -r key value; do
+      case "$key" in GEMINI_API_KEY) [[ "$value" != *$'\n'* ]] && GEMINI_API_KEY="$value" ;; esac
+    done < "$GITX_CREDENTIAL_FILE"
+  fi
+}
+
+save_gitx_config() {
+  local persist_key="${1:-0}"
+  mkdir -p -m 700 -- "$GITX_CONFIG_DIR" || return 1
+  printf 'GEMINI_MODEL=%s\nOLLAMA_MODEL=%s\n' "$GEMINI_MODEL" "$OLLAMA_MODEL" > "$GITX_CONFIG_FILE"
+  chmod 600 "$GITX_CONFIG_FILE"
+  if [[ "$persist_key" == 1 ]]; then
+    [[ -n "${GEMINI_API_KEY:-}" ]] || return 1
+    printf 'GEMINI_API_KEY=%s\n' "$GEMINI_API_KEY" > "$GITX_CREDENTIAL_FILE"
+    chmod 600 "$GITX_CREDENTIAL_FILE"
+  else
+    rm -f -- "$GITX_CREDENTIAL_FILE"
+  fi
+}
+
+is_sensitive_path() {
+  local path="${1,,}"
+  [[ "$path" =~ (^|/)(\.env($|\.)|id_rsa$|id_ed25519$|credentials?($|\.)|secrets?($|\.)|[^/]+\.(pem|key|p12|pfx|keystore)$) ]]
+}
+
+ai_staged_safety_check() {
+  local allow_sensitive="${1:-0}" path sensitive=0 binary=0
+  while IFS= read -r -d '' path; do
+    if is_sensitive_path "$path"; then
+      echo "Sensitive-looking staged path: $path" >&2
+      sensitive=1
+    fi
+    if git show ":$path" 2>/dev/null | LC_ALL=C grep -Iq .; then :; else
+      echo "Binary staged path will not expose binary bytes in the normal Git diff: $path" >&2
+      binary=1
+    fi
+  done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+  if ((sensitive)) && [[ "$allow_sensitive" != 1 ]]; then
+    echo "Refusing AI commit with sensitive-looking staged paths; rerun with --include-sensitive only after review." >&2
+    return 2
+  fi
+  : "$binary"
+}
+
+prepare_ai_diff() {
+  local output="$1" allow_sensitive="${2:-0}" size
+  ai_staged_safety_check "$allow_sensitive" || return $?
+  git diff --cached --no-ext-diff --no-textconv > "$output" || return 1
+  [[ -s "$output" ]] || { echo "No textual staged diff available." >&2; return 1; }
+  size="$(wc -c < "$output" | tr -d ' ')"
+  is_uint "$size" || return 1
+  if ((10#$size > GITX_MAX_DIFF_BYTES)); then
+    echo "Staged diff is ${size} bytes; limit is ${GITX_MAX_DIFF_BYTES}. Stage a smaller change or raise GITX_MAX_DIFF_BYTES explicitly." >&2
+    return 3
+  fi
+}
+
+gemini_api_request() {
+  local url="$1" payload="$2"
+  curl --fail --silent --show-error --retry 2 \
+    --connect-timeout "$GITX_CONNECT_TIMEOUT" --max-time "$GITX_API_TIMEOUT" \
+    --max-filesize "$GITX_MAX_API_RESPONSE_BYTES" \
+    -X POST "$url" -H 'Content-Type: application/json' \
+    -H "x-goog-api-key: $GEMINI_API_KEY" --data-binary @"$payload"
+}
 
 # Helper function for displaying usage
 usage() {
@@ -35,7 +197,7 @@ usage() {
   echo "      - branch2: The second branch to compare (optional, default: main)"
   echo ""
   echo "📦 Commit & Change Management:"
-  echo "  ai-commit                                        Auto-generate commit message using Gemini AI"
+  echo "  ai-commit                                        Auto-generate commit message (local Ollama first, Gemini fallback)"
   echo "      - Uses staged files to suggest a structured commit"
   echo "  commit                                           Interactive commit helper"
   echo "      - Allows selecting files and entering a commit message"
@@ -124,7 +286,6 @@ usage() {
   echo "  gitx summary HEAD~50 include-all heavy           # Full blame, accurate surviving code"
   echo "  gitx worklog 2025-01-01 2025-01-31               # CSV worklog for a month"
   echo ""
-  exit 1
 }
 
 require_sudo() {
@@ -367,15 +528,23 @@ get_latest_tag() {
 
 # Detect master/main branch
 detect_main_branch() {
-  if git symbolic-ref refs/remotes/origin/HEAD &>/dev/null; then
-    git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'
-  elif git branch -r | grep -q "origin/main"; then
-    echo "main"
-  elif git branch -r | grep -q "origin/trunk"; then
-    echo "trunk"
-  else
-    echo "master"
+  local remote="${1:-$(gitx_remote)}" ref candidate
+  if [[ -n "$remote" ]] && ref="$(git symbolic-ref -q "refs/remotes/$remote/HEAD" 2>/dev/null)"; then
+    printf '%s
+' "${ref#refs/remotes/$remote/}"
+    return 0
   fi
+  for candidate in main trunk master; do
+    if git show-ref --verify --quiet "refs/heads/$candidate"; then printf '%s
+' "$candidate"; return 0; fi
+  done
+  if [[ -n "$remote" ]]; then
+    for candidate in main trunk master; do
+      if git show-ref --verify --quiet "refs/remotes/$remote/$candidate"; then printf '%s
+' "$candidate"; return 0; fi
+    done
+  fi
+  git branch --show-current
 }
 
 # Generate a changelog between two commits or tags (CLI-first)
@@ -472,98 +641,72 @@ set_line_endings_to_lf() {
 
 # Create a new branch from master/main
 create_branch() {
-  local branch_type=$1
-  local name=$2
+  local branch_type="${1:-}" name="${2:-}"
   ensure_git_repo
-
-  if [[ -z "$branch_type" || -z "$name" ]]; then
-    echo "Error: Branch type and name are required."
-    return 1
+  [[ -n "$branch_type" && -n "$name" ]] || { echo "Error: Branch type and name are required."; return 1; }
+  [[ "$branch_type" =~ ^(feature|bugfix|hotfix|release|docs|ci|experiment)$ ]] || { echo "Error: Unsupported branch type '$branch_type'."; return 2; }
+  local branch_name="${branch_type}/${name}" remote main_branch base_ref
+  git check-ref-format --branch "$branch_name" >/dev/null 2>&1 || { echo "Error: Invalid branch name '$branch_name'."; return 2; }
+  git show-ref --verify --quiet "refs/heads/$branch_name" && { echo "Error: Branch '$branch_name' already exists."; return 1; }
+  remote="$(gitx_remote)"
+  main_branch="$(detect_main_branch "$remote")"
+  base_ref="$main_branch"
+  if [[ -n "$remote" ]]; then
+    git fetch --prune "$remote" >/dev/null 2>&1 || return 1
+    git show-ref --verify --quiet "refs/remotes/$remote/$main_branch" && base_ref="$remote/$main_branch"
   fi
-
-  local branch_name="${branch_type}/${name}"
-
-  if git show-ref --verify --quiet "refs/heads/$branch_name"; then
-    echo "Error: Branch '$branch_name' already exists."
-    return 1
-  fi
-
-  local main_branch
-  main_branch="$(detect_main_branch)"
-
-  if [[ $(git rev-parse --abbrev-ref HEAD) != "$main_branch" ]]; then
-    echo "Switching to main branch ($main_branch) and pulling latest changes..."
-    git checkout "$main_branch" && git pull origin "$main_branch"
-  fi
-
-  git checkout -b "$branch_name"
-  git push origin "$branch_name"
+  git switch -c "$branch_name" "$base_ref" || return 1
+  if [[ -n "$remote" ]]; then git push -u "$remote" "$branch_name" || return 1; fi
   echo "Branch created: $branch_name"
 }
 
 # Sync alpha and develop with master/main
 sync_branches() {
   ensure_git_repo
-  local main_branch
-  main_branch=$(detect_main_branch)
-
-  echo "Syncing branches with $main_branch..."
-
-  local branches=("alpha" "develop")
-  read -rp "Do you want to sync additional branches? (y/n): " sync_more
-  if [[ "$sync_more" == "y" ]]; then
-    read -rp "Enter branches to sync (comma-separated): " additional_branches
-    IFS=',' read -r -a user_branches <<<"$additional_branches"
-    branches+=("${user_branches[@]}")
+  require_clean_worktree || return 1
+  local remote main_branch base_ref original branch sync_more additional_branches
+  remote="$(gitx_remote)"
+  main_branch="$(detect_main_branch "$remote")"
+  original="$(git branch --show-current)"
+  base_ref="$main_branch"
+  if [[ -n "$remote" ]]; then
+    git fetch --prune "$remote" || return 1
+    git show-ref --verify --quiet "refs/remotes/$remote/$main_branch" && base_ref="$remote/$main_branch"
   fi
-
-  git checkout "$main_branch" && git pull origin "$main_branch"
-
+  local -a branches=(alpha develop)
+  read -rp "Do you want to sync additional branches? (y/n): " sync_more
+  if [[ "$sync_more" == y ]]; then IFS=',' read -r -a user_branches <<<"${additional_branches:-}"; branches+=("${user_branches[@]}"); fi
   for branch in "${branches[@]}"; do
-    if git show-ref --verify --quiet "refs/heads/$branch"; then
-      echo "Merging $main_branch into $branch..."
-      git checkout "$branch" && git merge --no-ff "$main_branch" && git push origin "$branch"
-      echo "Synced $branch with $main_branch."
-    else
-      echo "Branch '$branch' does not exist. Skipping..."
-    fi
+    git show-ref --verify --quiet "refs/heads/$branch" || { echo "Branch '$branch' does not exist. Skipping."; continue; }
+    branch_checked_out_elsewhere "$branch" && { echo "Branch '$branch' is checked out in another worktree. Skipping."; continue; }
+    git switch "$branch" || return 1
+    git merge --no-ff "$base_ref" || { echo "Merge conflict on '$branch'; resolve it or run git merge --abort."; return 2; }
+    [[ -n "$remote" ]] && git push "$remote" "$branch" || true
   done
+  [[ -n "$original" && "$(git branch --show-current)" != "$original" ]] && git switch "$original" >/dev/null || true
 }
 
 # Merge branches
 merge_branch() {
-  local source=$1
-  local target=$2
+  local source="${1:-}" target="${2:-}"
   ensure_git_repo
-
-  if [[ -z "$source" || -z "$target" ]]; then
-    echo "Error: Source and target branches are required."
-    return 1
+  [[ -n "$source" && -n "$target" ]] || { echo "Error: Source and target branches are required."; return 1; }
+  git show-ref --verify --quiet "refs/heads/$source" || { echo "Error: Source branch '$source' does not exist."; return 1; }
+  git show-ref --verify --quiet "refs/heads/$target" || { echo "Error: Target branch '$target' does not exist."; return 1; }
+  branch_checked_out_elsewhere "$target" && { echo "Error: Target branch '$target' is checked out in another worktree."; return 2; }
+  require_clean_worktree || return 1
+  read -rp "Merge '$source' into '$target'? (y/n): " confirm
+  [[ "$confirm" == y ]] || { echo "Merge cancelled."; return 0; }
+  local original remote
+  original="$(git branch --show-current)"; remote="$(gitx_remote)"
+  git switch "$target" || return 1
+  if [[ -n "$remote" ]]; then
+    git fetch --prune "$remote" || return 1
+    if git show-ref --verify --quiet "refs/remotes/$remote/$target"; then git merge --ff-only "$remote/$target" || return 1; fi
   fi
-
-  if ! git show-ref --verify --quiet "refs/heads/$source" || ! git show-ref --verify --quiet "refs/heads/$target"; then
-    echo "Error: One or both branches do not exist."
-    return 1
-  fi
-
-  echo "About to merge '$source' into '$target'."
-  read -rp "Are you sure? (y/n): " confirm
-  [[ "$confirm" != "y" ]] && {
-    echo "Merge cancelled."
-    return
-  }
-
-  git checkout "$target" && git pull origin "$target"
-
-  echo "Merging $source into $target..."
-  if ! git merge --no-ff "$source"; then
-    echo "Merge conflicts detected. Resolve them and commit manually."
-    echo "Run 'git merge --abort' to cancel the merge."
-    return 1
-  fi
-
-  git push origin "$target"
-  echo "Successfully merged $source into $target."
+  git merge --no-ff "$source" || { echo "Merge conflict; resolve it or run git merge --abort."; return 2; }
+  [[ -n "$remote" ]] && git push "$remote" "$target" || true
+  [[ -n "$original" && "$original" != "$target" ]] && git switch "$original" >/dev/null || true
 }
 
 # Tag a release
@@ -1443,31 +1586,29 @@ apply_patch_file() {
 
 cherry_pick_commit() {
   ensure_git_repo
+  case "${1:-}" in
+    --continue) git cherry-pick --continue; return $? ;;
+    --abort) git cherry-pick --abort; return $? ;;
+    --skip) git cherry-pick --skip; return $? ;;
+  esac
+  local -a commits=()
+  mapfile -t commits < <(git log --format='%H')
+  ((${#commits[@]})) || { echo "No commits available."; return 1; }
   echo "Recent Commit History:"
-  git log --oneline | nl -w2 -s". " | tee /tmp/git_log.txt
-
-  read -rp "Enter the numbers of the commits to cherry-pick (comma-separated): " commit_numbers
-  local commit_hashes
-  commit_hashes=$(echo "$commit_numbers" | tr ',' '\n' | while read -r num; do
-    sed -n "${num}p" /tmp/git_log.txt | awk '{print $2}'
-  done)
-
-  if [[ -z "$commit_hashes" ]]; then
-    echo "No valid commits selected. Exiting."
-    return
-  fi
-
-  for commit in $commit_hashes; do
-    git cherry-pick "$commit" || {
-      echo "Conflict detected during cherry-pick of $commit."
-      read -rp "Do you want to resolve conflicts manually or abort? (resolve/abort): " action
-      if [[ "$action" == "abort" ]]; then
-        git cherry-pick --abort
-        echo "Cherry-pick aborted."
-        return
-      fi
-    }
-    echo "Cherry-picked commit: $commit"
+  local i
+  for i in "${!commits[@]}"; do printf '%2d. %s
+' "$((i+1))" "$(git show -s --format='%h %s' "${commits[$i]}")"; done
+  read -rp "Enter the numbers of the commits to cherry-pick (comma-separated): " selection
+  local token idx
+  IFS=',' read -r -a tokens <<<"$selection"
+  for token in "${tokens[@]}"; do
+    token="${token//[[:space:]]/}"
+    is_uint "$token" && ((10#$token >= 1 && 10#$token <= ${#commits[@]})) || { echo "Invalid selection: $token"; return 2; }
+    idx=$((10#$token - 1))
+    if ! git cherry-pick "${commits[$idx]}"; then
+      echo "Cherry-pick stopped on conflict. Resolve and run 'gitx cherry-pick --continue', or run 'gitx cherry-pick --abort'/'--skip'." >&2
+      return 2
+    fi
   done
 }
 
@@ -1510,38 +1651,22 @@ clean_untracked() {
 
 show_large_files() {
   ensure_git_repo
-
   read -rp "How many large files do you want to display? (default 10): " count
-  count=${count:-10}
-
-  echo "Choose an action:"
-  echo "1. Display results inline"
-  echo "2. Save results to a file"
+  count="${count:-10}"
+  is_uint "$count" && ((10#$count > 0 && 10#$count <= 10000)) || { echo "Invalid count."; return 2; }
+  echo "Choose an action:"; echo "1. Display results inline"; echo "2. Save results to a file"
   read -rp "Enter your choice: " choice
-
-  local cmd="
-    git rev-list --objects --all |
-    git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' |
-    awk '\$1 == \"blob\" {print \$3, \$4}' |
-    sort -k1 -nr |
-    head -${count}
-  "
-
-  case $choice in
-  1)
-    echo "Top $count largest files in the repository:"
-    eval "$cmd" | awk '{printf "%s bytes  %s\n", $1, $2}'
-    ;;
-  2)
-    read -rp "Enter the output file name (default: large_files.txt): " output_file
-    output_file=${output_file:-large_files.txt}
-    eval "$cmd" | awk '{printf "%s bytes  %s\n", $1, $2}' >"$output_file"
+  local output_file=""
+  [[ "$choice" == 2 ]] && { read -rp "Enter output file (default: large_files.txt): " output_file; output_file="${output_file:-large_files.txt}"; }
+  [[ "$choice" == 1 || "$choice" == 2 ]] || { echo "Invalid choice."; return 2; }
+  if [[ "$choice" == 1 ]]; then
+    git rev-list --objects --all | git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' | awk '$1=="blob" {print $3, $4}' | sort -k1,1nr | head -n "$count" | awk '{printf "%s bytes  %s
+", $1, $2}'
+  else
+    git rev-list --objects --all | git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' | awk '$1=="blob" {print $3, $4}' | sort -k1,1nr | head -n "$count" | awk '{printf "%s bytes  %s
+", $1, $2}' > "$output_file"
     echo "Results saved to $output_file"
-    ;;
-  *)
-    echo "Invalid choice."
-    ;;
-  esac
+  fi
 }
 
 fetch_and_prune() {
@@ -1585,45 +1710,29 @@ file_log() {
 
 revert_commit() {
   ensure_git_repo
-  echo "📌 Recent Commit History:"
-  git log --oneline | nl -w2 -s". " | tee /tmp/git_log.txt
-
-  read -rp "Enter the numbers of the commits to revert (comma-separated): " commit_numbers
-
-  local commit_hashes
-  commit_hashes=$(echo "$commit_numbers" | tr ',' '\n' | while read -r num; do
-    sed -n "${num}p" /tmp/git_log.txt | awk '{print $2}'
-  done)
-
-  if [[ -z "$commit_hashes" ]]; then
-    echo "❌ No valid commits selected."
-    return 1
-  fi
-
-  echo "📌 Choose an action:"
-  echo "1. Create revert commits for each selected commit"
-  echo "2. Revert and amend the last commit"
-  read -rp "Enter your choice: " choice
-
-  case $choice in
-  1)
-    for commit in $commit_hashes; do
-      git revert "$commit" || {
-        echo "⚠️ Conflict detected while reverting $commit. Resolve manually."
-        exit 1
-      }
-      echo "✅ Reverted commit: $commit"
-    done
-    ;;
-  2)
-    for commit in $commit_hashes; do
-      git revert --no-commit "$commit"
-    done
-    git commit --amend -m "Amended revert: $(git log -1 --pretty=%B)"
-    echo "✅ Reverted commits and amended the last commit."
-    ;;
-  *) echo "❌ Invalid choice." ;;
+  case "${1:-}" in
+    --continue) git revert --continue; return $? ;;
+    --abort) git revert --abort; return $? ;;
+    --skip) git revert --skip; return $? ;;
   esac
+  local -a commits=()
+  mapfile -t commits < <(git log --format='%H')
+  echo "Recent Commit History:"
+  local i
+  for i in "${!commits[@]}"; do printf '%2d. %s
+' "$((i+1))" "$(git show -s --format='%h %s' "${commits[$i]}")"; done
+  read -rp "Enter the numbers of the commits to revert (comma-separated): " selection
+  local token idx
+  IFS=',' read -r -a tokens <<<"$selection"
+  for token in "${tokens[@]}"; do
+    token="${token//[[:space:]]/}"
+    is_uint "$token" && ((10#$token >= 1 && 10#$token <= ${#commits[@]})) || { echo "Invalid selection: $token"; return 2; }
+    idx=$((10#$token - 1))
+    if ! git revert "${commits[$idx]}"; then
+      echo "Revert stopped on conflict. Resolve and run 'gitx revert --continue', or run 'gitx revert --abort'/'--skip'." >&2
+      return 2
+    fi
+  done
 }
 
 reset_branch_to_remote() {
@@ -1687,34 +1796,19 @@ prune_remote_branches() {
 
 interactive_commit() {
   ensure_git_repo
-
-  if [[ -z $(git status --porcelain) ]]; then
-    echo "✅ No changes to commit."
-    return 0
-  fi
-
-  echo "📌 Select files to stage (use numbers):"
-  git status -s | nl -w2 -s". " | tee /tmp/git_status.txt
-
-  read -rp "Enter file numbers to stage (comma-separated, 'a' for all): " file_numbers
-
-  if [[ "$file_numbers" == "a" ]]; then
-    git add .
-  else
-    local selected_files
-    selected_files=$(echo "$file_numbers" | tr ',' '\n' | while read -r num; do
-      sed -n "${num}p" /tmp/git_status.txt | awk '{print $2}'
-    done)
-    # shellcheck disable=SC2086
-    git add $selected_files
-  fi
-
-  echo "📌 Staged files:"
+  local -a files=()
+  mapfile -d '' -t files < <(gitx_status_paths)
+  ((${#files[@]})) || { echo "No changes to commit."; return 0; }
+  echo "Select files to stage:"
+  local i
+  for i in "${!files[@]}"; do printf '%2d. %q
+' "$((i+1))" "${files[$i]}"; done
+  read -rp "Enter file numbers (comma-separated, 'a' for all): " selection
+  if [[ "$selection" == a ]]; then git add -A -- .; else stage_status_indices "$selection" || return $?; fi
   git diff --cached --name-only
-
   read -rp "Enter your commit message: " commit_message
+  [[ -n "$commit_message" ]] || { echo "Commit message cannot be empty."; return 2; }
   git commit -m "$commit_message"
-  echo "✅ Committed changes with message: $commit_message"
 }
 
 show_status() {
@@ -1817,36 +1911,20 @@ generate_git_summary() {
   blame_file="$(mktemp)"
 
   if ((heavy_flag)); then
-    # Heavy mode: blame over entire repo (accurate surviving code)
-    local files_to_blame
-    files_to_blame="$(git ls-files)"
-
-    files_to_blame="$(printf '%s\n' "$files_to_blame" | while read -r f; do
-      [[ -z "$f" ]] && continue
+    # Heavy mode: blame over the repository using NUL-delimited tracked paths.
+    while IFS= read -r -d '' f; do
       local mime
-      mime=$(file --mime-type -b "$f" 2>/dev/null || true)
-      if [[ "$include_all" == true && "$mime" =~ ^text/ ]]; then
-        echo "$f"
+      mime=$(file --mime-type -b -- "$f" 2>/dev/null || true)
+      local include=0
+      if [[ "$include_all" == true && "$mime" =~ ^text/ ]]; then include=1
       else
         case "$f" in
-        *.sh | *.py | *.js | *.ts | *.go | *.java | *.c | *.cpp | *.php | *.rb | *.html | *.css | *.scss | *.sql | *.xml | *.json | *.yaml | *.yml | *.md | *.toml | *.ini | *.cfg | *.conf | *.properties | Makefile | makefile | Dockerfile | .env | .gitignore)
-          echo "$f"
-          ;;
+          *.sh|*.py|*.js|*.ts|*.go|*.java|*.c|*.cpp|*.php|*.rb|*.html|*.css|*.scss|*.sql|*.xml|*.json|*.yaml|*.yml|*.md|*.toml|*.ini|*.cfg|*.conf|*.properties|Makefile|makefile|Dockerfile|.env|.gitignore) include=1 ;;
         esac
       fi
-    done)"
-
-    if [[ -n "$files_to_blame" ]]; then
-      local jobs
-      if command -v nproc >/dev/null 2>&1; then
-        jobs="$(nproc)"
-      else
-        jobs=4
-      fi
-
-      printf '%s\n' "$files_to_blame" | xargs -P"$jobs" -I{} git blame --line-porcelain "{}" 2>/dev/null |
-        grep -E "^author-mail" >"$blame_file"
-    fi
+      ((include)) || continue
+      git blame --line-porcelain -- "$f" 2>/dev/null | grep -E '^author-mail' >> "$blame_file" || true
+    done < <(git ls-files -z)
   fi
 
   echo "| Author Name | Author Email | Commits | Files Changed | Insertions | Deletions | Surviving Code % |"
@@ -2066,52 +2144,102 @@ generate_worklog() {
   '
 }
 
-self_update() {
-  local script_url="https://raw.githubusercontent.com/infocyph/Toolset/main/Git/gitx"
-  local temp_file="/tmp/gitx_latest"
-  local local_file
+self_update() (
+  set -Eeuo pipefail
+  local tool="gitx"
+  local invoked="$0"
+  local current_path prefix tmp_dir checksum_line
+  local release="${TOOLSET_SELF_UPDATE_RELEASE:-latest}"
+  local base
+  local -a install_args
 
-  local_file="$(command -v gitx 2>/dev/null || true)"
-  if [[ -z "$local_file" ]]; then
-    local_file="/usr/local/bin/gitx"
+  if [[ "$release" == "latest" || "$release" == "stable" ]]; then
+    base="https://github.com/infocyph/Toolset/releases/latest/download"
+    install_args=(--latest)
+  else
+    [[ "$release" =~ ^v?[0-9]+\.[0-9]+(\.[0-9]+)?(-rc\.[0-9]+)?$ ]] || {
+      printf '%s: invalid TOOLSET_SELF_UPDATE_RELEASE: %s\n' "$tool" "$release" >&2
+      return 2
+    }
+    base="https://github.com/infocyph/Toolset/releases/download/$release"
+    install_args=(--release "$release")
+  fi
+  if [[ -n "${TOOLSET_RELEASE_BASE_URL:-}" ]]; then
+    base="${TOOLSET_RELEASE_BASE_URL%/}"
   fi
 
-  echo -e "${YELLOW}Checking for updates to gitx...${NC}"
+  for cmd in curl sha256sum mktemp install mv awk; do
+    command -v "$cmd" >/dev/null 2>&1 || {
+      printf '%s: self-update requires %s
+' "$tool" "$cmd" >&2
+      return 1
+    }
+  done
 
-  if ! curl -fsSL "$script_url" -o "$temp_file"; then
-    echo -e "${RED}Failed to download the latest gitx script from GitHub.${NC}"
+  if [[ "$invoked" != */* ]]; then
+    invoked="$(command -v -- "$invoked" 2>/dev/null || printf '%s' "$invoked")"
+  fi
+  current_path="$(readlink -f -- "$invoked" 2>/dev/null || realpath -- "$invoked" 2>/dev/null || printf '%s' "$invoked")"
+  prefix="$(dirname -- "$current_path")"
+
+  [[ -w "$prefix" ]] || {
+    printf '%s: install directory is not writable: %s
+' "$tool" "$prefix" >&2
+    printf '%s: rerun with appropriate privileges or reinstall to a writable prefix.
+' "$tool" >&2
     return 1
-  fi
+  }
 
-  local remote_hash local_hash
-  remote_hash="$(sha256sum "$temp_file" | awk '{print $1}')"
-  local_hash="$(sha256sum "$local_file" 2>/dev/null | awk '{print $1}')"
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf -- "$tmp_dir"' EXIT INT TERM
 
-  if [[ -n "$local_hash" && "$remote_hash" == "$local_hash" ]]; then
-    echo -e "${GREEN}gitx is already up-to-date.${NC}"
-    rm -f "$temp_file"
-    return 0
-  fi
+  toolset_download_with_retry() {
+    local url="$1" output="$2"
+    local max_attempts="${TOOLSET_DOWNLOAD_ATTEMPTS:-4}"
+    local attempt rc=1
 
-  if [[ -e "$local_file" && ! -w "$local_file" ]]; then
-    echo -e "${RED}Cannot write to $local_file. Run with sudo or install gitx in a writable location.${NC}"
-    rm -f "$temp_file"
+    [[ "$max_attempts" =~ ^[1-9][0-9]*$ ]] || {
+      printf '%s: TOOLSET_DOWNLOAD_ATTEMPTS must be a positive integer\n' "$tool" >&2
+      return 2
+    }
+
+    for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+      if curl --fail --location --silent --show-error \
+        --connect-timeout 10 --max-time 120 \
+        "$url" --output "$output"; then
+        return 0
+      else
+        rc=$?
+      fi
+
+      if ((attempt < max_attempts)); then
+        printf '%s: download failed (attempt %d/%d); retrying...\n' \
+          "$tool" "$attempt" "$max_attempts" >&2
+        sleep "$attempt"
+      fi
+    done
+
+    return "$rc"
+  }
+
+  toolset_download_with_retry "$base/SHA256SUMS" "$tmp_dir/SHA256SUMS"
+  toolset_download_with_retry "$base/install.sh" "$tmp_dir/install.sh"
+
+  checksum_line="$(awk '$2 == "install.sh" {print; exit}' "$tmp_dir/SHA256SUMS")"
+  [[ -n "$checksum_line" ]] || {
+    printf '%s: install.sh checksum is missing from the selected release.
+' "$tool" >&2
     return 1
-  fi
+  }
 
-  if [[ -f "$local_file" ]]; then
-    mv "$local_file" "${local_file}.bak-$(date +'%Y%m%d%H%M%S')" 2>/dev/null || true
-  fi
-
-  if ! mv "$temp_file" "$local_file"; then
-    echo -e "${RED}Failed to overwrite $local_file with the new gitx script.${NC}"
-    return 1
-  fi
-
-  chmod +x "$local_file"
-
-  echo -e "${GREEN}gitx has been updated successfully to the latest version.${NC}"
-}
+  (
+    cd "$tmp_dir"
+    printf '%s
+' "$checksum_line" | sha256sum -c - >/dev/null
+  )
+  bash -n "$tmp_dir/install.sh"
+  bash "$tmp_dir/install.sh" "${install_args[@]}" --prefix "$prefix" "$tool"
+)
 
 # Simple doctor command: health check
 doctor_repo() {
@@ -2164,217 +2292,251 @@ doctor_repo() {
 
 # -------------------------- AI Commit Generator --------------------------
 
-GITX_CONFIG_DIR="$HOME/.config/gitx"
-GITX_CONFIG_FILE="$GITX_CONFIG_DIR/settings"
-GITX_INSTRUCTION_FILE="$GITX_CONFIG_DIR/instructions.b64"
-
-# Helper function to fetch, select, and save the Gemini model
 select_gemini_model() {
   echo "Fetching available Gemini models..."
-  local models_response
-  models_response=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY")
-
-  local available_models=($(echo "$models_response" | grep '"name": "models/gemini' | cut -d'"' -f4 | sed 's/models\///'))
-
-  if [[ ${#available_models[@]} -eq 0 ]]; then
-    echo -e "${RED}Could not fetch model list. Check your API key.${NC}"
-    GEMINI_MODEL="gemini-1.5-flash"
-    read -rp "Enter model manually (or press enter for $GEMINI_MODEL): " user_model
-    [[ -n "$user_model" ]] && GEMINI_MODEL="$user_model"
+  local response
+  response=$(curl --fail --silent --show-error --retry 2 --connect-timeout "$GITX_CONNECT_TIMEOUT" --max-time "$GITX_API_TIMEOUT" --max-filesize "$GITX_MAX_API_RESPONSE_BYTES" -H "x-goog-api-key: $GEMINI_API_KEY" 'https://generativelanguage.googleapis.com/v1beta/models') || return 1
+  local -a available_models=()
+  mapfile -t available_models < <(jq -r '.models[]? | select(.name | startswith("models/gemini")) | .name | sub("^models/"; "")' <<<"$response")
+  if ((${#available_models[@]} == 0)); then
+    echo "No Gemini models returned; enter one manually." >&2
+    read -rp "Model: " GEMINI_MODEL
   else
-    echo -e "${GREEN}Available Models:${NC}"
-    local PS3="Select a model number: "
-    select model in "${available_models[@]}"; do
-      if [[ -n "$model" ]]; then
-        GEMINI_MODEL="$model"
-        break
-      else
-        echo "Invalid selection. Try again."
-      fi
-    done
+    local PS3="Select a model number: " model
+    select model in "${available_models[@]}"; do [[ -n "$model" ]] && { GEMINI_MODEL="$model"; break; }; done
   fi
-
-  # Save updated config
-  echo "GEMINI_API_KEY=\"$GEMINI_API_KEY\"" > "$GITX_CONFIG_FILE"
-  echo "GEMINI_MODEL=\"$GEMINI_MODEL\"" >> "$GITX_CONFIG_FILE"
-  chmod 600 "$GITX_CONFIG_FILE"
-  echo -e "${GREEN}Model set to $GEMINI_MODEL and saved to $GITX_CONFIG_FILE${NC}"
+  [[ -n "${GEMINI_MODEL:-}" ]] || return 1
+  save_gitx_config "${GITX_PERSIST_API_KEY:-0}"
 }
 
 load_or_prompt_gemini_config() {
-  mkdir -p "$GITX_CONFIG_DIR"
-  if [[ -f "$GITX_CONFIG_FILE" ]]; then
-    source "$GITX_CONFIG_FILE"
+  load_gitx_config
+  if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+    echo "Gemini API key not found in the environment or opt-in credential file." >&2
+    read -rsp "Paste Gemini API token: " GEMINI_API_KEY; echo
+    [[ -n "${GEMINI_API_KEY:-}" ]] || return 1
   fi
+  [[ -n "${GEMINI_MODEL:-}" ]] || select_gemini_model
+}
 
-  local missing_key=0
+ollama_base_url() {
+  local base="${GITX_OLLAMA_URL%/}"
+  case "$base" in
+    http://*|https://*) ;;
+    *) base="http://$base" ;;
+  esac
+  printf '%s
+' "$base"
+}
 
-  # 1. Ask for Token if missing
-  if [[ -z "$GEMINI_API_KEY" ]]; then
-    echo -e "${YELLOW}Gemini API Key not found.${NC}"
-    read -rp "Paste your Gemini API Token: " GEMINI_API_KEY
-    missing_key=1
+ollama_tags_request() {
+  curl --fail --silent --show-error \
+    --connect-timeout "$GITX_CONNECT_TIMEOUT" --max-time "$GITX_API_TIMEOUT" \
+    --max-filesize "$GITX_MAX_API_RESPONSE_BYTES" \
+    "$(ollama_base_url)/api/tags"
+}
+
+ollama_available() {
+  GITX_OLLAMA_TAGS_JSON="$(ollama_tags_request 2>/dev/null)" || return 1
+  jq -e '.models | type == "array" and length > 0' <<<"$GITX_OLLAMA_TAGS_JSON" >/dev/null 2>&1
+}
+
+select_ollama_model() {
+  local response="${GITX_OLLAMA_TAGS_JSON:-}"
+  [[ -n "$response" ]] || response="$(ollama_tags_request)" || return 1
+  local -a models=()
+  mapfile -t models < <(jq -r '.models[]?.name // empty' <<<"$response")
+  ((${#models[@]} > 0)) || return 1
+
+  if [[ -n "${OLLAMA_MODEL:-}" ]]; then
+    local model
+    for model in "${models[@]}"; do
+      [[ "$model" == "$OLLAMA_MODEL" ]] && return 0
+    done
+    echo "Configured Ollama model '$OLLAMA_MODEL' is not installed; using '${models[0]}' instead." >&2
   fi
+  OLLAMA_MODEL="${models[0]}"
+}
 
-  # 2. Ask for Model if missing (or if we just entered a new key)
-  if [[ -z "$GEMINI_MODEL" || "$missing_key" -eq 1 ]]; then
-    select_gemini_model
+resolve_ai_provider() {
+  case "${GITX_AI_PROVIDER:-auto}" in
+    auto)
+      if ollama_available && select_ollama_model; then
+        GITX_SELECTED_AI_PROVIDER="ollama"
+      else
+        GITX_SELECTED_AI_PROVIDER="gemini"
+      fi
+      ;;
+    ollama)
+      ollama_available || {
+        echo "Ollama was explicitly selected but the configured Ollama endpoint is unreachable or has no installed model." >&2
+        return 1
+      }
+      select_ollama_model || return 1
+      GITX_SELECTED_AI_PROVIDER="ollama"
+      ;;
+    gemini)
+      GITX_SELECTED_AI_PROVIDER="gemini"
+      ;;
+    *)
+      echo "Invalid GITX_AI_PROVIDER: $GITX_AI_PROVIDER (expected auto, ollama, or gemini)." >&2
+      return 2
+      ;;
+  esac
+}
+
+ollama_api_request() {
+  local payload="$1"
+  curl --fail --silent --show-error \
+    --connect-timeout "$GITX_CONNECT_TIMEOUT" --max-time "$GITX_API_TIMEOUT" \
+    --max-filesize "$GITX_MAX_API_RESPONSE_BYTES" \
+    -X POST "$(ollama_base_url)/api/generate" \
+    -H 'Content-Type: application/json' --data-binary @"$payload"
+}
+
+load_ai_system_instruction() {
+  local encoded="${GITX_SYS_INSTRUCTION_B64:-}"
+  if [[ -z "$encoded" && -f "$GITX_INSTRUCTION_FILE" ]]; then
+    encoded="$(cat "$GITX_INSTRUCTION_FILE")"
   fi
+  if [[ -z "$encoded" ]]; then
+    encoded="WW91IGFyZSBhIGNvbW1pdCBtZXNzYWdlIGdlbmVyYXRvci4gWW91ciBvbmx5IHRhc2sgaXMgdG8gcmVhZCB0aGUgY29udGVudHMgb2YgdGhlIHByb3ZpZGVkIGdpdCBkaWZmIGFuZCBwcm9kdWNlIGEgY29tbWl0IG1lc3NhZ2UgdGhhdCBzdW1tYXJpemVzIHRoZSBjaGFuZ2VzLiBZb3VyIGZpbmFsIHJlc3BvbnNlIG11c3Qgbm90IGJlIGVuY2xvc2VkIGluIGEgZ2xvYmFsIG1hcmtkb3duIGNvZGUgYmxvY2suIFlvdXIgY29tbWl0IG1lc3NhZ2UgbXVzdCBzdHJpY3RseSBmb2xsb3cgdGhlIENvbW1pdCBNZXNzYWdlIEd1aWRlbGluZXMgb3V0bGluZWQgYmVsb3cuCgpDb250ZW50IG9mIHRoZSBDb21taXQgTWVzc2FnZTogQWNjdXJhdGVseSBjYXB0dXJlIHRoZSBlc3NlbmNlIG9mIHRoZSBjaGFuZ2VzIGFzIHJlZmxlY3RlZCBieSB0aGUgZGlmZi4gTWVudGlvbiBrZXkgY2hhbmdlcywgYWZmZWN0ZWQgZmlsZXMsIG9yIG5vdGFibGUgcmVmYWN0b3JpbmdzLiBJZiB0aGUgZGlmZiBpcyBlbXB0eSBvciBjb250YWlucyBubyBjaGFuZ2VzLCBvdXRwdXQgYSBjbGVhciBtZXNzYWdlIGluZGljYXRpbmcgdGhhdCB0aGVyZSBhcmUgbm8gY2hhbmdlcyB0byBjb21taXQuIAoKR3VpZGVsaW5lIEFkaGVyZW5jZTogRW5zdXJlIHRoYXQgZXZlcnkgcGFydCBvZiB5b3VyIGNvbW1pdCBtZXNzYWdlIGNvbmZvcm1zIHRvIHRoZSBpbnN0cnVjdGlvbnMgcHJvdmlkZWQgYmVsb3cuIERvIG5vdCBpbmNsdWRlIHRoZSByYXcgZGlmZiBjb250ZW50IGluIHlvdXIgY29tbWl0IG1lc3NhZ2U7IGluc3RlYWQsIHByb3ZpZGUgYSBzdWNjaW5jdCBzdW1tYXJ5LgoKIyBDb21taXQgTWVzc2FnZSBHdWlkZWxpbmVzCgpBZG9wdCBhIHN0cnVjdHVyZWQgYXBwcm9hY2ggdG8gY29tbWl0IG1lc3NhZ2VzIHVzaW5nIHRoZSAqKkNvbnZlbnRpb25hbCBDb21taXRzIFNwZWNpZmljYXRpb24qKiBhbmQgdGhlIGV4dGVuZGVkIHJ1bGVzIGJlbG93LiBUaGlzIGZvcm1hdCBlbmhhbmNlcyBjbGFyaXR5LCBjb2xsYWJvcmF0aW9uIGFuZCBhdXRvbWF0aW9uLgoKIyMgKipTdHJ1Y3R1cmUqKgoKVGhpcyBpcyB0aGUgZGV0YWlsZWQgYW5kIGNvbXBsZXRlIGNvbW1pdCBtZXNzYWdlIGZvcm1hdC4gSXQgaW5jbHVkZXM6CgotICoqR2l0bW9qaSoqOiBFbW9qaXMgdG8gdmlzdWFsbHkgcmVwcmVzZW50IHRoZSB0eXBlIG9mIGNoYW5nZS4KLSAqKkJyZWFraW5nIENoYW5nZXMqKjogSW5kaWNhdGUgbWFqb3IgdXBkYXRlcyBvciBiYWNrd2FyZC1pbmNvbXBhdGlibGUgY2hhbmdlcy4KLSAqKkZvb3RlcnMqKjogTWV0YWRhdGEgZm9yIHRyYWNraW5nLgoKIyMjIyAqKkZyYW1ld29yazoqKgoKPGdpdG1vamk+IDx0eXBlPig8c2NvcGU+KTogPHN1YmplY3Q+IDxtZXRhPgoKPGJvZHk+CgpCUkVBS0lORyBDSEFOR0U6IDxicmVha2luZy1jaGFuZ2U+Cjxmb290ZXItaGVhZGVyPjogPGZvb3Rlci12YWx1ZT4KPGZvb3Rlci1oZWFkZXI+OiA8Zm9vdGVyLXZhbHVlPgoKLS0tCgojIyAqKk1lc3NhZ2UgQ29tcG9uZW50cyoqCgojIyMgKipHaXRtb2ppKioKCi0gSW5kaWNhdGVzIHRoZSBwdXJwb3NlIG9yIG5hdHVyZSBvZiB0aGUgb3ZlcmFsbCBjaGFuZ2UKLSBJZiB0aGVyZSBpcyBtdWx0aXBsZSBjaGFuZ2VzLCB3aWxsIGJlIHNlbGVjdGVkIGJhc2VkIG9uIHR5cGUgb2YgY2hhbmdlIHJhbmtlZCBoaWdoZXN0LgotIENoZWNrIGJlbG93IEdpdG1vamkgTGlzdCBmb3IgZ2l0bW9qaSByZWxhdGVkIGtleXdvcmRzCi0gT25seSB1c2UgY29kZS4gTGlrZSwgYDphcnQ6YCwgYDpyb2NrZXQ6YCwgLi4uLgoKIyMjICoqVHlwZSoqCgotIEluZGljYXRlcyB0aGUgcHVycG9zZSBvciBuYXR1cmUgb2YgdGhlIGNoYW5nZS4KLSBNdXN0IGJlIG9uZSBvZiB0aGUgZm9sbG93aW5nOgogICAgLSAqKmBmZWF0YCoqOiBOZXcgZmVhdHVyZS4KICAgIC0gKipgZml4YCoqOiBCdWcgZml4LgogICAgLSAqKmBkb2NzYCoqOiBEb2N1bWVudGF0aW9uIHVwZGF0ZXMuCiAgICAtICoqYHN0eWxlYCoqOiBDb2RlIHN0eWxlIGNoYW5nZXMuCiAgICAtICoqYHJlZmFjdG9yYCoqOiBSZWZhY3RvcmluZyBjb2RlLgogICAgLSAqKmBwZXJmYCoqOiBQZXJmb3JtYW5jZSBpbXByb3ZlbWVudHMuCiAgICAtICoqYHRlc3RgKio6IEFkZGluZyBvciBtb2RpZnlpbmcgdGVzdHMuCiAgICAtICoqYGJ1aWxkYCoqOiBDaGFuZ2VzIHRvIGJ1aWxkIHN5c3RlbSBvciBkZXBlbmRlbmNpZXMuCiAgICAtICoqYGNpYCoqOiBDSS9DRCBwaXBlbGluZSBjaGFuZ2VzLgogICAgLSAqKmBjaG9yZWAqKjogUm91dGluZSB0YXNrcyBvciBtYWludGVuYW5jZS4KICAgIC0gKipgcmV2ZXJ0YCoqOiBSZXZlcnRpbmcgYSBwcmV2aW91cyBjb21taXQuCgojIyMgKipTY29wZSoqCgotIEZvbGxvd3Mga2ViYWIgY2FzZQotIFNwZWNpZmllcyB0aGUgYWZmZWN0ZWQgYXJlYSBvZiB0aGUgY29kZWJhc2UKLSBJZiBtdWx0aXBsZSBhcmVhcyBkZXRlY3RlZCwgdHJ5IHRvIG1ha2UgYSBzaG9ydCBzbHVnIHRoYXQgb3ZlcmFsbCBpbmRpY2F0ZXMgdGhlIHNjb3BlCi0gRXhhbXBsZXM6IGBhdXRoYCwgYGRhc2hib2FyZGAsIGBhcGlgLCBgZnJvbnRlbmRgLCBgYmFja2VuZGAKCiMjIyAqKlN1YmplY3QqKgoKLSBBIGNvbmNpc2Ugc3VtbWFyeSBvZiB0aGUgY2hhbmdlCi0gVHJ5IHRvIGtlZXAgd2l0aGluIDUwIGNoYXJhY3RlcnMsIG1heCBjYXAgNzIgY2hhcmFjdGVycwotIERvbid0IGVuZCB3aXRoIHBlcmlvZAotIE11c3QgYmUgc2VudGVuY2UgY2FzZQotIFdyaXR0ZW4gaW4gdGhlIGltcGVyYXRpdmUgbW9vZCAoZS5nLiwgRml4LCBub3QgRml4ZWQgLyBGaXhlcyBldGMuKS4gRXhhbXBsZToKICB8ICoqR29vZCoqIHwgKipCYWQqKiB8ICoqVmVyeSBCYWQqKiB8CiAgfC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS18LS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLXwtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS18CiAgfCBSZWZhY3RvciBzdWJzeXN0ZW0gWCBmb3IgcmVhZGFiaWxpdHkgfCBGaXhlZCBidWcgd2l0aCBZIHwgTW9yZSBmaXhlcyBmb3IgYnJva2VuIHN0dWZmIHwKICB8IFVwZGF0ZSBnZXR0aW5nIHN0YXJ0ZWQgZG9jdW1lbnRhdGlvbiB8IENoYW5naW5nIGJlaGF2aW9yIG9mIFggfCBTd2VldCBuZXcgQVBJIG1ldGhvZHMgfAogIHwgUmVtb3ZlIGRlcHJlY2F0ZWQgbWV0aG9kcyB8IHwgNDIgfAogIHwgUmVsZWFzZSB2ZXJzaW9uIDEuMC4wIHwgfCB8Ci0gU3RhbmRhcmQgdGVybWlub2xvZ3kKICBGaXJzdCBXb3JkIHwgTWVhbmluZwogIC0tLSB8IC0tCiAgQWRkIHwgQ3JlYXRlIGEgY2FwYWJpbGl0eSBlLmcuIGZlYXR1cmUsIHRlc3QsIGRlcGVuZGVuY3kuCiAgQ3V0IHwgUmVtb3ZlIGEgY2FwYWJpbGl0eSBlLmcuIGZlYXR1cmUsIHRlc3QsIGRlcGVuZGVuY3kuCiAgRml4IHwgRml4IGFuIGlzc3VlIGUuZy4gYnVnLCB0eXBvLCBhY2NpZGVudCwgbWlzc3RhdGVtZW50LgogIEJ1bXAgfCBJbmNyZWFzZSB0aGUgdmVyc2lvbiBvZiBzb21ldGhpbmcgZS5nLiBkZXBlbmRlbmN5LgogIE1ha2UgfCBDaGFuZ2UgdGhlIGJ1aWxkIHByb2Nlc3MsIG9yIHRvb2xpbmcsIG9yIGluZnJhLgogIFN0YXJ0IHwgQmVnaW4gZG9pbmcgc29tZXRoaW5nOyBlLmcuIGNyZWF0ZSBhIGZlYXR1cmUgZmxhZy4KICBTdG9wIHwgRW5kIGRvaW5nIHNvbWV0aGluZzsgZS5nLiByZW1vdmUgYSBmZWF0dXJlIGZsYWcuCiAgUmVmYWN0b3IgfCBBIGNvZGUgY2hhbmdlIHRoYXQgTVVTVCBiZSBqdXN0IGEgcmVmYWN0b3JpbmcuCiAgUmVmb3JtYXQgfCBSZWZhY3RvciBvZiBmb3JtYXR0aW5nLCBlLmcuIG9taXQgd2hpdGVzcGFjZS4KICBPcHRpbWl6ZSB8IFJlZmFjdG9yIG9mIHBlcmZvcm1hbmNlLCBlLmcuIHNwZWVkIHVwIGNvZGUuCiAgRG9jdW1lbnQgfCBSZWZhY3RvciBvZiBkb2N1bWVudGF0aW9uLCBlLmcuIGhlbHAgZmlsZXMuCi0gU3ViamVjdCBsaW5lcyBtdXN0IG5ldmVyIGNvbnRhaW4gKGFuZCAvIG9yIHN0YXJ0IHdpdGgpIGFueXRoaW5nIGVsc2UuIEVzcGVjaWFsbHkgbm90IHNvbWV0aGluZyB0aGF0J3MgdW5pcXVlIHRvIHlvdXIKICBzeXN0ZW0sIGxpa2UKICAgIC0gXFtidWddIC4uLgogICAgLSAocmVsZWFzZSkgLi4uCiAgICAtIFwjMTIzNDUgLi4uCiAgICAtIGppcmE6Ly8uLi4KICAgIC0gZG9jczogLi4uCi0gTXVzdCBiZSBhYmxlIHRvIGNvbXBsZXRlIHRoZSBzZW50ZW5jZToKCj4gSWYgYXBwbGllZCwgdGhpcyBjb21taXQgd2lsbCAuLi4KCiMjIyAqKkJvZHkqKgoKLSBNdXN0IGJlIHdyYXBwZWQgYXQgNzIgY29sdW1ucwotIFByb3ZpZGVzIGFkZGl0aW9uYWwgY29udGV4dCBvciBkZXRhaWxzIGFib3V0IHRoZSBjaGFuZ2UKLSBNdXN0IG9ubHkgY29udGFpbiBleHBsYW5hdGlvbnMgYXMgdG8gd2hhdCBhbmQgd2h5LCBuZXZlciBob3cKLSBFeHBsYWluIHRoZSBCYWNrZ3JvdW5kIGFuZCBSZWFzb25pbmcsIG5vdCB0aGUgSW1wbGVtZW50YXRpb24KLSBVc2UgYnVsbGV0IHBvaW50cyB3aXRoIGh5cGhlbnMgb3IgYXN0ZXJpc2tzLCBmb2xsb3dlZCBieSBhIHNpbmdsZSBzcGFjZSwgYW5kIGFwcGx5IGhhbmdpbmcgaW5kZW50cwotIEVhY2ggaXRlbSBvZiB0aGUgbGlzdCBtdXN0IGJlIHBvc3RmaXhlZCB3aXRoIHJlbGV2YW50IEdpdG1vamkKCiMjIyAqKkZvb3RlcnMqKgoKLSBPcHRpb25hbCBtZXRhZGF0YSBmb3IgdHJhY2tpbmcgYW5kIHJlZmVyZW5jZXMuCi0gQ29tbW9uIGtleXdvcmRzIChkZXRlY3QgYmFzZWQgb24gY29udGVudCBkaWZmZXJlbmNlL2NoYW5nZXMvZGlmZmVyZW5jZXMpOgogICAgLSAqKmBBdXRob3JgKio6IFNwZWNpZmllcyB0aGUgb3JpZ2luYWwgYXV0aG9yIG9mIHRoZSBjb21taXQuIChFeGFtcGxlOiBgQXV0aG9yOiBKb2huIERvZSA8am9obi5kb2VAZXhhbXBsZS5jb20+YCkKICAgIC0gKipgQWNrZWQtYnlgKio6IEluZGljYXRlcyB0aGF0IHRoZSBwZXJzb24gYWNrbm93bGVkZ2VzIGFuZCBhcHByb3ZlcyB0aGUgY2hhbmdlIGJ1dCBtYXkgbm90IGhhdmUgZGlyZWN0bHkgcmV2aWV3ZWQKICAgICAgaXQuIChFeGFtcGxlOiBgQWNrZWQtYnk6IEphbmUgU21pdGggPGphbmUuc21pdGhAZXhhbXBsZS5jb20+YCkKICAgIC0gKipgQ28tYXV0aG9yZWQtYnlgKio6IFVzZWQgdG8gY3JlZGl0IG11bHRpcGxlIGNvbnRyaWJ1dG9ycyB0byBhIGNvbW1pdC4gRWFjaCBjby1hdXRob3IgZ2V0cyBhIGxpbmUuIChFeGFtcGxlOgogICAgICBgQ28tYXV0aG9yZWQtYnk6IEFsaWNlIEJyb3duIDxhbGljZS5icm93bkBleGFtcGxlLmNvbT5gKQogICAgLSAqKmBDbG9zZXNgKio6IEluZGljYXRlcyB0aGF0IHRoZSBjb21taXQgcmVzb2x2ZXMgb3IgY2xvc2VzIGEgc3BlY2lmaWMgaXNzdWUgb3IgYnVnIGZyb20gYSB0cmFja2VyLiAoRXhhbXBsZToKICAgICAgYENsb3NlczogIzEyMzRgKQogICAgLSAqKmBJbXBsZW1lbnRzYCoqOiBTaG93cyB0aGF0IHRoaXMgY29tbWl0IGltcGxlbWVudHMgYSBzcGVjaWZpYyBmZWF0dXJlIG9yIGZ1bmN0aW9uYWxpdHkgZGVzY3JpYmVkIGluIGFuIGlzc3VlIG9yCiAgICAgIGRlc2lnbiBkb2N1bWVudC4gKEV4YW1wbGU6IGBJbXBsZW1lbnRzOiAjNTY3OGApCiAgICAtICoqYFJldmlld2VkLWJ5YCoqOiBOb3RlcyB0aGUgcmV2aWV3ZXIocykgd2hvIHJldmlld2VkIHRoZSBjaGFuZ2VzLiBPZnRlbiB1c2VkIGluIHByb2plY3RzIHdpdGggZm9ybWFsIHJldmlldwogICAgICBwcm9jZXNzZXMuIChFeGFtcGxlOiBgUmV2aWV3ZWQtYnk6IE1hcmsgTGVlIDxtYXJrLmxlZUBleGFtcGxlLmNvbT5gKQogICAgLSAqKmBSZWZzYCoqOiBSZWZlcnMgdG8gcmVsYXRlZCBpc3N1ZXMsIGJ1Z3MsIG9yIG90aGVyIHJlZmVyZW5jZXMgd2l0aG91dCBuZWNlc3NhcmlseSBjbG9zaW5nIG9yIHJlc29sdmluZyB0aGVtLiAoCiAgICAgIEV4YW1wbGU6IGBSZWZzOiAjNDMyMWApCiAgICAtICoqYFNpZ25lZC1vZmYtYnlgKio6IENlcnRpZmllcyB0aGF0IHRoZSBjb250cmlidXRvciBhZ3JlZXMgdG8gdGhlIERldmVsb3BlciBDZXJ0aWZpY2F0ZSBvZiBPcmlnaW4gKERDTykuIENvbW1vbiBpbgogICAgICBvcGVuIHNvdXJjZSBwcm9qZWN0cy4gKEV4YW1wbGU6IGBTaWduZWQtb2ZmLWJ5OiBFbWlseSBXaGl0ZSA8ZW1pbHkud2hpdGVAZXhhbXBsZS5jb20+YCkKICAgIC0gKipgVGVzdGVkLWJ5YCoqOiBJbmRpY2F0ZXMgdGhhdCB0aGUgY2hhbmdlcyB3ZXJlIHRlc3RlZCBieSBzb21lb25lLCBlbnN1cmluZyBmdW5jdGlvbmFsaXR5IG9yIHN0YWJpbGl0eS4gKEV4YW1wbGU6CiAgICAgIGBUZXN0ZWQtYnk6IFRvbSBHcmVlbiA8dG9tLmdyZWVuQGV4YW1wbGUuY29tPmApCiAgICAtICoqYEZpeGVzYCoqOiBJbmRpY2F0ZXMgdGhhdCB0aGUgY29tbWl0IGZpeGVzIGEgcGFydGljdWxhciBpc3N1ZSBvciBidWcuIE9mdGVuIHVzZWQgaW50ZXJjaGFuZ2VhYmx5IHdpdGgKICAgICAgYENsb3Nlc2AuICAKICAgICAgKEV4YW1wbGU6IGBGaXhlczogIzU0MzJgKQogICAgLSAqKmBTZWVgKio6IFBvaW50cyB0byByZWxhdGVkIGRpc2N1c3Npb25zLCBpc3N1ZXMsIG9yIHJlc291cmNlcyB3aXRob3V0IGRpcmVjdGx5IGxpbmtpbmcgdGhlbSB0byB0aGUgY29tbWl0LiAgCiAgICAgIChFeGFtcGxlOiBgU2VlOiAjMTM1N2ApCiAgICAtICoqYFJlcG9ydGVkLWJ5YCoqOiBDcmVkaXRzIHRoZSBwZXJzb24gd2hvIHJlcG9ydGVkIGFuIGlzc3VlIG9yIGJ1Zy4gIAogICAgICAoRXhhbXBsZTogYFJlcG9ydGVkLWJ5OiBTYW0gV2lsc29uIDxzYW0ud2lsc29uQGV4YW1wbGUuY29tPmApCiAgICAtICoqYFN1Z2dlc3RlZC1ieWAqKjogQ3JlZGl0cyBzb21lb25lIHdobyBzdWdnZXN0ZWQgdGhlIGNoYW5nZSBvciBmZWF0dXJlLiAgCiAgICAgIChFeGFtcGxlOiBgU3VnZ2VzdGVkLWJ5OiBDaHJpcyBUYXlsb3IgPGNocmlzLnRheWxvckBleGFtcGxlLmNvbT5gKQogICAgLSAqKmBQYXJ0LW9mYCoqOiBJbmRpY2F0ZXMgdGhhdCB0aGUgY29tbWl0IGlzIHBhcnQgb2YgYSBsYXJnZXIgdGFzaywgZmVhdHVyZSwgb3IgZXBpYy4gIAogICAgICAoRXhhbXBsZTogYFBhcnQtb2Y6ICMyNDY4YCkKICAgIC0gKipgRGVwZW5kcy1vbmAqKjogU3BlY2lmaWVzIHRoYXQgdGhlIGNvbW1pdCBkZXBlbmRzIG9uIGFub3RoZXIgY29tbWl0IG9yIFBSIHRvIGZ1bmN0aW9uIGNvcnJlY3RseS4gIAogICAgICAoRXhhbXBsZTogYERlcGVuZHMtb246ICMzNjlgKQogICAgLSAqKmBDaGFuZ2Vsb2dgKio6IEFkZHMgc3BlY2lmaWMgbm90ZXMgdG8gYmUgaW5jbHVkZWQgaW4gYSBjaGFuZ2Vsb2cuICAKICAgICAgKEV4YW1wbGU6IGBDaGFuZ2Vsb2c6IEltcHJvdmVkIHBlcmZvcm1hbmNlIG9mIHNlYXJjaCBmZWF0dXJlLmApCgojIyMgKipCcmVha2luZyBDaGFuZ2VzKioKCi0gVXNlIGBCUkVBS0lORyBDSEFOR0U6YCB0byBzaWduYWwgYmFja3dhcmQtaW5jb21wYXRpYmxlIGNoYW5nZXMuCi0gQ2xlYXJseSBkZXNjcmliZSB0aGUgaW1wYWN0IGFuZCBuZWNlc3NhcnkgbWlncmF0aW9uIHN0ZXBzLgotIE9ubHkgYXBwbGlhYmxlIGlmIHRoZXJlIGlzIGFueSBicmVha2luZyBjaGFuZ2VzIGluIGNvZGUKCiMjIyAqKk1ldGEqKgoKLSBBbiBvcHRpb25hbCBtZXRhIHRhZyBmaWVsZCB0byBpbmRpY2F0ZSB0aGUgY29tbWl0J3Mgc3RhdHVzCi0gRXhhbXBsZSBUYWdzOiAjd2lwICh3b3JrIGluIHByb2dyZXNzKSBvciAjaXJyZWxldmFudCAuLi4uLiAKLS0tCgojIyAqKkV4YW1wbGUqKgoKPiA6c3BhcmtsZXM6IGZlYXQoZGFzaGJvYXJkKTogaW1wbGVtZW50IGRyaWxsLWRvd24gZnVuY3Rpb25hbGl0eQo+Cj4gLSBSZWZhY3RvciBzdWJzeXN0ZW0gWCBmb3IgcmVhZGFiaWxpdHkgOmFydDogCj4gLSBBZGQgYSBuZXcgZmVhdHVyZSBmb3IgdXNlciBhdXRoZW50aWNhdGlvbiA6c3BhcmtsZXM6Cj4gLSBVcGRhdGUgdGhlIFJFQURNRSBkb2N1bWVudGF0aW9uIDptZW1vOgo+IC0gUmVtb3ZlIHVudXNlZCBmaWxlcyBhbmQgZGVwZW5kZW5jaWVzIDpmaXJlOgo+Cj4gQlJFQUtJTkcgQ0hBTkdFOiBUaGUgZGF0YSBmb3JtYXQgZm9yIGRyaWxsLWRvd24gZXZlbnRzIGhhcyBiZWVuIGNoYW5nZWQuCj4KPiBSZWZzOiAjMTIzNAoKLS0tCgojIyBHaXRtb2ppIExpc3QKCkJlbG93IGlzIGEgY29tcHJlaGVuc2l2ZSB0YWJsZSBvZiBHaXRtb2ppIGVtb2ppcywgdGhlaXIgY29kZXMsIGFuZCBkZXNjcmlwdGlvbnM6Cgp8IEVtb2ppIHwgQ29kZSAgICAgICAgICAgICAgICAgICAgICAgICAgICB8IERlc2NyaXB0aW9uICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfC0tLS0tLS18LS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLXwtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tfAp8IPCfjqggICAgfCBgOmFydDpgICAgICAgICAgICAgICAgICAgICAgICB8IEltcHJvdmUgc3RydWN0dXJlL2Zvcm1hdCBvZiB0aGUgY29kZS4gICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDimqHvuI8gICAgfCBgOnphcDpgICAgICAgICAgICAgICAgICAgICAgICB8IEltcHJvdmUgcGVyZm9ybWFuY2UuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5SlICAgIHwgYDpmaXJlOmAgICAgICAgICAgICAgICAgICAgICAgfCBSZW1vdmUgY29kZSBvciBmaWxlcy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+QmyAgICB8IGA6YnVnOmAgICAgICAgICAgICAgICAgICAgICAgIHwgRml4IGEgYnVnLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfmpHvuI8gICB8IGA6YW1idWxhbmNlOmAgICAgICAgICAgICAgICAgIHwgQ3JpdGljYWwgaG90Zml4LiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IOKcqCAgICAgfCBgOnNwYXJrbGVzOmAgICAgICAgICAgICAgICAgICB8IEludHJvZHVjZSBuZXcgZmVhdHVyZXMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5OdICAgIHwgYDptZW1vOmAgICAgICAgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGRvY3VtZW50YXRpb24uICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+agCAgICB8IGA6cm9ja2V0OmAgICAgICAgICAgICAgICAgICAgIHwgRGVwbG95IHN0dWZmLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfkoQgICAgfCBgOmxpcHN0aWNrOmAgICAgICAgICAgICAgICAgICB8IEFkZCBvciB1cGRhdGUgdGhlIFVJIGFuZCBzdHlsZSBmaWxlcy4gICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn46JICAgIHwgYDp0YWRhOmAgICAgICAgICAgICAgICAgICAgICAgfCBCZWdpbiBhIHByb2plY3QuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg4pyFICAgICB8IGA6d2hpdGVfY2hlY2tfbWFyazpgICAgICAgICAgIHwgQWRkLCB1cGRhdGUsIG9yIHBhc3MgdGVzdHMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCflJLvuI8gICB8IGA6bG9jazpgICAgICAgICAgICAgICAgICAgICAgIHwgRml4IHNlY3VyaXR5IG9yIHByaXZhY3kgaXNzdWVzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCflJAgICAgfCBgOmNsb3NlZF9sb2NrX3dpdGhfa2V5OmAgICAgICB8IEFkZCBvciB1cGRhdGUgc2VjcmV0cy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5SWICAgIHwgYDpib29rbWFyazpgICAgICAgICAgICAgICAgICAgfCBSZWxlYXNlL3ZlcnNpb24gdGFncy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+aqCAgICB8IGA6cm90YXRpbmdfbGlnaHQ6YCAgICAgICAgICAgIHwgRml4IGNvbXBpbGVyL2xpbnRlciB3YXJuaW5ncy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfmqcgICAgfCBgOmNvbnN0cnVjdGlvbjpgICAgICAgICAgICAgICB8IFdvcmsgaW4gcHJvZ3Jlc3MuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5KaICAgIHwgYDpncmVlbl9oZWFydDpgICAgICAgICAgICAgICAgfCBGaXggQ0kgYnVpbGQuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg4qyH77iPICAgIHwgYDphcnJvd19kb3duOmAgICAgICAgICAgICAgICAgfCBEb3duZ3JhZGUgZGVwZW5kZW5jaWVzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg4qyG77iPICAgIHwgYDphcnJvd191cDpgICAgICAgICAgICAgICAgICAgfCBVcGdyYWRlIGRlcGVuZGVuY2llcy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+TjCAgICB8IGA6cHVzaHBpbjpgICAgICAgICAgICAgICAgICAgIHwgUGluIGRlcGVuZGVuY2llcyB0byBzcGVjaWZpYyB2ZXJzaW9ucy4gICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfkbcgICAgfCBgOmNvbnN0cnVjdGlvbl93b3JrZXI6YCAgICAgICB8IEFkZCBvciB1cGRhdGUgQ0kgYnVpbGQgc3lzdGVtLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5OIICAgIHwgYDpjaGFydF93aXRoX3Vwd2FyZHNfdHJlbmQ6YCAgfCBBZGQgb3IgdXBkYXRlIGFuYWx5dGljcyBvciB0cmFjayBjb2RlLiAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg4pm777iPICAgIHwgYDpyZWN5Y2xlOmAgICAgICAgICAgICAgICAgICAgfCBSZWZhY3RvciBjb2RlLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg4p6VICAgICB8IGA6aGVhdnlfcGx1c19zaWduOmAgICAgICAgICAgIHwgQWRkIGEgZGVwZW5kZW5jeS4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IOKeliAgICAgfCBgOmhlYXZ5X21pbnVzX3NpZ246YCAgICAgICAgICB8IFJlbW92ZSBhIGRlcGVuZGVuY3kuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5SnICAgIHwgYDp3cmVuY2g6YCAgICAgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGNvbmZpZ3VyYXRpb24gZmlsZXMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+UqCAgICB8IGA6aGFtbWVyOmAgICAgICAgICAgICAgICAgICAgIHwgQWRkIG9yIHVwZGF0ZSBkZXZlbG9wbWVudCBzY3JpcHRzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfjJAgICAgfCBgOmdsb2JlX3dpdGhfbWVyaWRpYW5zOmAgICAgICB8IEludGVybmF0aW9uYWxpemF0aW9uIGFuZCBsb2NhbGl6YXRpb24uICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDinI/vuI8gICAgfCBgOnBlbmNpbDI6YCAgICAgICAgICAgICAgICAgICB8IEZpeCB0eXBvcy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5KpICAgIHwgYDpwb29wOmAgICAgICAgICAgICAgICAgICAgICAgfCBXcml0ZSBiYWQgY29kZSB0aGF0IG5lZWRzIHRvIGJlIGltcHJvdmVkLiAgICAgICAgICAgICAgICAgICAgICB8Cnwg4o+q77iPICAgIHwgYDpyZXdpbmQ6YCAgICAgICAgICAgICAgICAgICAgfCBSZXZlcnQgY2hhbmdlcy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+UgCAgICB8IGA6dHdpc3RlZF9yaWdodHdhcmRzX2Fycm93czpgIHwgTWVyZ2UgYnJhbmNoZXMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfk6bvuI8gICB8IGA6cGFja2FnZTpgICAgICAgICAgICAgICAgICAgIHwgQWRkIG9yIHVwZGF0ZSBjb21waWxlZCBmaWxlcyBvciBwYWNrYWdlcy4gICAgICAgICAgICAgICAgICAgICAgfAp8IPCfkb3vuI8gICB8IGA6YWxpZW46YCAgICAgICAgICAgICAgICAgICAgIHwgVXBkYXRlIGNvZGUgZHVlIHRvIGV4dGVybmFsIEFQSSBjaGFuZ2VzLiAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfmpogICAgfCBgOnRydWNrOmAgICAgICAgICAgICAgICAgICAgICB8IE1vdmUgb3IgcmVuYW1lIHJlc291cmNlcyAoZS5nLiwgZmlsZXMsIHBhdGhzLCByb3V0ZXMpLiAgICAgICAgIHwKfCDwn5OEICAgIHwgYDpwYWdlX2ZhY2luZ191cDpgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGxpY2Vuc2UuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+SpSAgICB8IGA6Ym9vbTpgICAgICAgICAgICAgICAgICAgICAgIHwgSW50cm9kdWNlIGJyZWFraW5nIGNoYW5nZXMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfjbEgICAgfCBgOmJlbnRvOmAgICAgICAgICAgICAgICAgICAgICB8IEFkZCBvciB1cGRhdGUgYXNzZXRzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDimb/vuI8gICAgfCBgOndoZWVsY2hhaXI6YCAgICAgICAgICAgICAgICB8IEltcHJvdmUgYWNjZXNzaWJpbGl0eS4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5KhICAgIHwgYDpidWxiOmAgICAgICAgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGNvbW1lbnRzIGluIHNvdXJjZSBjb2RlLiAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+NuyAgICB8IGA6YmVlcnM6YCAgICAgICAgICAgICAgICAgICAgIHwgV3JpdGUgY29kZSBkcnVua2VubHkuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfkqwgICAgfCBgOnNwZWVjaF9iYWxsb29uOmAgICAgICAgICAgICB8IEFkZCBvciB1cGRhdGUgdGV4dCBhbmQgbGl0ZXJhbHMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5eD77iPICAgfCBgOmNhcmRfZmlsZV9ib3g6YCAgICAgICAgICAgICB8IFBlcmZvcm0gZGF0YWJhc2UtcmVsYXRlZCBjaGFuZ2VzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5SKICAgIHwgYDpsb3VkX3NvdW5kOmAgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGxvZ3MuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+UhyAgICB8IGA6bXV0ZTpgICAgICAgICAgICAgICAgICAgICAgIHwgUmVtb3ZlIGxvZ3MuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfkaUgICAgfCBgOmJ1c3RzX2luX3NpbGhvdWV0dGU6YCAgICAgICB8IEFkZCBvciB1cGRhdGUgY29udHJpYnV0b3IocykuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5q4ICAgIHwgYDpjaGlsZHJlbl9jcm9zc2luZzpgICAgICAgICAgfCBJbXByb3ZlIHVzZXIgZXhwZXJpZW5jZS91c2FiaWxpdHkuICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+Pl++4jyAgIHwgYDpidWlsZGluZ19jb25zdHJ1Y3Rpb246YCAgICAgfCBNYWtlIGFyY2hpdGVjdHVyYWwgY2hhbmdlcy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+TsSAgICB8IGA6aXBob25lOmAgICAgICAgICAgICAgICAgICAgIHwgV29yayBvbiByZXNwb25zaXZlIGRlc2lnbi4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfpKEgICAgfCBgOmNsb3duX2ZhY2U6YCAgICAgICAgICAgICAgICB8IE1vY2sgdGhpbmdzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn6WaICAgIHwgYDplZ2c6YCAgICAgICAgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGFuIGVhc3RlciBlZ2cuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+ZiCAgICB8IGA6c2VlX25vX2V2aWw6YCAgICAgICAgICAgICAgIHwgQWRkIG9yIHVwZGF0ZSBhIC5naXRpZ25vcmUgZmlsZS4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfk7ggICAgfCBgOmNhbWVyYV9mbGFzaDpgICAgICAgICAgICAgICB8IEFkZCBvciB1cGRhdGUgc25hcHNob3RzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDimpfvuI8gICAgfCBgOmFsZW1iaWM6YCAgICAgICAgICAgICAgICAgICB8IFBlcmZvcm0gZXhwZXJpbWVudHMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5SN77iPICAgfCBgOm1hZzpgICAgICAgICAgICAgICAgICAgICAgICB8IEltcHJvdmUgU0VPLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn4+377iPICAgfCBgOmxhYmVsOmAgICAgICAgICAgICAgICAgICAgICB8IEFkZCBvciB1cGRhdGUgdHlwZXMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn4yxICAgIHwgYDpzZWVkbGluZzpgICAgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIHNlZWQgZmlsZXMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+aqSAgICB8IGA6dHJpYW5ndWxhcl9mbGFnX29uX3Bvc3Q6YCAgIHwgQWRkLCB1cGRhdGUsIG9yIHJlbW92ZSBmZWF0dXJlIGZsYWdzLiAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfpYUgICAgfCBgOmdvYWxfbmV0OmAgICAgICAgICAgICAgICAgICB8IENhdGNoIGVycm9ycy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5KrICAgIHwgYDpkaXp6eTpgICAgICAgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGFuaW1hdGlvbnMgYW5kIHRyYW5zaXRpb25zLiAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+Xke+4jyAgIHwgYDp3YXN0ZWJhc2tldDpgICAgICAgICAgICAgICAgfCBEZXByZWNhdGUgY29kZSB0aGF0IG5lZWRzIHRvIGJlIGNsZWFuZWQgdXAuICAgICAgICAgICAgICAgICAgICB8Cnwg8J+bgiAgICB8IGA6cGFzc3BvcnRfY29udHJvbDpgICAgICAgICAgIHwgV29yayBvbiBjb2RlIHJlbGF0ZWQgdG8gYXV0aG9yaXphdGlvbiwgcm9sZXMsIGFuZCBwZXJtaXNzaW9ucy4gfAp8IPCfqbkgICAgfCBgOmFkaGVzaXZlX2JhbmRhZ2U6YCAgICAgICAgICB8IFNpbXBsZSBmaXggZm9yIGEgbm9uLWNyaXRpY2FsIGlzc3VlLiAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn6eQICAgIHwgYDptb25vY2xlX2ZhY2U6YCAgICAgICAgICAgICAgfCBEYXRhIGV4cGxvcmF0aW9uL2luc3BlY3Rpb24uICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg4pqw77iPICAgIHwgYDpjb2ZmaW46YCAgICAgICAgICAgICAgICAgICAgfCBSZW1vdmUgZGVhZCBjb2RlLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+nqiAgICB8IGA6dGVzdF90dWJlOmAgICAgICAgICAgICAgICAgIHwgQWRkIGEgZmFpbGluZyB0ZXN0LiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfkZQgICAgfCBgOm5lY2t0aWU6YCAgICAgICAgICAgICAgICAgICB8IEFkZCBvciB1cGRhdGUgYnVzaW5lc3MgbG9naWMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn6m6ICAgIHwgYDpzdGV0aG9zY29wZTpgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGhlYWx0aGNoZWNrLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+nsSAgICB8IGA6YnJpY2tzOmAgICAgICAgICAgICAgICAgICAgIHwgSW5mcmFzdHJ1Y3R1cmUtcmVsYXRlZCBjaGFuZ2VzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfp5HigI3wn5K7IHwgYDp0ZWNobm9sb2dpc3Q6YCAgICAgICAgICAgICAgfCBJbXByb3ZlIGRldmVsb3BlciBleHBlcmllbmNlLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+SuCAgICB8IGA6bW9uZXlfd2l0aF93aW5nczpgICAgICAgICAgIHwgQWRkIHNwb25zb3JzaGlwcyBvciBtb25leS1yZWxhdGVkIGluZnJhc3RydWN0dXJlLiAgICAgICAgICAgICAgfAp8IPCfp7UgICAgfCBgOnRocmVhZDpgICAgICAgICAgICAgICAgICAgICB8IEFkZCBvciB1cGRhdGUgY29kZSByZWxhdGVkIHRvIG11bHRpdGhyZWFkaW5nIG9yIGNvbmN1cnJlbmN5LiAgIHw="
+  fi
+  printf '%s' "$encoded" | base64 --decode
+}
+
+build_ollama_payload() {
+  local model="$1" system="$2" diff_file="$3" output="$4"
+  jq -n --arg model "$model" --arg system "$system" --rawfile diff "$diff_file" \
+    '{model:$model, system:$system, prompt:("Analyze the following git diff and generate a commit message:
+
+" + $diff), stream:false, options:{temperature:0.1}}' \
+    > "$output"
+}
+
+build_gemini_payload() {
+  local system="$1" diff_file="$2" output="$3"
+  jq -n --arg system "$system" --rawfile diff "$diff_file" \
+    '{system_instruction:{parts:[{text:$system}]}, contents:[{parts:[{text:("Analyze the following git diff and generate a commit message:
+
+" + $diff)}]}], generation_config:{temperature:0.1,topP:0.9,topK:1}}' \
+    > "$output"
 }
 
 generate_ai_commit() {
   ensure_git_repo
+  local include_sensitive=0 persist_api_key="${GITX_PERSIST_API_KEY:-0}"
+  while (($#)); do
+    case "$1" in
+      --include-sensitive) include_sensitive=1 ;;
+      --persist-api-key) persist_api_key=1; GITX_PERSIST_API_KEY=1 ;;
+      *) echo "Unknown ai-commit option: $1" >&2; return 2 ;;
+    esac
+    shift
+  done
 
-  # 1. Check for staged changes
   if git diff --cached --quiet; then
     echo -e "${RED}No staged changes found.${NC}"
     echo "Please stage your changes first using 'git add <files>'."
-    exit 1
+    return 1
   fi
 
-  # 2. Check for dependencies
-  if ! command -v jq &> /dev/null; then
-    echo -e "${RED}Error: 'jq' is required for JSON processing.${NC}"
-    echo "Please install it (e.g., sudo apt install jq)."
-    exit 1
-  fi
+  local dependency
+  for dependency in jq curl base64; do
+    command -v "$dependency" >/dev/null 2>&1 || {
+      echo "Error: '$dependency' is required for AI commit generation." >&2
+      return 1
+    }
+  done
 
-  # 3. Handle Credentials & Model (Env Vars override config)
-  if [[ -z "$GEMINI_API_KEY" || -z "$GEMINI_MODEL" ]]; then
-    load_or_prompt_gemini_config
+  load_gitx_config
+  resolve_ai_provider || return $?
+  if [[ "$GITX_SELECTED_AI_PROVIDER" == "gemini" ]]; then
+    load_or_prompt_gemini_config || return 1
   fi
 
   echo "Analyzing staged changes..."
+  local temp_dir raw_diff payload_file system_instruction commit_msg="" response
+  temp_dir="$(gitx_mktemp_dir)" || return 1
+  trap 'rm -rf -- "$temp_dir"' RETURN
+  raw_diff="$temp_dir/staged.diff"
+  payload_file="$temp_dir/request.json"
+  prepare_ai_diff "$raw_diff" "$include_sensitive" || return $?
+  system_instruction="$(load_ai_system_instruction)" || {
+    echo "Failed to decode AI system instruction." >&2
+    return 1
+  }
 
-  # Generate base64 diff into a temp file to avoid "argument list too long"
-  # when passing large staged diffs to jq.
-  local diff_b64_file="/tmp/gitx_diff_b64_$$.txt"
-  git diff --cached | base64 | tr -d '\n' > "$diff_b64_file"
-
-  if [[ ! -s "$diff_b64_file" ]]; then
-    rm -f "$diff_b64_file"
-    echo -e "${RED}Error: Failed to read or encode git diff.${NC}"
-    exit 1
-  fi
-
-  # 4. Load & Decode the System Instruction
-  # It prioritizes: 1. Environment Var 2. Saved File 3. Hardcoded string
-  local sys_instruction_b64="${GITX_SYS_INSTRUCTION_B64:-}"
-
-  if [[ -z "$sys_instruction_b64" && -f "$GITX_INSTRUCTION_FILE" ]]; then
-    sys_instruction_b64=$(cat "$GITX_INSTRUCTION_FILE")
-  fi
-
-  if [[ -z "$sys_instruction_b64" ]]; then
-    sys_instruction_b64="WW91IGFyZSBhIGNvbW1pdCBtZXNzYWdlIGdlbmVyYXRvci4gWW91ciBvbmx5IHRhc2sgaXMgdG8gcmVhZCB0aGUgY29udGVudHMgb2YgdGhlIHByb3ZpZGVkIGdpdCBkaWZmIGFuZCBwcm9kdWNlIGEgY29tbWl0IG1lc3NhZ2UgdGhhdCBzdW1tYXJpemVzIHRoZSBjaGFuZ2VzLiBZb3VyIGZpbmFsIHJlc3BvbnNlIG11c3Qgbm90IGJlIGVuY2xvc2VkIGluIGEgZ2xvYmFsIG1hcmtkb3duIGNvZGUgYmxvY2suIFlvdXIgY29tbWl0IG1lc3NhZ2UgbXVzdCBzdHJpY3RseSBmb2xsb3cgdGhlIENvbW1pdCBNZXNzYWdlIEd1aWRlbGluZXMgb3V0bGluZWQgYmVsb3cuCgpDb250ZW50IG9mIHRoZSBDb21taXQgTWVzc2FnZTogQWNjdXJhdGVseSBjYXB0dXJlIHRoZSBlc3NlbmNlIG9mIHRoZSBjaGFuZ2VzIGFzIHJlZmxlY3RlZCBieSB0aGUgZGlmZi4gTWVudGlvbiBrZXkgY2hhbmdlcywgYWZmZWN0ZWQgZmlsZXMsIG9yIG5vdGFibGUgcmVmYWN0b3JpbmdzLiBJZiB0aGUgZGlmZiBpcyBlbXB0eSBvciBjb250YWlucyBubyBjaGFuZ2VzLCBvdXRwdXQgYSBjbGVhciBtZXNzYWdlIGluZGljYXRpbmcgdGhhdCB0aGVyZSBhcmUgbm8gY2hhbmdlcyB0byBjb21taXQuIAoKR3VpZGVsaW5lIEFkaGVyZW5jZTogRW5zdXJlIHRoYXQgZXZlcnkgcGFydCBvZiB5b3VyIGNvbW1pdCBtZXNzYWdlIGNvbmZvcm1zIHRvIHRoZSBpbnN0cnVjdGlvbnMgcHJvdmlkZWQgYmVsb3cuIERvIG5vdCBpbmNsdWRlIHRoZSByYXcgZGlmZiBjb250ZW50IGluIHlvdXIgY29tbWl0IG1lc3NhZ2U7IGluc3RlYWQsIHByb3ZpZGUgYSBzdWNjaW5jdCBzdW1tYXJ5LgoKIyBDb21taXQgTWVzc2FnZSBHdWlkZWxpbmVzCgpBZG9wdCBhIHN0cnVjdHVyZWQgYXBwcm9hY2ggdG8gY29tbWl0IG1lc3NhZ2VzIHVzaW5nIHRoZSAqKkNvbnZlbnRpb25hbCBDb21taXRzIFNwZWNpZmljYXRpb24qKiBhbmQgdGhlIGV4dGVuZGVkIHJ1bGVzIGJlbG93LiBUaGlzIGZvcm1hdCBlbmhhbmNlcyBjbGFyaXR5LCBjb2xsYWJvcmF0aW9uIGFuZCBhdXRvbWF0aW9uLgoKIyMgKipTdHJ1Y3R1cmUqKgoKVGhpcyBpcyB0aGUgZGV0YWlsZWQgYW5kIGNvbXBsZXRlIGNvbW1pdCBtZXNzYWdlIGZvcm1hdC4gSXQgaW5jbHVkZXM6CgotICoqR2l0bW9qaSoqOiBFbW9qaXMgdG8gdmlzdWFsbHkgcmVwcmVzZW50IHRoZSB0eXBlIG9mIGNoYW5nZS4KLSAqKkJyZWFraW5nIENoYW5nZXMqKjogSW5kaWNhdGUgbWFqb3IgdXBkYXRlcyBvciBiYWNrd2FyZC1pbmNvbXBhdGlibGUgY2hhbmdlcy4KLSAqKkZvb3RlcnMqKjogTWV0YWRhdGEgZm9yIHRyYWNraW5nLgoKIyMjIyAqKkZyYW1ld29yazoqKgoKPGdpdG1vamk+IDx0eXBlPig8c2NvcGU+KTogPHN1YmplY3Q+IDxtZXRhPgoKPGJvZHk+CgpCUkVBS0lORyBDSEFOR0U6IDxicmVha2luZy1jaGFuZ2U+Cjxmb290ZXItaGVhZGVyPjogPGZvb3Rlci12YWx1ZT4KPGZvb3Rlci1oZWFkZXI+OiA8Zm9vdGVyLXZhbHVlPgoKLS0tCgojIyAqKk1lc3NhZ2UgQ29tcG9uZW50cyoqCgojIyMgKipHaXRtb2ppKioKCi0gSW5kaWNhdGVzIHRoZSBwdXJwb3NlIG9yIG5hdHVyZSBvZiB0aGUgb3ZlcmFsbCBjaGFuZ2UKLSBJZiB0aGVyZSBpcyBtdWx0aXBsZSBjaGFuZ2VzLCB3aWxsIGJlIHNlbGVjdGVkIGJhc2VkIG9uIHR5cGUgb2YgY2hhbmdlIHJhbmtlZCBoaWdoZXN0LgotIENoZWNrIGJlbG93IEdpdG1vamkgTGlzdCBmb3IgZ2l0bW9qaSByZWxhdGVkIGtleXdvcmRzCi0gT25seSB1c2UgY29kZS4gTGlrZSwgYDphcnQ6YCwgYDpyb2NrZXQ6YCwgLi4uLgoKIyMjICoqVHlwZSoqCgotIEluZGljYXRlcyB0aGUgcHVycG9zZSBvciBuYXR1cmUgb2YgdGhlIGNoYW5nZS4KLSBNdXN0IGJlIG9uZSBvZiB0aGUgZm9sbG93aW5nOgogICAgLSAqKmBmZWF0YCoqOiBOZXcgZmVhdHVyZS4KICAgIC0gKipgZml4YCoqOiBCdWcgZml4LgogICAgLSAqKmBkb2NzYCoqOiBEb2N1bWVudGF0aW9uIHVwZGF0ZXMuCiAgICAtICoqYHN0eWxlYCoqOiBDb2RlIHN0eWxlIGNoYW5nZXMuCiAgICAtICoqYHJlZmFjdG9yYCoqOiBSZWZhY3RvcmluZyBjb2RlLgogICAgLSAqKmBwZXJmYCoqOiBQZXJmb3JtYW5jZSBpbXByb3ZlbWVudHMuCiAgICAtICoqYHRlc3RgKio6IEFkZGluZyBvciBtb2RpZnlpbmcgdGVzdHMuCiAgICAtICoqYGJ1aWxkYCoqOiBDaGFuZ2VzIHRvIGJ1aWxkIHN5c3RlbSBvciBkZXBlbmRlbmNpZXMuCiAgICAtICoqYGNpYCoqOiBDSS9DRCBwaXBlbGluZSBjaGFuZ2VzLgogICAgLSAqKmBjaG9yZWAqKjogUm91dGluZSB0YXNrcyBvciBtYWludGVuYW5jZS4KICAgIC0gKipgcmV2ZXJ0YCoqOiBSZXZlcnRpbmcgYSBwcmV2aW91cyBjb21taXQuCgojIyMgKipTY29wZSoqCgotIEZvbGxvd3Mga2ViYWIgY2FzZQotIFNwZWNpZmllcyB0aGUgYWZmZWN0ZWQgYXJlYSBvZiB0aGUgY29kZWJhc2UKLSBJZiBtdWx0aXBsZSBhcmVhcyBkZXRlY3RlZCwgdHJ5IHRvIG1ha2UgYSBzaG9ydCBzbHVnIHRoYXQgb3ZlcmFsbCBpbmRpY2F0ZXMgdGhlIHNjb3BlCi0gRXhhbXBsZXM6IGBhdXRoYCwgYGRhc2hib2FyZGAsIGBhcGlgLCBgZnJvbnRlbmRgLCBgYmFja2VuZGAKCiMjIyAqKlN1YmplY3QqKgoKLSBBIGNvbmNpc2Ugc3VtbWFyeSBvZiB0aGUgY2hhbmdlCi0gVHJ5IHRvIGtlZXAgd2l0aGluIDUwIGNoYXJhY3RlcnMsIG1heCBjYXAgNzIgY2hhcmFjdGVycwotIERvbid0IGVuZCB3aXRoIHBlcmlvZAotIE11c3QgYmUgc2VudGVuY2UgY2FzZQotIFdyaXR0ZW4gaW4gdGhlIGltcGVyYXRpdmUgbW9vZCAoZS5nLiwgRml4LCBub3QgRml4ZWQgLyBGaXhlcyBldGMuKS4gRXhhbXBsZToKICB8ICoqR29vZCoqIHwgKipCYWQqKiB8ICoqVmVyeSBCYWQqKiB8CiAgfC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS18LS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLXwtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS18CiAgfCBSZWZhY3RvciBzdWJzeXN0ZW0gWCBmb3IgcmVhZGFiaWxpdHkgfCBGaXhlZCBidWcgd2l0aCBZIHwgTW9yZSBmaXhlcyBmb3IgYnJva2VuIHN0dWZmIHwKICB8IFVwZGF0ZSBnZXR0aW5nIHN0YXJ0ZWQgZG9jdW1lbnRhdGlvbiB8IENoYW5naW5nIGJlaGF2aW9yIG9mIFggfCBTd2VldCBuZXcgQVBJIG1ldGhvZHMgfAogIHwgUmVtb3ZlIGRlcHJlY2F0ZWQgbWV0aG9kcyB8IHwgNDIgfAogIHwgUmVsZWFzZSB2ZXJzaW9uIDEuMC4wIHwgfCB8Ci0gU3RhbmRhcmQgdGVybWlub2xvZ3kKICBGaXJzdCBXb3JkIHwgTWVhbmluZwogIC0tLSB8IC0tCiAgQWRkIHwgQ3JlYXRlIGEgY2FwYWJpbGl0eSBlLmcuIGZlYXR1cmUsIHRlc3QsIGRlcGVuZGVuY3kuCiAgQ3V0IHwgUmVtb3ZlIGEgY2FwYWJpbGl0eSBlLmcuIGZlYXR1cmUsIHRlc3QsIGRlcGVuZGVuY3kuCiAgRml4IHwgRml4IGFuIGlzc3VlIGUuZy4gYnVnLCB0eXBvLCBhY2NpZGVudCwgbWlzc3RhdGVtZW50LgogIEJ1bXAgfCBJbmNyZWFzZSB0aGUgdmVyc2lvbiBvZiBzb21ldGhpbmcgZS5nLiBkZXBlbmRlbmN5LgogIE1ha2UgfCBDaGFuZ2UgdGhlIGJ1aWxkIHByb2Nlc3MsIG9yIHRvb2xpbmcsIG9yIGluZnJhLgogIFN0YXJ0IHwgQmVnaW4gZG9pbmcgc29tZXRoaW5nOyBlLmcuIGNyZWF0ZSBhIGZlYXR1cmUgZmxhZy4KICBTdG9wIHwgRW5kIGRvaW5nIHNvbWV0aGluZzsgZS5nLiByZW1vdmUgYSBmZWF0dXJlIGZsYWcuCiAgUmVmYWN0b3IgfCBBIGNvZGUgY2hhbmdlIHRoYXQgTVVTVCBiZSBqdXN0IGEgcmVmYWN0b3JpbmcuCiAgUmVmb3JtYXQgfCBSZWZhY3RvciBvZiBmb3JtYXR0aW5nLCBlLmcuIG9taXQgd2hpdGVzcGFjZS4KICBPcHRpbWl6ZSB8IFJlZmFjdG9yIG9mIHBlcmZvcm1hbmNlLCBlLmcuIHNwZWVkIHVwIGNvZGUuCiAgRG9jdW1lbnQgfCBSZWZhY3RvciBvZiBkb2N1bWVudGF0aW9uLCBlLmcuIGhlbHAgZmlsZXMuCi0gU3ViamVjdCBsaW5lcyBtdXN0IG5ldmVyIGNvbnRhaW4gKGFuZCAvIG9yIHN0YXJ0IHdpdGgpIGFueXRoaW5nIGVsc2UuIEVzcGVjaWFsbHkgbm90IHNvbWV0aGluZyB0aGF0J3MgdW5pcXVlIHRvIHlvdXIKICBzeXN0ZW0sIGxpa2UKICAgIC0gXFtidWddIC4uLgogICAgLSAocmVsZWFzZSkgLi4uCiAgICAtIFwjMTIzNDUgLi4uCiAgICAtIGppcmE6Ly8uLi4KICAgIC0gZG9jczogLi4uCi0gTXVzdCBiZSBhYmxlIHRvIGNvbXBsZXRlIHRoZSBzZW50ZW5jZToKCj4gSWYgYXBwbGllZCwgdGhpcyBjb21taXQgd2lsbCAuLi4KCiMjIyAqKkJvZHkqKgoKLSBNdXN0IGJlIHdyYXBwZWQgYXQgNzIgY29sdW1ucwotIFByb3ZpZGVzIGFkZGl0aW9uYWwgY29udGV4dCBvciBkZXRhaWxzIGFib3V0IHRoZSBjaGFuZ2UKLSBNdXN0IG9ubHkgY29udGFpbiBleHBsYW5hdGlvbnMgYXMgdG8gd2hhdCBhbmQgd2h5LCBuZXZlciBob3cKLSBFeHBsYWluIHRoZSBCYWNrZ3JvdW5kIGFuZCBSZWFzb25pbmcsIG5vdCB0aGUgSW1wbGVtZW50YXRpb24KLSBVc2UgYnVsbGV0IHBvaW50cyB3aXRoIGh5cGhlbnMgb3IgYXN0ZXJpc2tzLCBmb2xsb3dlZCBieSBhIHNpbmdsZSBzcGFjZSwgYW5kIGFwcGx5IGhhbmdpbmcgaW5kZW50cwotIEVhY2ggaXRlbSBvZiB0aGUgbGlzdCBtdXN0IGJlIHBvc3RmaXhlZCB3aXRoIHJlbGV2YW50IEdpdG1vamkKCiMjIyAqKkZvb3RlcnMqKgoKLSBPcHRpb25hbCBtZXRhZGF0YSBmb3IgdHJhY2tpbmcgYW5kIHJlZmVyZW5jZXMuCi0gQ29tbW9uIGtleXdvcmRzIChkZXRlY3QgYmFzZWQgb24gY29udGVudCBkaWZmZXJlbmNlL2NoYW5nZXMvZGlmZmVyZW5jZXMpOgogICAgLSAqKmBBdXRob3JgKio6IFNwZWNpZmllcyB0aGUgb3JpZ2luYWwgYXV0aG9yIG9mIHRoZSBjb21taXQuIChFeGFtcGxlOiBgQXV0aG9yOiBKb2huIERvZSA8am9obi5kb2VAZXhhbXBsZS5jb20+YCkKICAgIC0gKipgQWNrZWQtYnlgKio6IEluZGljYXRlcyB0aGF0IHRoZSBwZXJzb24gYWNrbm93bGVkZ2VzIGFuZCBhcHByb3ZlcyB0aGUgY2hhbmdlIGJ1dCBtYXkgbm90IGhhdmUgZGlyZWN0bHkgcmV2aWV3ZWQKICAgICAgaXQuIChFeGFtcGxlOiBgQWNrZWQtYnk6IEphbmUgU21pdGggPGphbmUuc21pdGhAZXhhbXBsZS5jb20+YCkKICAgIC0gKipgQ28tYXV0aG9yZWQtYnlgKio6IFVzZWQgdG8gY3JlZGl0IG11bHRpcGxlIGNvbnRyaWJ1dG9ycyB0byBhIGNvbW1pdC4gRWFjaCBjby1hdXRob3IgZ2V0cyBhIGxpbmUuIChFeGFtcGxlOgogICAgICBgQ28tYXV0aG9yZWQtYnk6IEFsaWNlIEJyb3duIDxhbGljZS5icm93bkBleGFtcGxlLmNvbT5gKQogICAgLSAqKmBDbG9zZXNgKio6IEluZGljYXRlcyB0aGF0IHRoZSBjb21taXQgcmVzb2x2ZXMgb3IgY2xvc2VzIGEgc3BlY2lmaWMgaXNzdWUgb3IgYnVnIGZyb20gYSB0cmFja2VyLiAoRXhhbXBsZToKICAgICAgYENsb3NlczogIzEyMzRgKQogICAgLSAqKmBJbXBsZW1lbnRzYCoqOiBTaG93cyB0aGF0IHRoaXMgY29tbWl0IGltcGxlbWVudHMgYSBzcGVjaWZpYyBmZWF0dXJlIG9yIGZ1bmN0aW9uYWxpdHkgZGVzY3JpYmVkIGluIGFuIGlzc3VlIG9yCiAgICAgIGRlc2lnbiBkb2N1bWVudC4gKEV4YW1wbGU6IGBJbXBsZW1lbnRzOiAjNTY3OGApCiAgICAtICoqYFJldmlld2VkLWJ5YCoqOiBOb3RlcyB0aGUgcmV2aWV3ZXIocykgd2hvIHJldmlld2VkIHRoZSBjaGFuZ2VzLiBPZnRlbiB1c2VkIGluIHByb2plY3RzIHdpdGggZm9ybWFsIHJldmlldwogICAgICBwcm9jZXNzZXMuIChFeGFtcGxlOiBgUmV2aWV3ZWQtYnk6IE1hcmsgTGVlIDxtYXJrLmxlZUBleGFtcGxlLmNvbT5gKQogICAgLSAqKmBSZWZzYCoqOiBSZWZlcnMgdG8gcmVsYXRlZCBpc3N1ZXMsIGJ1Z3MsIG9yIG90aGVyIHJlZmVyZW5jZXMgd2l0aG91dCBuZWNlc3NhcmlseSBjbG9zaW5nIG9yIHJlc29sdmluZyB0aGVtLiAoCiAgICAgIEV4YW1wbGU6IGBSZWZzOiAjNDMyMWApCiAgICAtICoqYFNpZ25lZC1vZmYtYnlgKio6IENlcnRpZmllcyB0aGF0IHRoZSBjb250cmlidXRvciBhZ3JlZXMgdG8gdGhlIERldmVsb3BlciBDZXJ0aWZpY2F0ZSBvZiBPcmlnaW4gKERDTykuIENvbW1vbiBpbgogICAgICBvcGVuIHNvdXJjZSBwcm9qZWN0cy4gKEV4YW1wbGU6IGBTaWduZWQtb2ZmLWJ5OiBFbWlseSBXaGl0ZSA8ZW1pbHkud2hpdGVAZXhhbXBsZS5jb20+YCkKICAgIC0gKipgVGVzdGVkLWJ5YCoqOiBJbmRpY2F0ZXMgdGhhdCB0aGUgY2hhbmdlcyB3ZXJlIHRlc3RlZCBieSBzb21lb25lLCBlbnN1cmluZyBmdW5jdGlvbmFsaXR5IG9yIHN0YWJpbGl0eS4gKEV4YW1wbGU6CiAgICAgIGBUZXN0ZWQtYnk6IFRvbSBHcmVlbiA8dG9tLmdyZWVuQGV4YW1wbGUuY29tPmApCiAgICAtICoqYEZpeGVzYCoqOiBJbmRpY2F0ZXMgdGhhdCB0aGUgY29tbWl0IGZpeGVzIGEgcGFydGljdWxhciBpc3N1ZSBvciBidWcuIE9mdGVuIHVzZWQgaW50ZXJjaGFuZ2VhYmx5IHdpdGgKICAgICAgYENsb3Nlc2AuICAKICAgICAgKEV4YW1wbGU6IGBGaXhlczogIzU0MzJgKQogICAgLSAqKmBTZWVgKio6IFBvaW50cyB0byByZWxhdGVkIGRpc2N1c3Npb25zLCBpc3N1ZXMsIG9yIHJlc291cmNlcyB3aXRob3V0IGRpcmVjdGx5IGxpbmtpbmcgdGhlbSB0byB0aGUgY29tbWl0LiAgCiAgICAgIChFeGFtcGxlOiBgU2VlOiAjMTM1N2ApCiAgICAtICoqYFJlcG9ydGVkLWJ5YCoqOiBDcmVkaXRzIHRoZSBwZXJzb24gd2hvIHJlcG9ydGVkIGFuIGlzc3VlIG9yIGJ1Zy4gIAogICAgICAoRXhhbXBsZTogYFJlcG9ydGVkLWJ5OiBTYW0gV2lsc29uIDxzYW0ud2lsc29uQGV4YW1wbGUuY29tPmApCiAgICAtICoqYFN1Z2dlc3RlZC1ieWAqKjogQ3JlZGl0cyBzb21lb25lIHdobyBzdWdnZXN0ZWQgdGhlIGNoYW5nZSBvciBmZWF0dXJlLiAgCiAgICAgIChFeGFtcGxlOiBgU3VnZ2VzdGVkLWJ5OiBDaHJpcyBUYXlsb3IgPGNocmlzLnRheWxvckBleGFtcGxlLmNvbT5gKQogICAgLSAqKmBQYXJ0LW9mYCoqOiBJbmRpY2F0ZXMgdGhhdCB0aGUgY29tbWl0IGlzIHBhcnQgb2YgYSBsYXJnZXIgdGFzaywgZmVhdHVyZSwgb3IgZXBpYy4gIAogICAgICAoRXhhbXBsZTogYFBhcnQtb2Y6ICMyNDY4YCkKICAgIC0gKipgRGVwZW5kcy1vbmAqKjogU3BlY2lmaWVzIHRoYXQgdGhlIGNvbW1pdCBkZXBlbmRzIG9uIGFub3RoZXIgY29tbWl0IG9yIFBSIHRvIGZ1bmN0aW9uIGNvcnJlY3RseS4gIAogICAgICAoRXhhbXBsZTogYERlcGVuZHMtb246ICMzNjlgKQogICAgLSAqKmBDaGFuZ2Vsb2dgKio6IEFkZHMgc3BlY2lmaWMgbm90ZXMgdG8gYmUgaW5jbHVkZWQgaW4gYSBjaGFuZ2Vsb2cuICAKICAgICAgKEV4YW1wbGU6IGBDaGFuZ2Vsb2c6IEltcHJvdmVkIHBlcmZvcm1hbmNlIG9mIHNlYXJjaCBmZWF0dXJlLmApCgojIyMgKipCcmVha2luZyBDaGFuZ2VzKioKCi0gVXNlIGBCUkVBS0lORyBDSEFOR0U6YCB0byBzaWduYWwgYmFja3dhcmQtaW5jb21wYXRpYmxlIGNoYW5nZXMuCi0gQ2xlYXJseSBkZXNjcmliZSB0aGUgaW1wYWN0IGFuZCBuZWNlc3NhcnkgbWlncmF0aW9uIHN0ZXBzLgotIE9ubHkgYXBwbGlhYmxlIGlmIHRoZXJlIGlzIGFueSBicmVha2luZyBjaGFuZ2VzIGluIGNvZGUKCiMjIyAqKk1ldGEqKgoKLSBBbiBvcHRpb25hbCBtZXRhIHRhZyBmaWVsZCB0byBpbmRpY2F0ZSB0aGUgY29tbWl0J3Mgc3RhdHVzCi0gRXhhbXBsZSBUYWdzOiAjd2lwICh3b3JrIGluIHByb2dyZXNzKSBvciAjaXJyZWxldmFudCAuLi4uLiAKLS0tCgojIyAqKkV4YW1wbGUqKgoKPiA6c3BhcmtsZXM6IGZlYXQoZGFzaGJvYXJkKTogaW1wbGVtZW50IGRyaWxsLWRvd24gZnVuY3Rpb25hbGl0eQo+Cj4gLSBSZWZhY3RvciBzdWJzeXN0ZW0gWCBmb3IgcmVhZGFiaWxpdHkgOmFydDogCj4gLSBBZGQgYSBuZXcgZmVhdHVyZSBmb3IgdXNlciBhdXRoZW50aWNhdGlvbiA6c3BhcmtsZXM6Cj4gLSBVcGRhdGUgdGhlIFJFQURNRSBkb2N1bWVudGF0aW9uIDptZW1vOgo+IC0gUmVtb3ZlIHVudXNlZCBmaWxlcyBhbmQgZGVwZW5kZW5jaWVzIDpmaXJlOgo+Cj4gQlJFQUtJTkcgQ0hBTkdFOiBUaGUgZGF0YSBmb3JtYXQgZm9yIGRyaWxsLWRvd24gZXZlbnRzIGhhcyBiZWVuIGNoYW5nZWQuCj4KPiBSZWZzOiAjMTIzNAoKLS0tCgojIyBHaXRtb2ppIExpc3QKCkJlbG93IGlzIGEgY29tcHJlaGVuc2l2ZSB0YWJsZSBvZiBHaXRtb2ppIGVtb2ppcywgdGhlaXIgY29kZXMsIGFuZCBkZXNjcmlwdGlvbnM6Cgp8IEVtb2ppIHwgQ29kZSAgICAgICAgICAgICAgICAgICAgICAgICAgICB8IERlc2NyaXB0aW9uICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfC0tLS0tLS18LS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLXwtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tfAp8IPCfjqggICAgfCBgOmFydDpgICAgICAgICAgICAgICAgICAgICAgICB8IEltcHJvdmUgc3RydWN0dXJlL2Zvcm1hdCBvZiB0aGUgY29kZS4gICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDimqHvuI8gICAgfCBgOnphcDpgICAgICAgICAgICAgICAgICAgICAgICB8IEltcHJvdmUgcGVyZm9ybWFuY2UuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5SlICAgIHwgYDpmaXJlOmAgICAgICAgICAgICAgICAgICAgICAgfCBSZW1vdmUgY29kZSBvciBmaWxlcy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+QmyAgICB8IGA6YnVnOmAgICAgICAgICAgICAgICAgICAgICAgIHwgRml4IGEgYnVnLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfmpHvuI8gICB8IGA6YW1idWxhbmNlOmAgICAgICAgICAgICAgICAgIHwgQ3JpdGljYWwgaG90Zml4LiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IOKcqCAgICAgfCBgOnNwYXJrbGVzOmAgICAgICAgICAgICAgICAgICB8IEludHJvZHVjZSBuZXcgZmVhdHVyZXMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5OdICAgIHwgYDptZW1vOmAgICAgICAgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGRvY3VtZW50YXRpb24uICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+agCAgICB8IGA6cm9ja2V0OmAgICAgICAgICAgICAgICAgICAgIHwgRGVwbG95IHN0dWZmLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfkoQgICAgfCBgOmxpcHN0aWNrOmAgICAgICAgICAgICAgICAgICB8IEFkZCBvciB1cGRhdGUgdGhlIFVJIGFuZCBzdHlsZSBmaWxlcy4gICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn46JICAgIHwgYDp0YWRhOmAgICAgICAgICAgICAgICAgICAgICAgfCBCZWdpbiBhIHByb2plY3QuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg4pyFICAgICB8IGA6d2hpdGVfY2hlY2tfbWFyazpgICAgICAgICAgIHwgQWRkLCB1cGRhdGUsIG9yIHBhc3MgdGVzdHMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCflJLvuI8gICB8IGA6bG9jazpgICAgICAgICAgICAgICAgICAgICAgIHwgRml4IHNlY3VyaXR5IG9yIHByaXZhY3kgaXNzdWVzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCflJAgICAgfCBgOmNsb3NlZF9sb2NrX3dpdGhfa2V5OmAgICAgICB8IEFkZCBvciB1cGRhdGUgc2VjcmV0cy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5SWICAgIHwgYDpib29rbWFyazpgICAgICAgICAgICAgICAgICAgfCBSZWxlYXNlL3ZlcnNpb24gdGFncy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+aqCAgICB8IGA6cm90YXRpbmdfbGlnaHQ6YCAgICAgICAgICAgIHwgRml4IGNvbXBpbGVyL2xpbnRlciB3YXJuaW5ncy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfmqcgICAgfCBgOmNvbnN0cnVjdGlvbjpgICAgICAgICAgICAgICB8IFdvcmsgaW4gcHJvZ3Jlc3MuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5KaICAgIHwgYDpncmVlbl9oZWFydDpgICAgICAgICAgICAgICAgfCBGaXggQ0kgYnVpbGQuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg4qyH77iPICAgIHwgYDphcnJvd19kb3duOmAgICAgICAgICAgICAgICAgfCBEb3duZ3JhZGUgZGVwZW5kZW5jaWVzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg4qyG77iPICAgIHwgYDphcnJvd191cDpgICAgICAgICAgICAgICAgICAgfCBVcGdyYWRlIGRlcGVuZGVuY2llcy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+TjCAgICB8IGA6cHVzaHBpbjpgICAgICAgICAgICAgICAgICAgIHwgUGluIGRlcGVuZGVuY2llcyB0byBzcGVjaWZpYyB2ZXJzaW9ucy4gICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfkbcgICAgfCBgOmNvbnN0cnVjdGlvbl93b3JrZXI6YCAgICAgICB8IEFkZCBvciB1cGRhdGUgQ0kgYnVpbGQgc3lzdGVtLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5OIICAgIHwgYDpjaGFydF93aXRoX3Vwd2FyZHNfdHJlbmQ6YCAgfCBBZGQgb3IgdXBkYXRlIGFuYWx5dGljcyBvciB0cmFjayBjb2RlLiAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg4pm777iPICAgIHwgYDpyZWN5Y2xlOmAgICAgICAgICAgICAgICAgICAgfCBSZWZhY3RvciBjb2RlLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg4p6VICAgICB8IGA6aGVhdnlfcGx1c19zaWduOmAgICAgICAgICAgIHwgQWRkIGEgZGVwZW5kZW5jeS4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IOKeliAgICAgfCBgOmhlYXZ5X21pbnVzX3NpZ246YCAgICAgICAgICB8IFJlbW92ZSBhIGRlcGVuZGVuY3kuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5SnICAgIHwgYDp3cmVuY2g6YCAgICAgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGNvbmZpZ3VyYXRpb24gZmlsZXMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+UqCAgICB8IGA6aGFtbWVyOmAgICAgICAgICAgICAgICAgICAgIHwgQWRkIG9yIHVwZGF0ZSBkZXZlbG9wbWVudCBzY3JpcHRzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfjJAgICAgfCBgOmdsb2JlX3dpdGhfbWVyaWRpYW5zOmAgICAgICB8IEludGVybmF0aW9uYWxpemF0aW9uIGFuZCBsb2NhbGl6YXRpb24uICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDinI/vuI8gICAgfCBgOnBlbmNpbDI6YCAgICAgICAgICAgICAgICAgICB8IEZpeCB0eXBvcy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5KpICAgIHwgYDpwb29wOmAgICAgICAgICAgICAgICAgICAgICAgfCBXcml0ZSBiYWQgY29kZSB0aGF0IG5lZWRzIHRvIGJlIGltcHJvdmVkLiAgICAgICAgICAgICAgICAgICAgICB8Cnwg4o+q77iPICAgIHwgYDpyZXdpbmQ6YCAgICAgICAgICAgICAgICAgICAgfCBSZXZlcnQgY2hhbmdlcy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+UgCAgICB8IGA6dHdpc3RlZF9yaWdodHdhcmRzX2Fycm93czpgIHwgTWVyZ2UgYnJhbmNoZXMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfk6bvuI8gICB8IGA6cGFja2FnZTpgICAgICAgICAgICAgICAgICAgIHwgQWRkIG9yIHVwZGF0ZSBjb21waWxlZCBmaWxlcyBvciBwYWNrYWdlcy4gICAgICAgICAgICAgICAgICAgICAgfAp8IPCfkb3vuI8gICB8IGA6YWxpZW46YCAgICAgICAgICAgICAgICAgICAgIHwgVXBkYXRlIGNvZGUgZHVlIHRvIGV4dGVybmFsIEFQSSBjaGFuZ2VzLiAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfmpogICAgfCBgOnRydWNrOmAgICAgICAgICAgICAgICAgICAgICB8IE1vdmUgb3IgcmVuYW1lIHJlc291cmNlcyAoZS5nLiwgZmlsZXMsIHBhdGhzLCByb3V0ZXMpLiAgICAgICAgIHwKfCDwn5OEICAgIHwgYDpwYWdlX2ZhY2luZ191cDpgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGxpY2Vuc2UuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+SpSAgICB8IGA6Ym9vbTpgICAgICAgICAgICAgICAgICAgICAgIHwgSW50cm9kdWNlIGJyZWFraW5nIGNoYW5nZXMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfjbEgICAgfCBgOmJlbnRvOmAgICAgICAgICAgICAgICAgICAgICB8IEFkZCBvciB1cGRhdGUgYXNzZXRzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDimb/vuI8gICAgfCBgOndoZWVsY2hhaXI6YCAgICAgICAgICAgICAgICB8IEltcHJvdmUgYWNjZXNzaWJpbGl0eS4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5KhICAgIHwgYDpidWxiOmAgICAgICAgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGNvbW1lbnRzIGluIHNvdXJjZSBjb2RlLiAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+NuyAgICB8IGA6YmVlcnM6YCAgICAgICAgICAgICAgICAgICAgIHwgV3JpdGUgY29kZSBkcnVua2VubHkuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfkqwgICAgfCBgOnNwZWVjaF9iYWxsb29uOmAgICAgICAgICAgICB8IEFkZCBvciB1cGRhdGUgdGV4dCBhbmQgbGl0ZXJhbHMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5eD77iPICAgfCBgOmNhcmRfZmlsZV9ib3g6YCAgICAgICAgICAgICB8IFBlcmZvcm0gZGF0YWJhc2UtcmVsYXRlZCBjaGFuZ2VzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5SKICAgIHwgYDpsb3VkX3NvdW5kOmAgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGxvZ3MuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+UhyAgICB8IGA6bXV0ZTpgICAgICAgICAgICAgICAgICAgICAgIHwgUmVtb3ZlIGxvZ3MuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfkaUgICAgfCBgOmJ1c3RzX2luX3NpbGhvdWV0dGU6YCAgICAgICB8IEFkZCBvciB1cGRhdGUgY29udHJpYnV0b3IocykuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5q4ICAgIHwgYDpjaGlsZHJlbl9jcm9zc2luZzpgICAgICAgICAgfCBJbXByb3ZlIHVzZXIgZXhwZXJpZW5jZS91c2FiaWxpdHkuICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+Pl++4jyAgIHwgYDpidWlsZGluZ19jb25zdHJ1Y3Rpb246YCAgICAgfCBNYWtlIGFyY2hpdGVjdHVyYWwgY2hhbmdlcy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+TsSAgICB8IGA6aXBob25lOmAgICAgICAgICAgICAgICAgICAgIHwgV29yayBvbiByZXNwb25zaXZlIGRlc2lnbi4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfpKEgICAgfCBgOmNsb3duX2ZhY2U6YCAgICAgICAgICAgICAgICB8IE1vY2sgdGhpbmdzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn6WaICAgIHwgYDplZ2c6YCAgICAgICAgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGFuIGVhc3RlciBlZ2cuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+ZiCAgICB8IGA6c2VlX25vX2V2aWw6YCAgICAgICAgICAgICAgIHwgQWRkIG9yIHVwZGF0ZSBhIC5naXRpZ25vcmUgZmlsZS4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfk7ggICAgfCBgOmNhbWVyYV9mbGFzaDpgICAgICAgICAgICAgICB8IEFkZCBvciB1cGRhdGUgc25hcHNob3RzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDimpfvuI8gICAgfCBgOmFsZW1iaWM6YCAgICAgICAgICAgICAgICAgICB8IFBlcmZvcm0gZXhwZXJpbWVudHMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5SN77iPICAgfCBgOm1hZzpgICAgICAgICAgICAgICAgICAgICAgICB8IEltcHJvdmUgU0VPLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn4+377iPICAgfCBgOmxhYmVsOmAgICAgICAgICAgICAgICAgICAgICB8IEFkZCBvciB1cGRhdGUgdHlwZXMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn4yxICAgIHwgYDpzZWVkbGluZzpgICAgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIHNlZWQgZmlsZXMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+aqSAgICB8IGA6dHJpYW5ndWxhcl9mbGFnX29uX3Bvc3Q6YCAgIHwgQWRkLCB1cGRhdGUsIG9yIHJlbW92ZSBmZWF0dXJlIGZsYWdzLiAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfpYUgICAgfCBgOmdvYWxfbmV0OmAgICAgICAgICAgICAgICAgICB8IENhdGNoIGVycm9ycy4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn5KrICAgIHwgYDpkaXp6eTpgICAgICAgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGFuaW1hdGlvbnMgYW5kIHRyYW5zaXRpb25zLiAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+Xke+4jyAgIHwgYDp3YXN0ZWJhc2tldDpgICAgICAgICAgICAgICAgfCBEZXByZWNhdGUgY29kZSB0aGF0IG5lZWRzIHRvIGJlIGNsZWFuZWQgdXAuICAgICAgICAgICAgICAgICAgICB8Cnwg8J+bgiAgICB8IGA6cGFzc3BvcnRfY29udHJvbDpgICAgICAgICAgIHwgV29yayBvbiBjb2RlIHJlbGF0ZWQgdG8gYXV0aG9yaXphdGlvbiwgcm9sZXMsIGFuZCBwZXJtaXNzaW9ucy4gfAp8IPCfqbkgICAgfCBgOmFkaGVzaXZlX2JhbmRhZ2U6YCAgICAgICAgICB8IFNpbXBsZSBmaXggZm9yIGEgbm9uLWNyaXRpY2FsIGlzc3VlLiAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn6eQICAgIHwgYDptb25vY2xlX2ZhY2U6YCAgICAgICAgICAgICAgfCBEYXRhIGV4cGxvcmF0aW9uL2luc3BlY3Rpb24uICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg4pqw77iPICAgIHwgYDpjb2ZmaW46YCAgICAgICAgICAgICAgICAgICAgfCBSZW1vdmUgZGVhZCBjb2RlLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+nqiAgICB8IGA6dGVzdF90dWJlOmAgICAgICAgICAgICAgICAgIHwgQWRkIGEgZmFpbGluZyB0ZXN0LiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfkZQgICAgfCBgOm5lY2t0aWU6YCAgICAgICAgICAgICAgICAgICB8IEFkZCBvciB1cGRhdGUgYnVzaW5lc3MgbG9naWMuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHwKfCDwn6m6ICAgIHwgYDpzdGV0aG9zY29wZTpgICAgICAgICAgICAgICAgfCBBZGQgb3IgdXBkYXRlIGhlYWx0aGNoZWNrLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+nsSAgICB8IGA6YnJpY2tzOmAgICAgICAgICAgICAgICAgICAgIHwgSW5mcmFzdHJ1Y3R1cmUtcmVsYXRlZCBjaGFuZ2VzLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAp8IPCfp5HigI3wn5K7IHwgYDp0ZWNobm9sb2dpc3Q6YCAgICAgICAgICAgICAgfCBJbXByb3ZlIGRldmVsb3BlciBleHBlcmllbmNlLiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8Cnwg8J+SuCAgICB8IGA6bW9uZXlfd2l0aF93aW5nczpgICAgICAgICAgIHwgQWRkIHNwb25zb3JzaGlwcyBvciBtb25leS1yZWxhdGVkIGluZnJhc3RydWN0dXJlLiAgICAgICAgICAgICAgfAp8IPCfp7UgICAgfCBgOnRocmVhZDpgICAgICAgICAgICAgICAgICAgICB8IEFkZCBvciB1cGRhdGUgY29kZSByZWxhdGVkIHRvIG11bHRpdGhyZWFkaW5nIG9yIGNvbmN1cnJlbmN5LiAgIHw="
-  fi
-
-  local sys_instruction
-  sys_instruction=$(echo -n "$sys_instruction_b64" | base64 --decode)
-
-  if [[ -z "$sys_instruction" ]]; then
-    echo -e "${RED}Error: Failed to decode system instructions.${NC}"
-    exit 1
-  fi
-
-  local payload_file="/tmp/gitx_payload_$$.json"
-
-  # 5. Build JSON Payload
-  jq -n \
-    --arg sys "$sys_instruction" \
-    --rawfile diff_b64 "$diff_b64_file" \
-    '{
-      "system_instruction": {
-        "parts": [{ "text": $sys }]
-      },
-      "contents": [{
-        "parts": [
-          { "text": "Analyze the following git diff and generate a commit message:" },
-          {
-            "inline_data": {
-              "mime_type": "text/plain",
-              "data": $diff_b64
-            }
-          }
-        ]
-      }],
-      "generation_config": {
-        "temperature": 0.1,
-        "topP": 0.9,
-        "topK": 1
-      }
-      }' > "$payload_file"
-
-  if [[ ! -s "$payload_file" ]]; then
-    rm -f "$payload_file" "$diff_b64_file"
-    echo -e "${RED}Error: Failed to build Gemini request payload.${NC}"
-    exit 1
-  fi
-
-  # 6. Retry Loop for API Calls
-  local commit_msg=""
-  while true; do
-    echo "Generating commit message via Gemini ($GEMINI_MODEL)..."
-    local api_url="https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=$GEMINI_API_KEY"
-
-    local response
-    response=$(curl -s -X POST "$api_url" \
-      -H 'Content-Type: application/json' \
-      -d @"$payload_file")
-
-    # 7. Extract message
-    commit_msg=$(echo "$response" | jq -r '.candidates[0].content.parts[0].text // empty')
-
-    # Handle Errors
-    if [[ -z "$commit_msg" || "$commit_msg" == "null" ]]; then
-      local err_code=$(echo "$response" | jq -r '.error.code // "Unknown"')
-      local err_msg=$(echo "$response" | jq -r '.error.message // "Unknown error"')
-      local err_status=$(echo "$response" | jq -r '.error.status // "ERROR"')
-
-      echo -e "\n${RED}API Error: [${err_code}] ${err_status}${NC}"
-      echo -e "${YELLOW}Message: ${err_msg}${NC}\n"
-
-      read -rp "Do you want to try with a different model? (y/n): " retry_action
-      if [[ "$retry_action" =~ ^[Yy]$ ]]; then
-        select_gemini_model
-        echo "Retrying..."
-        continue
-      else
-        rm -f "$payload_file" "$diff_b64_file"
-        echo "Aborting commit generation."
-        exit 1
-      fi
+  if [[ "$GITX_SELECTED_AI_PROVIDER" == "ollama" ]]; then
+    build_ollama_payload "$OLLAMA_MODEL" "$system_instruction" "$raw_diff" "$payload_file" || return 1
+    echo "Generating commit message via local Ollama ($OLLAMA_MODEL)..."
+    if ! response="$(ollama_api_request "$payload_file")"; then
+      echo "Ollama generation failed or exceeded configured limits. Gemini fallback is only used when Ollama is unavailable during provider selection." >&2
+      return 1
     fi
+    jq -e . >/dev/null <<<"$response" || { echo "Ollama returned invalid JSON." >&2; return 1; }
+    commit_msg="$(jq -r '.response // empty' <<<"$response")"
+    [[ -n "$commit_msg" && "$commit_msg" != "null" ]] || {
+      echo "Ollama returned an empty commit message." >&2
+      return 1
+    }
+  else
+    build_gemini_payload "$system_instruction" "$raw_diff" "$payload_file" || return 1
+    while true; do
+      echo "Generating commit message via Gemini ($GEMINI_MODEL)..."
+      local api_url="https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent"
+      if ! response="$(gemini_api_request "$api_url" "$payload_file")"; then
+        echo "Gemini API request failed or exceeded configured limits." >&2
+        return 1
+      fi
+      jq -e . >/dev/null <<<"$response" || { echo "Gemini returned invalid JSON." >&2; return 1; }
+      commit_msg="$(jq -r '.candidates[0].content.parts[0].text // empty' <<<"$response")"
+      if [[ -n "$commit_msg" && "$commit_msg" != "null" ]]; then
+        break
+      fi
+      local err_code err_msg err_status retry_action
+      err_code="$(jq -r '.error.code // "Unknown"' <<<"$response")"
+      err_msg="$(jq -r '.error.message // "Unknown error"' <<<"$response")"
+      err_status="$(jq -r '.error.status // "ERROR"' <<<"$response")"
+      echo -e "
+${RED}API Error: [${err_code}] ${err_status}${NC}"
+      echo -e "${YELLOW}Message: ${err_msg}${NC}
+"
+      read -rp "Do you want to try with a different Gemini model? (y/n): " retry_action
+      if [[ "$retry_action" =~ ^[Yy]$ ]]; then
+        select_gemini_model || return 1
+        save_gitx_config "$persist_api_key" || return 1
+        continue
+      fi
+      echo "Aborting commit generation."
+      return 1
+    done
+  fi
 
-    # Break out of loop on success
-    break
-  done
-
-  # Cleanup temp files
-  rm -f "$payload_file" "$diff_b64_file"
-
-  # 8. Present output to user
-  echo -e "\n${YELLOW}================ Generated Commit Message ================${NC}\n"
+  echo -e "
+${YELLOW}================ Generated Commit Message ================${NC}
+"
   echo "$commit_msg"
-  echo -e "\n${YELLOW}==========================================================${NC}\n"
+  echo -e "
+${YELLOW}==========================================================${NC}
+"
 
+  local action
   read -rp "Do you want to commit with this message? (y/e/n) [y=yes, e=edit, n=no]: " action
   case "$action" in
-  y|Y)
-    git commit -m "$commit_msg"
-    echo -e "${GREEN}Committed successfully.${NC}"
-    ;;
-  e|E)
-    local msg_file="/tmp/gitx_commit_msg_$$.txt"
-    echo "$commit_msg" > "$msg_file"
-    ${EDITOR:-vi} "$msg_file"
-    git commit -F "$msg_file"
-    rm -f "$msg_file"
-    echo -e "${GREEN}Committed successfully.${NC}"
-    ;;
-  *)
-    echo "Commit cancelled. Your changes remain staged."
-    ;;
+    y|Y)
+      git commit -m "$commit_msg"
+      echo -e "${GREEN}Committed successfully.${NC}"
+      ;;
+    e|E)
+      local msg_file="$temp_dir/commit-message.txt"
+      printf '%s
+' "$commit_msg" > "$msg_file"
+      "${EDITOR:-vi}" "$msg_file"
+      git commit -F "$msg_file"
+      echo -e "${GREEN}Committed successfully.${NC}"
+      ;;
+    *) echo "Commit cancelled. Your changes remain staged." ;;
   esac
 }
 
@@ -2474,6 +2636,10 @@ EOF
   fi
 }
 
+if [[ "${GITX_LIBRARY_MODE:-0}" == 1 ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 trap "echo -e '${RED}Process interrupted. Exiting.${NC}'; exit 6" SIGINT SIGTERM
 
 # Main script logic
@@ -2481,15 +2647,18 @@ cmd="${1:-}"
 shift || true
 
 case "$cmd" in
-ai-commit) generate_ai_commit ;;
+-h | --help | help) usage ;;
+-V | --version | version) printf 'gitx %s\n' "$VERSION" ;;
+"") usage ;;
+ai-commit) generate_ai_commit "$@" ;;
 status) show_status ;;
 commit) interactive_commit ;;
-revert) revert_commit ;;
+revert) revert_commit "$@" ;;
 log-file) file_log "${1:-}" ;;
 fetch) fetch_and_prune ;;
 large-files) show_large_files ;;
 clean) clean_untracked "$@" ;;
-cherry-pick) cherry_pick_commit ;;
+cherry-pick) cherry_pick_commit "$@" ;;
 reset-branch) reset_branch_to_remote ;;
 prune) prune_remote_branches ;;
 report) fetch_prs_and_commits "$@" ;;
@@ -2525,5 +2694,9 @@ list-changes) list_changed_files_between_branches "$@" ;;
 set-lf) set_line_endings_to_lf ;;
 self-update) self_update ;;
 summary) generate_git_summary "$@" ;;
-*) usage ;;
+*)
+  echo "Error: Unknown command '$cmd'." >&2
+  usage >&2
+  exit 2
+  ;;
 esac

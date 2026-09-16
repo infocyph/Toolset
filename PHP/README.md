@@ -1,5 +1,67 @@
 # phpx
 
+<!-- TOOLSET2-CONTRACT:START -->
+## Purpose
+
+PHP runtime/package/extension/service/configuration management plus diagnostics and tuning.
+
+## Install
+
+Latest stable (checksum-verifying installer):
+
+```bash
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh phpx
+```
+
+Exact reproducible release:
+
+```bash
+bash install.sh --release 2.0 phpx
+```
+
+## Requirements
+
+Bash. Individual commands require only their own capabilities: PHP for runtime inspection, package-manager/service tools for system mutation, and Composer/PECL/build tools where applicable.
+
+## Supported platforms/capabilities
+
+Generic PHP inspection is capability-based. Package mutation has explicit backends; unsupported package/service operations fail clearly instead of disabling unrelated commands.
+
+See [`../docs/cli-contracts.md`](../docs/cli-contracts.md) for the suite capability matrix.
+
+## Quick start
+
+```bash
+phpx doctor
+phpx --help
+phpx --version
+```
+
+## Command reference
+
+`phpx --help` is the authoritative live command reference. `phpx --version` prints the installed tool version. The detailed reference below expands on command-specific behavior.
+
+## Destructive/security behavior
+
+Root is operation-specific. Package, service and system configuration changes are high-impact. Generated configuration is validated/atomically replaced where supported, and logging is best-effort/secret-safe.
+
+## Exit/output contract
+
+Exit `0` means success; non-zero means the requested operation did not complete successfully. Machine-readable modes reserve stdout for data and send diagnostics to stderr. Do not parse undocumented human wording as a stable API.
+
+## Self-update
+
+Where `phpx` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=2.0` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
+
+## Examples
+
+```bash
+phpx doctor
+phpx --help
+```
+<!-- TOOLSET2-CONTRACT:END -->
+
 `phpx` is a **PHP toolkit & manager** for Debian/Ubuntu-like systems.
 
 It wraps the usual “install / switch / inspect / tune” PHP tasks into a single script, without hiding what’s going on underneath.
@@ -50,8 +112,8 @@ High-impact commands (`switch`, `install`, `remove`, `sury`, `self-update`) run 
 ## Installation
 
 ```bash
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/PHP/phpx" \
-  -o /usr/local/bin/phpx && sudo chmod +x /usr/local/bin/phpx
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh phpx
 ```
 
 ---

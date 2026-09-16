@@ -1,0 +1,333 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: toolset-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Static and workflow validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Install actionlint 1.7.12
+        run: |
+          set -Eeuo pipefail
+          asset='actionlint_1.7.12_linux_amd64.tar.gz'
+          curl -fsSLO "https://github.com/rhysd/actionlint/releases/download/v1.7.12/$asset"
+          printf '%s  %s\n' \
+            '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
+            "$asset" | sha256sum -c -
+          tar -xzf "$asset" actionlint
+          ./actionlint -version
+
+      - name: Validate GitHub Actions workflows
+        run: |
+          mkdir -p reports
+          set -o pipefail
+          ./actionlint 2>&1 | tee reports/actionlint.log
+
+      - name: Run static checks
+        run: |
+          mkdir -p reports
+          set -o pipefail
+          bash tests/static.sh 2>&1 | tee reports/static.log
+
+      - name: Upload static reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: static-report
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+  smoke:
+    name: Baseline smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run smoke checks
+        run: bash tests/smoke.sh
+
+  safety:
+    name: High-impact safety integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install integration dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq sqlite3
+
+      - name: Run phpx safety checks
+        run: sudo -E bash tests/phpx.sh
+
+      - name: Run dockex ephemeral Docker checks
+        run: bash tests/dockex.sh
+
+      - name: Run sqlitex disposable database checks
+        if: ${{ hashFiles('tests/sqlitex.sh') != '' }}
+        run: bash tests/sqlitex.sh
+
+  security:
+    name: Security and automation integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install security integration dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            jq iproute2 netcat-openbsd openssl curl file
+
+      - name: Run netx security/network checks
+        run: bash tests/netx.sh
+
+      - name: Run gitx repository/AI checks
+        run: bash tests/gitx.sh
+
+  presentation:
+    name: ChromaCat presentation integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run ChromaCat pipeline/no-color/stream checks
+        run: bash tests/chromacat.sh
+
+  governance:
+    name: Documentation and security governance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Verify live help/version documentation contracts
+        run: bash tests/docs.sh
+
+      - name: Run cross-cutting security audit
+        run: bash tests/security-audit.sh
+
+      - name: Upload security audit report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: security-audit-report
+          path: reports/security-audit.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  contracts:
+    name: Standalone CLI contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate help/version/non-TTY contracts
+        run: bash tests/contracts.sh
+
+      - name: Upload contract reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-contract-reports
+          path: reports/contracts/
+          if-no-files-found: error
+          retention-days: 14
+
+  distro:
+    name: Distro smoke (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Debian 13
+            image: debian:13-slim
+            family: debian
+          - name: Ubuntu 24.04
+            image: ubuntu:24.04
+            family: debian
+          - name: Fedora 42
+            image: fedora:42
+            family: fedora
+          - name: Alpine 3.22
+            image: alpine:3.22
+            family: alpine
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Pull distro image with bounded retry
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -Eeuo pipefail
+          for attempt in 1 2 3; do
+            if docker pull "$IMAGE"; then
+              exit 0
+            fi
+            if (( attempt == 3 )); then
+              echo "Failed to pull $IMAGE after $attempt attempts." >&2
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+
+      - name: Run distro smoke
+        env:
+          IMAGE: ${{ matrix.image }}
+          FAMILY: ${{ matrix.family }}
+        run: |
+          case "$FAMILY" in
+            alpine)
+              docker run --rm --pull=never \
+                -v "$PWD:/workspace:ro" \
+                -w /workspace \
+                "$IMAGE" \
+                sh -lc 'apk add --no-cache bash >/dev/null && bash tests/distro-smoke.sh'
+              ;;
+            *)
+              docker run --rm --pull=never \
+                -v "$PWD:/workspace:ro" \
+                -w /workspace \
+                "$IMAGE" \
+                bash tests/distro-smoke.sh
+              ;;
+          esac
+
+  release_delivery:
+    name: Simulated 2.0 release delivery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Verify exact 2.0 install/self-update delivery with transient retry
+        run: bash tests/release-delivery.sh
+
+  distribution:
+    name: Standalone distribution artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build and verify standalone artifacts
+        run: bash tests/distribution.sh
+
+      - name: Upload distribution snapshot
+        uses: actions/upload-artifact@v7
+        with:
+          name: standalone-toolset-snapshot
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  gate:
+    name: CI gate
+    if: always()
+    needs:
+      - static
+      - smoke
+      - safety
+      - security
+      - presentation
+      - governance
+      - contracts
+      - distro
+      - release_delivery
+      - distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Summarize validation results
+        env:
+          STATIC_RESULT: ${{ needs.static.result }}
+          SMOKE_RESULT: ${{ needs.smoke.result }}
+          SAFETY_RESULT: ${{ needs.safety.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          PRESENTATION_RESULT: ${{ needs.presentation.result }}
+          GOVERNANCE_RESULT: ${{ needs.governance.result }}
+          CONTRACT_RESULT: ${{ needs.contracts.result }}
+          DISTRO_RESULT: ${{ needs.distro.result }}
+          RELEASE_DELIVERY_RESULT: ${{ needs.release_delivery.result }}
+          DISTRIBUTION_RESULT: ${{ needs.distribution.result }}
+        run: |
+          {
+            echo '## Toolset CI gate'
+            echo
+            echo '| Check | Result |'
+            echo '|---|---|'
+            echo "| Static/workflows | $STATIC_RESULT |"
+            echo "| Baseline smoke | $SMOKE_RESULT |"
+            echo "| High-impact safety | $SAFETY_RESULT |"
+            echo "| Security/automation | $SECURITY_RESULT |"
+            echo "| ChromaCat presentation | $PRESENTATION_RESULT |"
+            echo "| Docs/security governance | $GOVERNANCE_RESULT |"
+            echo "| CLI contracts | $CONTRACT_RESULT |"
+            echo "| Distro smoke | $DISTRO_RESULT |"
+            echo "| Simulated 2.0 release delivery | $RELEASE_DELIVERY_RESULT |"
+            echo "| Distribution | $DISTRIBUTION_RESULT |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for result in \
+            "$STATIC_RESULT" \
+            "$SMOKE_RESULT" \
+            "$SAFETY_RESULT" \
+            "$SECURITY_RESULT" \
+            "$PRESENTATION_RESULT" \
+            "$GOVERNANCE_RESULT" \
+            "$CONTRACT_RESULT" \
+            "$DISTRO_RESULT" \
+            "$RELEASE_DELIVERY_RESULT" \
+            "$DISTRIBUTION_RESULT"; do
+            [[ "$result" == success ]] || exit 1
+          done

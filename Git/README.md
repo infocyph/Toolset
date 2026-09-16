@@ -1,5 +1,68 @@
 # gitx
 
+<!-- TOOLSET2-CONTRACT:START -->
+## Purpose
+
+Repository workflow, reporting, safe interactive Git operations and optional AI-assisted commit generation with local Ollama preferred over Gemini.
+
+## Install
+
+Latest stable (checksum-verifying installer):
+
+```bash
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh gitx
+```
+
+Exact reproducible release:
+
+```bash
+bash install.sh --release 2.0 gitx
+```
+
+## Requirements
+
+Bash and Git. `ai-commit` additionally needs `curl`, `jq`, and `base64`. A reachable Ollama API with at least one installed model is preferred automatically. The default endpoint is `http://127.0.0.1:11434`; `GITX_OLLAMA_URL` can point to any trusted local or remote Ollama base URL. If the configured/default Ollama endpoint is unavailable, Gemini is used and requires a valid API key/network access.
+
+## Supported platforms/capabilities
+
+Generic Linux Git workflows are distro-independent. Editor/pager and optional AI behavior follow the capabilities available on the host.
+
+See [`../docs/cli-contracts.md`](../docs/cli-contracts.md) for the suite capability matrix.
+
+## Quick start
+
+```bash
+gitx status
+gitx summary HEAD~20
+gitx doctor
+```
+
+## Command reference
+
+`gitx --help` is the authoritative live command reference. `gitx --version` prints the installed tool version. The detailed reference below expands on command-specific behavior.
+
+## Destructive/security behavior
+
+Repository-changing commands mutate the current Git repository. Interactive path handling is NUL-safe. AI provider selection is local-first: reachable Ollama is used automatically, otherwise Gemini is selected. Gemini settings are declarative, API-key persistence is explicit opt-in, sensitive-looking staged paths are rejected by default, and both Ollama/Gemini requests are timeout/size bounded. A failed Ollama generation is not silently resent to Gemini.
+
+## Exit/output contract
+
+Exit `0` means success; non-zero means the requested operation did not complete successfully. Machine-readable modes reserve stdout for data and send diagnostics to stderr. Do not parse undocumented human wording as a stable API.
+
+## Self-update
+
+Where `gitx` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=2.0` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
+
+## Examples
+
+```bash
+gitx commit
+gitx worklog HEAD~20..HEAD
+gitx ai-commit
+```
+<!-- TOOLSET2-CONTRACT:END -->
+
 `gitx` is an opinionated Git helper focused on:
 
 * Branch workflows (`feature` / `bugfix` / `hotfix` / `release` / `docs` / `ci` / `experiment`)
@@ -17,8 +80,8 @@ It never hides Git – it just wires composable commands into practical workflow
 ## Installation
 
 ```bash
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Git/gitx" \
-  -o /usr/local/bin/gitx && sudo chmod +x /usr/local/bin/gitx
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh gitx
 ````
 
 ## Usage
@@ -39,6 +102,35 @@ For commands that accept **date windows** (`YYYY-MM-DD YYYY-MM-DD`), `gitx` reso
 Then it runs the same logic as commit/tag ranges. This keeps outputs consistent across repos and avoids off-by-one issues.
 
 ---
+
+
+### AI commit provider order
+
+`gitx ai-commit` defaults to `GITX_AI_PROVIDER=auto`:
+
+1. If the Ollama API is reachable (default `http://127.0.0.1:11434`) and at least one model is installed, `gitx` uses Ollama. `GITX_OLLAMA_URL` may point to a custom trusted Ollama endpoint. `OLLAMA_MODEL`/`GITX_OLLAMA_MODEL` can pin a model; otherwise the first installed model is selected.
+2. If Ollama is unavailable at provider selection, `gitx` falls back to Gemini. Gemini credentials remain opt-in and are never required for the local Ollama path.
+
+Advanced overrides: `GITX_AI_PROVIDER=ollama|gemini|auto`, `GITX_OLLAMA_URL=<url>`.
+
+### Gemini fallback and API key
+
+With the default `GITX_AI_PROVIDER=auto`, `gitx ai-commit` checks the configured Ollama endpoint first. If Ollama is unreachable or has no installed model, `gitx` automatically selects Gemini.
+
+Gemini credentials are resolved in this order:
+
+1. `GEMINI_API_KEY` from the current environment.
+2. The opt-in Gitx credential file (`${XDG_CONFIG_HOME:-~/.config}/gitx/credentials`).
+3. An interactive prompt when neither source contains a key.
+
+The recommended non-persistent setup is the environment variable:
+
+```bash
+export GEMINI_API_KEY="your-api-key"
+gitx ai-commit
+```
+
+The environment value takes precedence over a persisted credential. Gitx does not persist the key unless persistence is explicitly requested (for example, `gitx ai-commit --persist-api-key` or `GITX_PERSIST_API_KEY=1`). Gemini requests send the key in the `x-goog-api-key` header rather than putting it in the request URL.
 
 ## Command Overview
 

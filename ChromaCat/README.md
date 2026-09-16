@@ -1,5 +1,67 @@
 # chromacat
 
+<!-- TOOLSET2-CONTRACT:START -->
+## Purpose
+
+Pipeline-safe terminal presentation with colouring, themes, matching, boxes, headers, streaming and optional ASCII-art rendering.
+
+## Install
+
+Latest stable (checksum-verifying installer):
+
+```bash
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh chromacat
+```
+
+Exact reproducible release:
+
+```bash
+bash install.sh --release 2.0 chromacat
+```
+
+## Requirements
+
+Bash and `awk`. `tput`, `figlet`, `chafa`/`jp2a`/`img2txt` and release-update tools are optional and checked only for the feature that uses them.
+
+## Supported platforms/capabilities
+
+Generic Linux. Plain text does not depend on TERM/tput. Non-TTY output is unstyled unless `--force` is explicitly requested.
+
+See [`../docs/cli-contracts.md`](../docs/cli-contracts.md) for the suite capability matrix.
+
+## Quick start
+
+```bash
+printf "hello\n" | chromacat
+printf "hello\n" | chromacat --force -T neon
+tail -f app.log | chromacat --log
+```
+
+## Command reference
+
+`chromacat --help` is the authoritative live command reference. `chromacat --version` prints the installed tool version. The detailed reference below expands on command-specific behavior.
+
+## Destructive/security behavior
+
+Presentation-only. Default non-TTY passthrough is byte-faithful; `--cat` is an explicit raw escape hatch; unknown options fail; `--no-color`/`NO_COLOR` remove SGR colour/blink/invert sequences. Unicode box width is best-effort because exact terminal cell width is locale/wcwidth dependent.
+
+## Exit/output contract
+
+Exit `0` means success; non-zero means the requested operation did not complete successfully. Machine-readable modes reserve stdout for data and send diagnostics to stderr. Do not parse undocumented human wording as a stable API.
+
+## Self-update
+
+Where `chromacat` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=2.0` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
+
+## Examples
+
+```bash
+printf "hello\n" | chromacat --no-color
+printf "hello\n" | chromacat --box --center --no-color
+```
+<!-- TOOLSET2-CONTRACT:END -->
+
 `chromacat` renders colourful, animated text, banners and ASCII art in your terminal.
 
 Think of it as a **colour-aware `cat`** for:
@@ -20,8 +82,8 @@ When it can’t safely colour (or you didn’t ask for anything special), it beh
 ## Installation
 
 ```bash
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/ChromaCat/chromacat" \
-  -o /usr/local/bin/chromacat && sudo chmod +x /usr/local/bin/chromacat
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh chromacat
 ```
 
 Or keep it in your `$HOME/bin` and add that to `PATH`.

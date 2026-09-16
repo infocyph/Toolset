@@ -1,5 +1,67 @@
 # dockex
 
+<!-- TOOLSET2-CONTRACT:START -->
+## Purpose
+
+Docker inspection, lifecycle helpers, resource updates, cleanup, benchmarking and deterministic backup/restore.
+
+## Install
+
+Latest stable (checksum-verifying installer):
+
+```bash
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh dockex
+```
+
+Exact reproducible release:
+
+```bash
+bash install.sh --release 2.0 dockex
+```
+
+## Requirements
+
+Bash and the Docker CLI connected to a usable daemon/context. Optional commands require the capabilities they invoke.
+
+## Supported platforms/capabilities
+
+Linux with Docker. Rootless and non-default Docker contexts are detected; access depends on the active Docker endpoint permissions.
+
+See [`../docs/cli-contracts.md`](../docs/cli-contracts.md) for the suite capability matrix.
+
+## Quick start
+
+```bash
+dockex info
+dockex --help
+dockex --version
+```
+
+## Command reference
+
+`dockex --help` is the authoritative live command reference. `dockex --version` prints the installed tool version. The detailed reference below expands on command-specific behavior.
+
+## Destructive/security behavior
+
+Cleanup and restore are explicit high-impact operations. Environment values are redacted by default. Restore is scoped to the selected mount/volume and live-data consistency limitations are surfaced.
+
+## Exit/output contract
+
+Exit `0` means success; non-zero means the requested operation did not complete successfully. Machine-readable modes reserve stdout for data and send diagnostics to stderr. Do not parse undocumented human wording as a stable API.
+
+## Self-update
+
+Where `dockex` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=2.0` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
+
+## Examples
+
+```bash
+dockex info
+dockex --help
+```
+<!-- TOOLSET2-CONTRACT:END -->
+
 `dockex` is a **Docker helper CLI** that wraps common day-to-day ops into one script:
 
 * Inspect containers in-depth (network, limits, env, mounts, health, DNS)
@@ -22,8 +84,8 @@ It is **non-invasive** – everything is just thin wrappers over `docker` + a fe
 ## Installation
 
 ```bash
-sudo curl -fsSL "https://raw.githubusercontent.com/infocyph/Toolset/main/Docker/dockex" \
-  -o /usr/local/bin/dockex && sudo chmod +x /usr/local/bin/dockex
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
+bash install.sh dockex
 ````
 
 ---

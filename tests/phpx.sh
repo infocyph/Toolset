@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+# shellcheck source=tests/lib/assert.sh
+source tests/lib/assert.sh
+
+TMP_ROOT="$(mktemp -d)"
+cleanup() { rm -rf -- "$TMP_ROOT"; }
+trap cleanup EXIT INT TERM
+
+export PHPX_LIBRARY_MODE=1
+export PHPX_NO_LOG=1
+# shellcheck source=PHP/phpx
+source PHP/phpx
+unset PHPX_LIBRARY_MODE
+
+package_backend="$(detect_package_manager)"
+case "$package_backend" in
+apt | dnf | rpm | none) ;;
+*) fail "unexpected package backend: $package_backend" ;;
+esac
+pass "package capability detection: $package_backend"
+
+service_backend="$(detect_service_manager)"
+case "$service_backend" in
+systemd | service | none) ;;
+*) fail "unexpected service backend: $service_backend" ;;
+esac
+pass "service capability detection: $service_backend"
+
+# Unsupported package mutation must fail explicitly rather than guessing commands.
+detect_package_manager() { printf 'none'; }
+set +e
+unsupported_output="$(package_backend_require_mutation 2>&1)"
+unsupported_rc=$?
+set -e
+((unsupported_rc != 0)) || fail "unsupported package mutation backend unexpectedly succeeded"
+assert_contains "$unsupported_output" "No supported package-mutation backend" "unsupported backend should be explicit"
+pass "unsupported package mutation fails explicitly"
+unset -f detect_package_manager
+
+# Logging failures must be non-fatal and silent for read-only commands.
+blocked_log="$TMP_ROOT/not-a-directory"
+printf 'block\n' >"$blocked_log"
+log_stdout="$TMP_ROOT/log.stdout"
+log_stderr="$TMP_ROOT/log.stderr"
+set +e
+PHPX_NO_LOG= PHPX_LOG_DIR="$blocked_log" HOME="$TMP_ROOT" bash PHP/phpx fpm config 8.3 >"$log_stdout" 2>"$log_stderr"
+log_rc=$?
+set -e
+((log_rc == 0)) || {
+  cat "$log_stderr" >&2 || true
+  fail "read-only fpm config failed because logging was unavailable"
+}
+assert_contains "$(cat "$log_stdout")" "PHP-FPM config paths for 8.3" "fpm config output"
+[[ ! -s "$log_stderr" ]] || fail "logging failure polluted stderr for read-only command"
+pass "logging is non-fatal for read-only commands"
+
+# Read-only FPM config must not require root. Exercise the identity boundary only
+# when the harness itself can switch users; ordinary CI smoke runs skip this part.
+if (( EUID == 0 )) && command -v runuser >/dev/null 2>&1 && id nobody >/dev/null 2>&1; then
+  chmod 755 -- "$TMP_ROOT"
+  nonroot_home="$TMP_ROOT/nobody-home"
+  mkdir -p -- "$nonroot_home"
+  chmod 777 -- "$nonroot_home"
+  test_phpx="$TMP_ROOT/phpx"
+  cp -- "$ROOT_DIR/PHP/phpx" "$test_phpx"
+  chmod 755 -- "$test_phpx"
+  nonroot_output="$(runuser -u nobody -- env HOME="$nonroot_home" PHPX_NO_LOG=1 bash "$test_phpx" fpm config 8.3)"
+  assert_contains "$nonroot_output" "PHP-FPM config paths for 8.3" "non-root fpm config"
+  pass "read-only FPM config works without root"
+
+  set +e
+  mutation_output="$(runuser -u nobody -- env HOME="$nonroot_home" PHPX_NO_LOG=1 bash "$test_phpx" fpm restart 8.3 2>&1)"
+  mutation_rc=$?
+  set -e
+  ((mutation_rc != 0)) || fail "non-root FPM restart unexpectedly succeeded"
+  assert_contains "$mutation_output" "requires root privileges" "FPM mutation should enforce root"
+  pass "FPM mutation requires root"
+else
+  printf 'SKIP: root/runuser/nobody unavailable for identity-switch privilege test\n'
+fi
+
+# Syntax checking is a generic PHP capability and must not depend on apt/systemd.
+# Its public contract is failure-only output: success is exit 0, not a required summary line.
+php_stub="$TMP_ROOT/php-stub"
+cat >"$php_stub" <<'EOF'
+#!/usr/bin/env bash
+[[ "${1:-}" == "-l" ]] || exit 2
+printf 'No syntax errors detected in %s\n' "${2:-}"
+EOF
+chmod +x "$php_stub"
+project="$TMP_ROOT/project"
+mkdir -p -- "$project"
+printf '<?php echo "ok";\n' >"$project/example.php"
+set +e
+syntax_output="$(cd "$project" && PHPX_NO_LOG=1 bash "$ROOT_DIR/PHP/phpx" syntax --php "$php_stub" --no-progress 2>&1)"
+syntax_rc=$?
+set -e
+assert_eq "0" "$syntax_rc" "syntax command should succeed via explicit PHP binary"
+[[ "$syntax_output" != *"Parse error"* && "$syntax_output" != *"Fatal error"* ]] || fail "successful syntax run emitted an error"
+pass "syntax checker is independent of package/service backends"
+
+# Upstream installer verification helpers must reject bad digests and accept exact SHA-384.
+verify_file="$TMP_ROOT/verify-me"
+printf 'phpx verification\n' >"$verify_file"
+if command -v sha384sum >/dev/null 2>&1; then
+  expected_sha384="$(sha384sum "$verify_file" | awk '{print $1}')"
+elif command -v openssl >/dev/null 2>&1; then
+  expected_sha384="$(openssl dgst -sha384 "$verify_file" | awk '{print $NF}')"
+else
+  expected_sha384="$(php -r 'echo hash_file("sha384", $argv[1]);' "$verify_file")"
+fi
+verify_sha384 "$verify_file" "$expected_sha384" || fail "SHA-384 helper rejected an exact digest"
+if verify_sha384 "$verify_file" "${expected_sha384%?}0"; then fail "SHA-384 helper accepted a mismatched digest"; fi
+pass "Composer installer SHA-384 verification helper"
+
+# Extension specs are data, never shell fragments.
+validate_extension_name 'redis-6.0' || fail "valid extension name rejected"
+if validate_extension_name 'redis;touch /tmp/pwn'; then fail "unsafe extension name accepted"; fi
+validate_github_extension_spec 'phpredis/phpredis@6.1.0' || fail "valid GitHub extension spec rejected"
+if validate_github_extension_spec 'org/repo@main;touch'; then fail "unsafe GitHub extension spec accepted"; fi
+pass "extension source spec validation"
+
+# Atomic writer must replace complete content without leaving partial temp files.
+atomic_target="$TMP_ROOT/atomic/config.ini"
+printf 'first=value\n' | atomic_write_file "$atomic_target" 0640
+assert_eq 'first=value' "$(cat "$atomic_target")" "atomic write content"
+[[ "$(stat -c '%a' "$atomic_target")" == 640 ]] || fail "atomic writer did not apply requested mode"
+[[ -z "$(find "$(dirname "$atomic_target")" -maxdepth 1 -name '.phpx.tmp.*' -print -quit)" ]] || fail "atomic writer left a temporary file"
+pass "atomic configuration write"
+
+# Config generation must be all-or-nothing and structurally valid.
+config_dir="$TMP_ROOT/generated"
+mkdir -p "$config_dir"
+(
+  cd "$config_dir"
+  generate_php_config development 8.3 >/dev/null
+)
+[[ -s "$config_dir/fpm.development.conf" && -s "$config_dir/php.development.ini" ]] || fail "generated config files missing"
+grep -Fqx '[www]' "$config_dir/fpm.development.conf" || fail "generated FPM pool lacks [www] section"
+grep -Eq '^pm\.max_children = [0-9]+$' "$config_dir/fpm.development.conf" || fail "generated FPM max_children invalid"
+pass "atomic validated PHP/FPM config generation"
+
+# Unknown commands must fail with a dedicated command error.
+set +e
+unknown_output="$(PHPX_NO_LOG=1 bash PHP/phpx definitely-not-a-command 2>&1)"
+unknown_rc=$?
+set -e
+assert_eq "2" "$unknown_rc" "unknown phpx command exit code"
+assert_contains "$unknown_output" "Unknown command" "unknown phpx command message"
+pass "unknown command contract"
+
+printf '\nAll phpx safety checks passed.\n'

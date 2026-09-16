@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+VERSION="2.0"
+
 # --------------------- dependencies --------------------- #
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -8,10 +10,6 @@ require_cmd() {
     exit 1
   }
 }
-
-require_cmd docker
-require_cmd jq
-require_cmd awk
 
 # ---------------------- usage --------------------------- #
 show_usage() {
@@ -90,33 +88,104 @@ show_usage() {
   echo "  dockex shell my_container"
 }
 
+case "${1:-}" in
+-h | --help | help)
+  show_usage
+  exit 0
+  ;;
+-V | --version | version)
+  printf 'dockex %s\n' "$VERSION"
+  exit 0
+  ;;
+esac
+
+require_cmd docker
+require_cmd jq
+require_cmd awk
+
 # ------------------ container helpers ------------------- #
+docker_context_name() {
+  docker context show 2>/dev/null || printf 'default'
+}
 
-# Check if the container exists and (optionally) is running
-validate_container() {
-  local container_name=$1
-  local requirement=${2:-any} # any|running
+docker_is_rootless() {
+  docker info --format '{{json .SecurityOptions}}' 2>/dev/null | grep -q 'name=rootless'
+}
 
-  if ! docker ps -a --format '{{.Names}}' | grep -wq "$container_name"; then
-    echo "Error: Container '$container_name' doesn't exist."
-    exit 1
+ensure_docker_ready() {
+  local context
+  context="$(docker_context_name)"
+  if ! docker info >/dev/null 2>&1; then
+    echo "Error: Docker daemon/context '$context' is not reachable." >&2
+    echo "Check 'docker context show', daemon availability, and socket permissions." >&2
+    return 1
   fi
+}
 
-  if [ "$requirement" = "running" ] &&
-    ! docker ps --format '{{.Names}}' | grep -wq "$container_name"; then
-    echo "Error: Container '$container_name' is not running."
-    exit 1
+run_bounded() {
+  local seconds="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --signal=TERM --kill-after=5 "${seconds}s" "$@"
+  else
+    "$@"
+  fi
+}
+
+validate_positive_int() {
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
+}
+
+validate_memory_limit() {
+  [[ "${1:-}" == 0 || "${1:-}" =~ ^[1-9][0-9]*([bBkKmMgG])?$ ]]
+}
+
+validate_container() {
+  local container_name="${1:-}" requirement="${2:-any}"
+  [[ -n "$container_name" ]] || { echo 'Error: container name is required.' >&2; return 1; }
+  if ! docker container inspect "$container_name" >/dev/null 2>&1; then
+    echo "Error: Container '$container_name' does not exist." >&2
+    return 1
+  fi
+  if [[ "$requirement" == running ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null)" != true ]]; then
+    echo "Error: Container '$container_name' is not running." >&2
+    return 1
   fi
 }
 
 is_container_running() {
-  local container_name=$1
-  docker ps --format '{{.Names}}' | grep -wq "$container_name"
+  local container_name="$1"
+  [[ "$(docker inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null || true)" == true ]]
+}
+
+mount_exists() {
+  local container_name="$1" destination="$2"
+  docker inspect "$container_name" | jq -e --arg dest "$destination" '.[0].Mounts | any(.Destination == $dest)' >/dev/null
+}
+
+choose_mount_destination() {
+  local container_name="$1" requested="${2:-}" destinations=()
+  if [[ -n "$requested" ]]; then
+    mount_exists "$container_name" "$requested" || { echo "Error: '$requested' is not a mount destination on '$container_name'." >&2; return 1; }
+    printf '%s' "$requested"
+    return 0
+  fi
+  mapfile -t destinations < <(docker inspect "$container_name" | jq -r '.[0].Mounts[]?.Destination')
+  ((${#destinations[@]})) || { echo "Error: container '$container_name' has no mounts." >&2; return 1; }
+  if ((${#destinations[@]} == 1)); then printf '%s' "${destinations[0]}"; return 0; fi
+  [[ -t 0 ]] || { echo 'Error: multiple mounts exist; specify --mount=/container/path.' >&2; return 2; }
+  local i choice
+  echo 'Mounted destinations:' >&2
+  for i in "${!destinations[@]}"; do printf '%d) %s
+' "$((i+1))" "${destinations[$i]}" >&2; done
+  read -r -p 'Select a mount: ' choice
+  validate_positive_int "$choice" && ((choice <= ${#destinations[@]})) || return 2
+  printf '%s' "${destinations[$((choice-1))]}"
 }
 
 # Display container information
 view_container_info() {
   local container_name=$1
+  local show_env_values="${2:-0}"
 
   validate_container "$container_name" "any"
 
@@ -168,7 +237,11 @@ view_container_info() {
 
   # Env + mounts
   local container_env container_mounts
-  container_env=$(echo "$inspect" | jq -r '.[0].Config.Env[]?' 2>/dev/null || true)
+  if [[ "$show_env_values" == 1 ]]; then
+    container_env=$(echo "$inspect" | jq -r '.[0].Config.Env[]?' 2>/dev/null || true)
+  else
+    container_env=$(echo "$inspect" | jq -r '.[0].Config.Env[]? | (split("=")[0] + "=<redacted>")' 2>/dev/null || true)
+  fi
   container_mounts=$(echo "$inspect" | jq -r '.[0].Mounts[]? | "\(.Source) -> \(.Destination)"' 2>/dev/null || true)
 
   echo "=== Detailed Information for Container '$container_name' ==="
@@ -386,148 +459,127 @@ top_container() {
 # Update container resources (CPU and memory limits)
 update_container_resources() {
   local container_name=$1
-  validate_container "$container_name" "any"
+  validate_container "$container_name" any || return 1
 
-  local current_cpu_shares
+  local current_cpu_shares current_mem_raw current_memory_limit
   current_cpu_shares=$(docker inspect -f '{{.HostConfig.CpuShares}}' "$container_name")
-  local current_mem_raw
   current_mem_raw=$(docker inspect -f '{{.HostConfig.Memory}}' "$container_name")
-
-  local current_memory_limit
-  if [ "$current_mem_raw" -eq 0 ] 2>/dev/null; then
-    current_memory_limit="Unlimited"
-  else
-    current_memory_limit="$(awk "BEGIN {print $current_mem_raw/1024/1024}") MB"
-  fi
-
+  if [[ "$current_mem_raw" =~ ^[0-9]+$ ]] && ((current_mem_raw == 0)); then current_memory_limit='Unlimited'; else current_memory_limit="$(awk "BEGIN {print $current_mem_raw/1024/1024}") MB"; fi
   echo "Current CPU shares: $current_cpu_shares"
   echo "Current memory limit: $current_memory_limit"
-  echo
-  echo "CPU shares input:"
-  echo "  - empty: keep current"
-  echo "  - N:     raw shares (integer)"
-  echo "  - N%:    percentage of default 1024 (e.g. 50% -> 512)"
-  echo "  - Nc:    N CPU cores equivalent (e.g. 2c -> 2048)"
-  echo
-  echo "Enter new CPU shares:"
-  read -r cpu_input
-  echo "Enter new memory limit (e.g., 500m for 500MB, 1g for 1GB; empty to keep current):"
-  read -r memory_limit
 
-  local cpu_flag=()
-  if [ -n "$cpu_input" ]; then
-    local shares=""
-    if [[ "$cpu_input" =~ %$ ]]; then
-      local pct=${cpu_input%%%}
-      if [[ "$pct" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-        shares=$(awk "BEGIN {printf \"%d\", 1024*$pct/100.0}")
-      else
-        echo "Invalid CPU percentage: $cpu_input"
-        exit 1
-      fi
-    elif [[ "$cpu_input" =~ c$ ]]; then
-      local cores=${cpu_input%c}
-      if [[ "$cores" =~ ^[0-9]+$ ]]; then
-        shares=$((cores * 1024))
-      else
-        echo "Invalid CPU core value: $cpu_input"
-        exit 1
-      fi
+  local cpu_input="${2:-}" memory_limit="${3:-}"
+  if [[ -z "$cpu_input" && -z "$memory_limit" ]]; then
+    [[ -t 0 ]] || { echo 'Error: non-interactive use requires CPU and/or memory values.' >&2; return 2; }
+    read -r -p 'New CPU shares (empty keeps current): ' cpu_input
+    read -r -p 'New memory limit (e.g. 512m, 1g, 0=unlimited; empty keeps current): ' memory_limit
+  fi
+
+  local cpu_flag=() mem_flag=() shares pct cores
+  if [[ -n "$cpu_input" ]]; then
+    if [[ "$cpu_input" =~ ^([0-9]+)%$ ]]; then
+      pct="${BASH_REMATCH[1]}"; ((pct >= 1 && pct <= 1000)) || { echo 'Invalid CPU percentage.' >&2; return 2; }
+      shares=$((1024 * pct / 100)); ((shares < 2)) && shares=2
+    elif [[ "$cpu_input" =~ ^([1-9][0-9]*)c$ ]]; then
+      cores="${BASH_REMATCH[1]}"; shares=$((cores * 1024))
+    elif validate_positive_int "$cpu_input"; then
+      shares="$cpu_input"
     else
-      if ! [[ "$cpu_input" =~ ^[0-9]+$ ]]; then
-        echo "Invalid CPU shares value: $cpu_input"
-        exit 1
-      fi
-      shares=$cpu_input
+      echo "Invalid CPU shares: $cpu_input" >&2; return 2
     fi
+    ((shares >= 2 && shares <= 262144)) || { echo 'CPU shares must be between 2 and 262144.' >&2; return 2; }
     cpu_flag=(--cpu-shares "$shares")
   fi
-
-  local mem_flag=()
-  if [ -n "$memory_limit" ]; then
+  if [[ -n "$memory_limit" ]]; then
+    validate_memory_limit "$memory_limit" || { echo "Invalid memory limit: $memory_limit" >&2; return 2; }
     mem_flag=(--memory "$memory_limit")
   fi
-
-  if [ "${#cpu_flag[@]}" -eq 0 ] && [ "${#mem_flag[@]}" -eq 0 ]; then
-    echo "Nothing to update."
-    return
-  fi
-
+  ((${#cpu_flag[@]} || ${#mem_flag[@]})) || { echo 'Nothing to update.'; return 0; }
   docker update "${cpu_flag[@]}" "${mem_flag[@]}" "$container_name"
-  echo "Updated resources for container '$container_name'."
 }
 
 # Backup container volume data and zip it
 backup_container_data() {
-  local container_name=$1
-
-  validate_container "$container_name" "any"
-
-  local volumes=()
-  while IFS= read -r line; do
-    [ -n "$line" ] && volumes+=("$line")
-  done < <(docker inspect -f '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' "$container_name")
-
-  if [ ${#volumes[@]} -eq 0 ]; then
-    echo "No mounted volumes found for container '$container_name'."
-    exit 1
-  fi
-
-  echo "Mounted Volumes:"
-  local i
-  for i in "${!volumes[@]}"; do
-    printf '%d) %s\n' "$((i + 1))" "${volumes[$i]}"
+  local container_name=$1; shift || true
+  validate_container "$container_name" any || return 1
+  local mount="" consistency="" helper="${DOCKEX_HELPER_IMAGE:-alpine:3.22}"
+  while (($#)); do
+    case "$1" in
+    --mount=*) mount="${1#*=}" ;;
+    --mount) shift; mount="${1:-}" ;;
+    --live) consistency=live ;;
+    --stop) consistency=stop ;;
+    *) echo "Error: unknown backup option '$1'." >&2; return 2 ;;
+    esac
+    shift
   done
+  mount="$(choose_mount_destination "$container_name" "$mount")" || return $?
 
-  echo "Select a volume to backup (enter the number):"
-  read -r volume_choice
-
-  if ! [[ "$volume_choice" =~ ^[0-9]+$ ]] ||
-    [ "$volume_choice" -lt 1 ] ||
-    [ "$volume_choice" -gt "${#volumes[@]}" ]; then
-    echo "Invalid choice."
-    exit 1
+  local was_running=0
+  is_container_running "$container_name" && was_running=1
+  if ((was_running)) && [[ -z "$consistency" ]]; then
+    echo 'Error: live container backups may be application-inconsistent.' >&2
+    echo 'Use --stop for a quiesced backup or --live to explicitly accept that risk.' >&2
+    return 2
   fi
+  if ((was_running)) && [[ "$consistency" == stop ]]; then docker stop "$container_name" >/dev/null || return 1; fi
 
-  local selected_volume=${volumes[$((volume_choice - 1))]}
-  local destination_volume
-  destination_volume=$(echo "$selected_volume" | awk -F ' -> ' '{print $2}')
-
-  local backup_file="${container_name}-backup-$(date +%F).zip"
-
-  docker run --rm --volumes-from "$container_name" \
-    -v "$(pwd)":/backup alpine sh -c "
-      apk add --no-cache zip >/dev/null 2>&1 || true
-      cd / && zip -r \"/backup/$backup_file\" \"$destination_volume\"
-    "
-
-  echo "Backup completed. Data saved to $(pwd)/$backup_file"
+  docker image inspect "$helper" >/dev/null 2>&1 || { echo "Error: helper image '$helper' is not local; pull it explicitly first." >&2; ((was_running)) && [[ "$consistency" == stop ]] && docker start "$container_name" >/dev/null || true; return 1; }
+  local safe_mount archive output_dir restart_rc=0
+  safe_mount="${mount#/}"; safe_mount="${safe_mount//\//_}"; safe_mount="${safe_mount//[^A-Za-z0-9_.-]/_}"
+  archive="${container_name}-${safe_mount:-root}-$(date +%Y%m%d_%H%M%S).tar.gz"
+  output_dir="$PWD"
+  if ! docker run --rm --volumes-from "$container_name":ro -v "$output_dir:/backup" "$helper" \
+      sh -c 'cd "$1" && tar -czf "/backup/$2" .' _ "$mount" "$archive"; then
+    restart_rc=1
+  fi
+  if ((was_running)) && [[ "$consistency" == stop ]]; then docker start "$container_name" >/dev/null || restart_rc=1; fi
+  ((restart_rc == 0)) || return 1
+  printf 'container=%s
+mount=%s
+mode=%s
+' "$container_name" "$mount" "${consistency:-stopped}" >"${archive}.meta"
+  echo "Backup completed: $output_dir/$archive"
 }
 
-# Restore container data from backup
 restore_container_data() {
-  local container_name=$1
-  local backup_zip_file=$2
-
-  validate_container "$container_name" "any"
-
-  if [ -z "${backup_zip_file:-}" ]; then
-    echo "Error: Backup zip file is required."
-    exit 1
+  local container_name=$1 backup_file=$2; shift 2 || true
+  validate_container "$container_name" any || return 1
+  [[ -f "$backup_file" ]] || { echo "Error: backup file '$backup_file' not found." >&2; return 1; }
+  local mount="" consistency="" helper="${DOCKEX_HELPER_IMAGE:-alpine:3.22}"
+  while (($#)); do
+    case "$1" in
+    --mount=*) mount="${1#*=}" ;;
+    --mount) shift; mount="${1:-}" ;;
+    --live) consistency=live ;;
+    --stop) consistency=stop ;;
+    *) echo "Error: unknown restore option '$1'." >&2; return 2 ;;
+    esac
+    shift
+  done
+  mount="$(choose_mount_destination "$container_name" "$mount")" || return $?
+  command -v tar >/dev/null 2>&1 || { echo 'Error: host tar is required to validate archives.' >&2; return 1; }
+  if ! tar -tzf "$backup_file" | awk 'BEGIN{bad=0} /^\// || /(^|\/)\.\.($|\/)/ {bad=1} END{exit bad}'; then
+    echo 'Error: archive contains absolute or parent-traversal paths.' >&2; return 1
   fi
 
-  if [ ! -f "$backup_zip_file" ]; then
-    echo "Error: Backup file '$backup_zip_file' not found."
-    exit 1
+  local was_running=0
+  is_container_running "$container_name" && was_running=1
+  if ((was_running)) && [[ -z "$consistency" ]]; then
+    echo 'Error: restoring into a running container is unsafe.' >&2
+    echo 'Use --stop to quiesce it or --live to explicitly accept the risk.' >&2
+    return 2
   fi
+  if ((was_running)) && [[ "$consistency" == stop ]]; then docker stop "$container_name" >/dev/null || return 1; fi
+  docker image inspect "$helper" >/dev/null 2>&1 || { echo "Error: helper image '$helper' is not local; pull it explicitly first." >&2; ((was_running)) && [[ "$consistency" == stop ]] && docker start "$container_name" >/dev/null || true; return 1; }
 
-  docker run --rm --volumes-from "$container_name" \
-    -v "$(pwd)":/backup alpine sh -c "
-      apk add --no-cache unzip >/dev/null 2>&1 || true
-      unzip -o \"/backup/$(basename "$backup_zip_file")\" -d /
-    "
-
-  echo "Restore completed. Data restored from $backup_zip_file"
+  local archive_dir archive_base rc=0
+  archive_dir="$(cd -- "$(dirname -- "$backup_file")" && pwd)"; archive_base="$(basename -- "$backup_file")"
+  docker run --rm --volumes-from "$container_name" -v "$archive_dir:/backup:ro" "$helper" \
+    sh -c 'mkdir -p "$1" && tar -xzf "/backup/$2" -C "$1"' _ "$mount" "$archive_base" || rc=1
+  if ((was_running)) && [[ "$consistency" == stop ]]; then docker start "$container_name" >/dev/null || rc=1; fi
+  ((rc == 0)) || return 1
+  echo "Restore completed into container mount: $mount"
 }
 
 # ---------------- docker listings ----------------- #
@@ -583,84 +635,26 @@ nets_topology() {
 
 # --------------- create container ----------------- #
 create_new_container() {
-  local image_name=$1
-  local container_name=${2:-""}
+  local image_name=$1 container_name=${2:-}
+  [[ -n "$container_name" ]] || { [[ -t 0 ]] || { echo 'Error: container name required in non-interactive mode.' >&2; return 2; }; read -r -p 'Container name: ' container_name; }
+  [[ "$container_name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo 'Error: invalid container name.' >&2; return 2; }
+  docker image inspect "$image_name" >/dev/null 2>&1 || { echo "Error: image '$image_name' is not local; pull it explicitly first." >&2; return 1; }
 
-  echo "=== Starting Docker Container Creation ==="
+  local port_mappings="" env_vars="" volume_mappings="" network_name="" answer
+  read -r -p 'Map ports? (y/N): ' answer; [[ "$answer" =~ ^[yY]$ ]] && read -r -p 'host:container mappings (comma-separated): ' port_mappings || true
+  read -r -p 'Add environment variables? (y/N): ' answer; [[ "$answer" =~ ^[yY]$ ]] && read -r -p 'KEY=value entries (comma-separated): ' env_vars || true
+  read -r -p 'Mount volumes? (y/N): ' answer; [[ "$answer" =~ ^[yY]$ ]] && read -r -p 'source:destination mappings (comma-separated): ' volume_mappings || true
+  read -r -p 'Use a specific network? (y/N): ' answer; [[ "$answer" =~ ^[yY]$ ]] && read -r -p 'Network name: ' network_name || true
 
-  if [ -z "$container_name" ]; then
-    echo "Enter the name for the new container:"
-    read -r container_name
-  fi
-
-  echo "Do you want to map any ports? (y/n)"
-  read -r map_ports
-  local port_mappings=""
-  if [[ "$map_ports" == "y" || "$map_ports" == "Y" ]]; then
-    echo "Enter port mappings in the format host_port:container_port (comma-separated for multiple ports):"
-    read -r port_mappings
-  fi
-
-  echo "Do you want to add any environment variables? (y/n)"
-  read -r add_env
-  local env_vars=""
-  if [[ "$add_env" == "y" || "$add_env" == "Y" ]]; then
-    echo "Enter environment variables in the format key=value (comma-separated for multiple variables):"
-    read -r env_vars
-  fi
-
-  echo "Do you want to mount any volumes? (y/n)"
-  read -r map_volumes
-  local volume_mappings=""
-  if [[ "$map_volumes" == "y" || "$map_volumes" == "Y" ]]; then
-    echo "Enter volume mappings in the format host_path:container_path (comma-separated for multiple volumes):"
-    read -r volume_mappings
-  fi
-
-  echo "Do you want to connect the container to a specific Docker network? (y/n)"
-  read -r connect_network
-  local network_name=""
-  if [[ "$connect_network" == "y" || "$connect_network" == "Y" ]]; then
-    echo "Enter the Docker network name (or leave empty for default bridge network):"
-    read -r network_name
-  fi
-
-  local run_command="docker run -d --name $container_name"
-
-  if [ -n "$port_mappings" ]; then
-    IFS=',' read -r -a ports <<<"$port_mappings"
-    for port in "${ports[@]}"; do
-      run_command="$run_command -p $port"
-    done
-  fi
-
-  if [ -n "$env_vars" ]; then
-    IFS=',' read -r -a envs <<<"$env_vars"
-    for env in "${envs[@]}"; do
-      run_command="$run_command -e $env"
-    done
-  fi
-
-  if [ -n "$volume_mappings" ]; then
-    IFS=',' read -r -a volumes <<<"$volume_mappings"
-    for volume in "${volumes[@]}"; do
-      run_command="$run_command -v $volume"
-    done
-  fi
-
-  if [ -n "$network_name" ]; then
-    run_command="$run_command --network $network_name"
-  fi
-
-  run_command="$run_command $image_name"
-
-  echo "Running the following Docker command:"
-  echo "$run_command"
-  if $run_command; then
-    echo "Container '$container_name' created successfully."
-  else
-    echo "Error: Failed to create the container."
-  fi
+  local cmd=(docker run -d --name "$container_name") item
+  local -a values=()
+  if [[ -n "$port_mappings" ]]; then IFS=',' read -r -a values <<<"$port_mappings"; for item in "${values[@]}"; do [[ "$item" =~ ^[0-9]+:[0-9]+(/(tcp|udp))?$ ]] || { echo "Invalid port mapping: $item" >&2; return 2; }; cmd+=(-p "$item"); done; fi
+  if [[ -n "$env_vars" ]]; then IFS=',' read -r -a values <<<"$env_vars"; for item in "${values[@]}"; do [[ "$item" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || { echo 'Invalid environment assignment.' >&2; return 2; }; cmd+=(-e "$item"); done; fi
+  if [[ -n "$volume_mappings" ]]; then IFS=',' read -r -a values <<<"$volume_mappings"; for item in "${values[@]}"; do [[ "$item" == *:* ]] || { echo "Invalid volume mapping: $item" >&2; return 2; }; cmd+=(-v "$item"); done; fi
+  if [[ -n "$network_name" ]]; then docker network inspect "$network_name" >/dev/null 2>&1 || { echo "Unknown Docker network: $network_name" >&2; return 2; }; cmd+=(--network "$network_name"); fi
+  cmd+=("$image_name")
+  echo "Creating '$container_name' from '$image_name' (environment values are not echoed)."
+  "${cmd[@]}"
 }
 
 # ---------------- benchmark ------------------------ #
@@ -686,6 +680,9 @@ benchmark() {
   if [ "$#" -ge 1 ]; then instances=$1; fi
   if [ "$#" -ge 2 ]; then requests=$2; fi
   if [ "$#" -ge 3 ]; then concurrency=$3; fi
+
+  validate_positive_int "$instances" && validate_positive_int "$requests" && validate_positive_int "$concurrency" || { echo "Error: benchmark counts must be positive integers." >&2; return 2; }
+  ((concurrency <= requests)) || { echo "Error: concurrency cannot exceed requests." >&2; return 2; }
 
   # Check for host 'ab'
   local have_host_ab=0
@@ -738,7 +735,7 @@ benchmark() {
     echo "Using host 'ab' binary."
     echo
     echo "Running single-node benchmark..."
-    ab -n "$requests" -c "$concurrency" "$url" 2>&1
+    run_bounded 120 ab -n "$requests" -c "$concurrency" "$url" 2>&1
 
     echo
     echo "Running multi-node benchmark with $instances instances..."
@@ -746,7 +743,7 @@ benchmark() {
     tmp_dir=$(mktemp -d)
     local i
     for i in $(seq 1 "$instances"); do
-      ab -n "$requests" -c "$concurrency" "$url" >"$tmp_dir/node_$i.out" 2>&1 &
+      run_bounded 120 ab -n "$requests" -c "$concurrency" "$url" >"$tmp_dir/node_$i.out" 2>&1 &
     done
     wait
 
@@ -759,7 +756,9 @@ benchmark() {
 
   else
     # --------------- dockerized 'jordi/ab' path --------------- #
-    echo "Host 'ab' not found; using Docker image 'jordi/ab'."
+    local ab_image="${DOCKEX_AB_IMAGE:-jordi/ab}"
+    docker image inspect "$ab_image" >/dev/null 2>&1 || { echo "Error: host 'ab' is unavailable and benchmark image '$ab_image' is not local; install/pull one explicitly." >&2; return 1; }
+    echo "Host 'ab' not found; using local Docker image '$ab_image'."
     echo
 
     local docker_url="$url"
@@ -792,7 +791,7 @@ benchmark() {
 
     echo "Running single-node benchmark (dockerized ab)..."
     docker run --rm --network "container:${container_name}" \
-      jordi/ab -n "$requests" -c "$concurrency" "$docker_url" 2>&1
+      "$ab_image" -n "$requests" -c "$concurrency" "$docker_url" 2>&1
 
     echo
     echo "Running multi-node benchmark with $instances instances (dockerized ab)..."
@@ -801,7 +800,7 @@ benchmark() {
     local i
     for i in $(seq 1 "$instances"); do
       docker run --rm --network "container:${container_name}" \
-        jordi/ab -n "$requests" -c "$concurrency" "$docker_url" >"$tmp_dir/node_$i.out" 2>&1 &
+        "$ab_image" -n "$requests" -c "$concurrency" "$docker_url" >"$tmp_dir/node_$i.out" 2>&1 &
     done
     wait
 
@@ -939,7 +938,7 @@ trace_from_container() {
       echo "nc: TCP connect to $host:$port FAILED."
     fi
   elif docker exec "$container_name" command -v telnet >/dev/null 2>&1; then
-    if docker exec "$container_name" sh -c "echo quit | telnet '$host' '$port'" >/dev/null 2>&1; then
+    if printf 'quit\n' | docker exec -i "$container_name" telnet "$host" "$port" >/dev/null 2>&1; then
       echo "telnet: TCP connect to $host:$port succeeded."
     else
       echo "telnet: TCP connect to $host:$port FAILED."
@@ -1022,13 +1021,7 @@ stats_profile() {
   local interval=${3:-2}
 
   validate_container "$container_name" "running"
-
-  if [ "$duration" -le 0 ] 2>/dev/null; then
-    duration=30
-  fi
-  if [ "$interval" -le 0 ] 2>/dev/null; then
-    interval=2
-  fi
+  validate_positive_int "$duration" && validate_positive_int "$interval" || { echo "Error: duration and interval must be positive integers." >&2; return 2; }
 
   local samples=$((duration / interval))
   if [ "$samples" -lt 1 ]; then
@@ -1043,7 +1036,7 @@ stats_profile() {
   local i
   for ((i = 1; i <= samples; i++)); do
     local line
-    line=$(docker stats --no-stream --format '{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}' "$container_name" 2>/dev/null || true)
+    line=$(run_bounded 10 docker stats --no-stream --format '{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}' "$container_name" 2>/dev/null || true)
     if [ -z "$line" ]; then
       echo "docker stats returned no data; container may have stopped."
       break
@@ -1191,112 +1184,55 @@ Mem: {{.MemUsage}} ({{.MemPerc}})' "$container_name" 2>/dev/null || echo "docker
 
 # ---------------- cleanup -------------------------- #
 cleanup() {
-  echo "Starting cleanup..."
-  local cleanup_type=${1:-"unused"} # Default to "unused" cleanup
+  local cleanup_type="${1:-unused}"; shift || true
+  local assume_yes=0 confirm_all=0
+  while (($#)); do
+    case "$1" in --yes|-y) assume_yes=1 ;; --confirm-all) confirm_all=1 ;; *) echo "Invalid cleanup option: $1" >&2; return 2 ;; esac
+    shift
+  done
+  case "$cleanup_type" in unused|aggressive|all) ;; *) echo 'Usage: cleanup [unused|aggressive|all] [--yes] [--confirm-all]' >&2; return 2 ;; esac
+  if [[ "$cleanup_type" == all && "$confirm_all" -ne 1 ]]; then
+    echo 'Error: cleanup all requires --confirm-all in addition to confirmation.' >&2; return 2
+  fi
+  if ((assume_yes == 0)); then
+    [[ -t 0 ]] || { echo 'Error: cleanup is destructive; non-interactive use requires --yes.' >&2; return 2; }
+    local confirm
+    read -r -p "Proceed with '$cleanup_type' cleanup? (y/N): " confirm
+    [[ "$confirm" =~ ^[yY]$ ]] || { echo 'Cleanup aborted.'; return 0; }
+  fi
 
-  case $cleanup_type in
+  case "$cleanup_type" in
   unused)
-    echo "Warning: This will perform a safe cleanup of unused resources."
-    echo "The following resources will be removed if unused:"
-
-    echo "Containers:"
-    docker container ls -f "status=exited" --format "  - {{.ID}}: {{.Names}}"
-
-    echo "Dangling Images:"
-    docker images -f "dangling=true" --format "  - {{.ID}}: {{.Repository}}:{{.Tag}}"
-
-    echo "Volumes:"
-    docker volume ls -f "dangling=true" --format "  - {{.Name}}"
-
-    echo "Networks:"
-    docker network ls -f "type=custom" -f "dangling=true" --format "  - {{.Name}}"
-
-    read -r -p "Proceed with safe cleanup? (y/N): " confirm
-    if [[ "$confirm" != [yY] ]]; then
-      echo "Cleanup aborted."
-      return
-    fi
-
     docker container prune -f
     docker image prune -f
     docker volume prune -f
     docker network prune -f
-    docker system prune -f
     ;;
-
   aggressive)
-    echo "Warning: This will perform an aggressive cleanup, removing all unused resources."
-    echo "The following resources will be removed if unused:"
-
-    echo "Containers:"
-    docker container ls -a --format "  - {{.ID}}: {{.Names}}"
-
-    echo "Images:"
-    docker images --format "  - {{.ID}}: {{.Repository}}:{{.Tag}}"
-
-    echo "Volumes:"
-    docker volume ls --format "  - {{.Name}}"
-
-    echo "Networks:"
-    docker network ls -f "type=custom" --format "  - {{.Name}}"
-
-    read -r -p "Proceed with aggressive cleanup? (y/N): " confirm
-    if [[ "$confirm" != [yY] ]]; then
-      echo "Cleanup aborted."
-      return
-    fi
-
     docker container prune -f
     docker image prune -a -f
     docker volume prune -f
     docker network prune -f
-    docker system prune -f
     ;;
-
   all)
-    echo "Warning: This will remove all Docker resources, including the following:"
-
-    echo "Running Containers:"
-    docker ps --format "  - {{.ID}}: {{.Names}}"
-
-    echo "All Containers:"
-    docker container ls -a --format "  - {{.ID}}: {{.Names}}"
-
-    echo "All Images:"
-    docker images --format "  - {{.ID}}: {{.Repository}}:{{.Tag}}"
-
-    echo "All Volumes:"
-    docker volume ls --format "  - {{.Name}}"
-
-    echo "User-Defined Networks:"
-    docker network ls -f "type=custom" --format "  - {{.Name}}"
-
-    read -r -p "Proceed with complete removal of all Docker resources? (y/N): " confirm
-    if [[ "$confirm" != [yY] ]]; then
-      echo "Cleanup aborted."
-      return
-    fi
-
-    echo "Stopping all running containers..."
-    docker stop "$(docker ps -q)" 2>/dev/null || true
-
-    echo "Removing all containers, images, volumes, and user-defined networks..."
-    docker container rm -f "$(docker ps -aq)" 2>/dev/null || true
-    docker rmi -f "$(docker images -q)" 2>/dev/null || true
-    docker volume rm -f "$(docker volume ls -q)" 2>/dev/null || true
-    docker network rm "$(docker network ls -q | grep -vE 'bridge|host|none')" 2>/dev/null || true
-    ;;
-
-  *)
-    echo "Invalid option. Usage: cleanup [unused|aggressive|all]"
-    return 1
+    local -a ids=()
+    mapfile -t ids < <(docker ps -q); ((${#ids[@]})) && docker stop "${ids[@]}" || true
+    mapfile -t ids < <(docker ps -aq); ((${#ids[@]})) && docker container rm -f "${ids[@]}" || true
+    mapfile -t ids < <(docker images -q | sort -u); ((${#ids[@]})) && docker rmi -f "${ids[@]}" || true
+    mapfile -t ids < <(docker volume ls -q); ((${#ids[@]})) && docker volume rm -f "${ids[@]}" || true
+    mapfile -t ids < <(docker network ls --filter type=custom -q); ((${#ids[@]})) && docker network rm "${ids[@]}" || true
     ;;
   esac
-
-  echo "Cleanup complete."
+  echo 'Cleanup complete.'
 }
 
 # ---------------- main dispatch -------------------- #
+
+if [[ "${DOCKEX_LIBRARY_MODE:-0}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+ensure_docker_ready || exit 1
 
 if [ "$#" -lt 1 ]; then
   echo "Error: Missing arguments."
@@ -1328,7 +1264,9 @@ info | inspect)
     show_usage
     exit 1
   fi
-  view_container_info "$container_name"
+  show_env_values=0
+  [[ "${3:-}" == "--show-env-values" ]] && show_env_values=1
+  view_container_info "$container_name" "$show_env_values"
   ;;
 ps)
   ps_summary "${2:-}"
@@ -1420,7 +1358,8 @@ backup)
     show_usage
     exit 1
   fi
-  backup_container_data "$container_name"
+  shift 2
+  backup_container_data "$container_name" "$@"
   ;;
 restore)
   if [ -z "$container_name" ]; then
@@ -1428,7 +1367,10 @@ restore)
     show_usage
     exit 1
   fi
-  restore_container_data "$container_name" "${3:-}"
+  backup_file="${3:-}"
+  [[ -n "$backup_file" ]] || { echo "Error: backup tar.gz is required." >&2; exit 1; }
+  shift 3
+  restore_container_data "$container_name" "$backup_file" "$@"
   ;;
 benchmark)
   if [ -z "$container_name" ]; then
@@ -1474,7 +1416,8 @@ doctor)
   doctor "${2:-}"
   ;;
 cleanup)
-  cleanup "${2:-unused}"
+  shift
+  cleanup "$@"
   ;;
 *)
   echo "Error: Unknown command '$command'."

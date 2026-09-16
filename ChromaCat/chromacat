@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-VERSION="1.3"
+VERSION="2.0"
 
 # ---------------------------- defaults ----------------------------
 spread=3.0  freq=0.1  seed=0
@@ -21,10 +21,10 @@ header_text=""
 list_themes=false sample_theme="" random_theme=false
 do_self_update=false
 no_color=false
+cat_mode=false
 
 THEMES=()
 files=()
-ORIG_ARGS=("$@")
 
 # ---------------------------- terminal dimensions ----------------------------
 TERM_WIDTH=$(tput cols 2>/dev/null || echo 80)
@@ -80,6 +80,7 @@ APPEARANCE
       --image-opacity <n>  Image brightness (0–100, default $image_opacity)
 
 MISC
+      --cat                Raw byte-for-byte passthrough; disables presentation processing
   -H, --header <text>      Render banner (figlet if available)
   -U, --self-update        Fetch latest chromacat and replace current script
   -v, --version            Print version and exit
@@ -101,45 +102,102 @@ take_val() {
   esac
 }
 
-self_update() {
-  require curl
-  local script_url="https://raw.githubusercontent.com/infocyph/Toolset/main/ChromaCat/chromacat"
-  local tmp
-  if ! tmp=$(mktemp /tmp/chromacat.XXXXXX 2>/dev/null); then tmp="/tmp/chromacat.$$"; fi
+self_update() (
+  set -Eeuo pipefail
+  local tool="chromacat"
+  local invoked="$0"
+  local current_path prefix tmp_dir checksum_line
+  local release="${TOOLSET_SELF_UPDATE_RELEASE:-latest}"
+  local base
+  local -a install_args
 
-  local target="${CHROMACAT_PATH:-}"
-  if [[ -z $target ]]; then
-    if command -v chromacat >/dev/null 2>&1; then target=$(command -v chromacat); else target="$0"; fi
+  if [[ "$release" == "latest" || "$release" == "stable" ]]; then
+    base="https://github.com/infocyph/Toolset/releases/latest/download"
+    install_args=(--latest)
+  else
+    [[ "$release" =~ ^v?[0-9]+\.[0-9]+(\.[0-9]+)?(-rc\.[0-9]+)?$ ]] || {
+      printf '%s: invalid TOOLSET_SELF_UPDATE_RELEASE: %s\n' "$tool" "$release" >&2
+      return 2
+    }
+    base="https://github.com/infocyph/Toolset/releases/download/$release"
+    install_args=(--release "$release")
+  fi
+  if [[ -n "${TOOLSET_RELEASE_BASE_URL:-}" ]]; then
+    base="${TOOLSET_RELEASE_BASE_URL%/}"
   fi
 
-  echo "Checking for updates..."
-  if ! curl -fsSL "$script_url" -o "$tmp"; then
-    echo "Failed to download latest script." >&2
-    rm -f "$tmp" || true
+  for cmd in curl sha256sum mktemp install mv awk; do
+    command -v "$cmd" >/dev/null 2>&1 || {
+      printf '%s: self-update requires %s
+' "$tool" "$cmd" >&2
+      return 1
+    }
+  done
+
+  if [[ "$invoked" != */* ]]; then
+    invoked="$(command -v -- "$invoked" 2>/dev/null || printf '%s' "$invoked")"
+  fi
+  current_path="$(readlink -f -- "$invoked" 2>/dev/null || realpath -- "$invoked" 2>/dev/null || printf '%s' "$invoked")"
+  prefix="$(dirname -- "$current_path")"
+
+  [[ -w "$prefix" ]] || {
+    printf '%s: install directory is not writable: %s
+' "$tool" "$prefix" >&2
+    printf '%s: rerun with appropriate privileges or reinstall to a writable prefix.
+' "$tool" >&2
     return 1
-  fi
+  }
 
-  if command -v sha256sum >/dev/null 2>&1 && [[ -f "$target" ]]; then
-    local rh lh
-    rh="$(sha256sum "$tmp" | awk '{print $1}')"
-    lh="$(sha256sum "$target" 2>/dev/null | awk '{print $1}')"
-    if [[ -n $rh && "$rh" == "$lh" ]]; then
-      echo "Already up-to-date."
-      rm -f "$tmp" || true
-      return 0
-    fi
-  fi
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf -- "$tmp_dir"' EXIT INT TERM
 
-  if ! mv "$tmp" "$target" 2>/dev/null; then
-    echo "Failed to overwrite $target (try sudo or CHROMACAT_PATH)." >&2
-    rm -f "$tmp" || true
+  toolset_download_with_retry() {
+    local url="$1" output="$2"
+    local max_attempts="${TOOLSET_DOWNLOAD_ATTEMPTS:-4}"
+    local attempt rc=1
+
+    [[ "$max_attempts" =~ ^[1-9][0-9]*$ ]] || {
+      printf '%s: TOOLSET_DOWNLOAD_ATTEMPTS must be a positive integer\n' "$tool" >&2
+      return 2
+    }
+
+    for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+      if curl --fail --location --silent --show-error \
+        --connect-timeout 10 --max-time 120 \
+        "$url" --output "$output"; then
+        return 0
+      else
+        rc=$?
+      fi
+
+      if ((attempt < max_attempts)); then
+        printf '%s: download failed (attempt %d/%d); retrying...\n' \
+          "$tool" "$attempt" "$max_attempts" >&2
+        sleep "$attempt"
+      fi
+    done
+
+    return "$rc"
+  }
+
+  toolset_download_with_retry "$base/SHA256SUMS" "$tmp_dir/SHA256SUMS"
+  toolset_download_with_retry "$base/install.sh" "$tmp_dir/install.sh"
+
+  checksum_line="$(awk '$2 == "install.sh" {print; exit}' "$tmp_dir/SHA256SUMS")"
+  [[ -n "$checksum_line" ]] || {
+    printf '%s: install.sh checksum is missing from the selected release.
+' "$tool" >&2
     return 1
-  fi
+  }
 
-  chmod +x "$target" || true
-  echo "Updated."
-  return 0
-}
+  (
+    cd "$tmp_dir"
+    printf '%s
+' "$checksum_line" | sha256sum -c - >/dev/null
+  )
+  bash -n "$tmp_dir/install.sh"
+  bash "$tmp_dir/install.sh" "${install_args[@]}" --prefix "$prefix" "$tool"
+)
 
 # ------------------------- option parsing (portable) -------------------------
 while [[ $# -gt 0 ]]; do
@@ -148,6 +206,7 @@ while [[ $# -gt 0 ]]; do
 
   -v|--version) printf '%s %s\n' "$(basename "$0")" "$VERSION"; exit 0 ;;
   -h|--help) usage; exit 0 ;;
+  --cat) cat_mode=true; shift ;;
 
   -U|--self-update) do_self_update=true; shift ;;
   -H|--header) header_text="$(take_val "$1" "${2:-}")"; shift; [[ "$1" == *=* ]] || shift ;;
@@ -209,15 +268,20 @@ while [[ $# -gt 0 ]]; do
   --image-opacity) image_opacity="$(take_val "$1" "${2:-}")"; shift; [[ "$1" == *=* ]] || shift ;;
   --image-opacity=*) image_opacity="$(take_val "$1" "")"; shift ;;
 
-  -*)
-  # unknown flag: behave like cat for maximum safety
-    exec cat "${ORIG_ARGS[@]}"
-    ;;
+  -*) die "Unknown option: $1" ;;
   *)
     files+=("$1"); shift ;;
   esac
 done
 while [[ $# -gt 0 ]]; do files+=("$1"); shift; done
+
+# Resolve stdin before any fast path. `--cat` is intentionally raw and takes
+# precedence over all presentation options so it can serve as an explicit
+# byte-for-byte escape hatch.
+[[ ${#files[@]} -eq 0 ]] && files=("-")
+if [[ $cat_mode == true ]]; then
+  exec cat -- "${files[@]}"
+fi
 
 # ------------------ self-update early exit -----------------------
 if [[ $do_self_update == true ]]; then
@@ -235,22 +299,49 @@ fi
 # -------------- environment / sanity checks -----------------------
 if [[ -n ${NO_COLOR:-} ]]; then no_color=true; fi
 
-truecolor=false
-if [[ $want_truecolor == true && ( ${COLORTERM:-} == *truecolor* || ${COLORTERM:-} == *24bit* ) ]]; then
-  truecolor=true
+# Colour is an enhancement. Non-TTY output stays unstyled unless --force was
+# explicitly requested; --no-color/NO_COLOR always wins.
+color_enabled=true
+if [[ $no_color == true || ( ! -t 1 && $force == false ) ]]; then
+  color_enabled=false
 fi
 
-# If stdout is not tty and not forced -> prefer plain cat unless explicit features requested.
-if [[ ! -t 1 && $force == false ]]; then
-  animation_style=none
-  truecolor=false
+truecolor=false
+if [[ $color_enabled == true && $want_truecolor == true && ( ${COLORTERM:-} == *truecolor* || ${COLORTERM:-} == *24bit* ) ]]; then
+  truecolor=true
 fi
 
 for v in spread freq duration speed; do
   [[ ${!v} =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "Invalid $v"
 done
+[[ $seed =~ ^[0-9]+$ ]] || die "Invalid seed"
 [[ $box_pad =~ ^[0-9]+$ ]] || die "Invalid --pad"
 [[ $image_opacity =~ ^[0-9]+$ ]] || die "Invalid --image-opacity"
+(( image_opacity <= 100 )) || die "Invalid --image-opacity"
+
+num_gt_zero() { "$AWK" -v n="$1" 'BEGIN { exit !(n > 0) }'; }
+num_ge_zero() { "$AWK" -v n="$1" 'BEGIN { exit !(n >= 0) }'; }
+num_gt_zero "$spread" || die "Invalid spread: must be > 0"
+num_ge_zero "$freq" || die "Invalid freq: must be >= 0"
+num_ge_zero "$duration" || die "Invalid duration: must be >= 0"
+num_gt_zero "$speed" || die "Invalid speed: must be > 0"
+
+case $animation_style in
+classic|line|none) ;;
+*) die "Invalid animation style: $animation_style" ;;
+esac
+
+case $orientation in
+horizontal) orientation="h" ;;
+vertical) orientation="v" ;;
+diagonal) orientation="d" ;;
+h|v|d) ;;
+*) die "Invalid orientation: $orientation" ;;
+esac
+
+if [[ $only_match == true && -z $match_regex ]]; then
+  die "--only-match requires --match"
+fi
 
 # presets
 if [[ $log_mode == true ]]; then
@@ -310,19 +401,58 @@ elif [[ ${#THEMES[@]} -gt 0 ]]; then
     forest)  PALETTE+=",0B3D0B,1B5E20,2E7D32,66BB6A,A5D6A7";;
     pastel)  PALETTE+=",FFB3BA,FFDFBA,FFFFBA,BAFFC9,BAE1FF,CCBAFF";;
     mono)    PALETTE+=",E0E0E0,B0B0B0,808080,505050,202020";;
-    *) echo "Unknown theme: $theme" >&2 ;;
+    *) die "Unknown theme: $theme" ;;
     esac
   done
   PALETTE="${PALETTE#,}"
 fi
 
+# Default non-TTY execution with no structural/plain transform requested is an
+# actual cat fast path. This preserves arbitrary bytes, existing ANSI and exact
+# trailing-newline state instead of round-tripping through command substitution.
+if [[ $color_enabled == false && $no_color == false && $build_box == false \
+      && -z $header_text && -z $ascii_image && $strip_ansi == false \
+      && $only_match == false && -z $sample_theme ]]; then
+  exec cat -- "${files[@]}"
+fi
+
 get_seed() { (( seed > 0 )) && echo "$seed" || echo "$RANDOM"; }
 
-case $orientation in
-horizontal) orientation="h";;
-vertical)   orientation="v";;
-diagonal)   orientation="d";;
-esac
+# ---------------------- plain/colour rendering -----------------
+strip_sgr_stream() {
+  "$AWK" '{ gsub(/\033\[[0-9;]*m/, ""); print; fflush() }'
+}
+
+plain_block() {
+  "$AWK" -v color_enabled="$color_enabled" -v strip_ansi="$strip_ansi" \
+    -v match_regex="$match_regex" -v only_match="$only_match" '
+  {
+    line=$0
+    if (color_enabled != "true" || strip_ansi == "true") {
+      gsub(/\033\[[0-9;]*m/, "", line)
+    }
+
+    if (only_match == "true" && match_regex != "") {
+      out=""
+      start=1
+      while (start <= length(line)) {
+        rel=match(substr(line, start), match_regex)
+        if (rel == 0) break
+        pos=rel + start - 1
+        if (RLENGTH <= 0) {
+          start=pos + 1
+          continue
+        }
+        out=out substr(line, pos, RLENGTH)
+        start=pos + RLENGTH
+      }
+      print out
+    } else {
+      print line
+    }
+    fflush()
+  }'
+}
 
 # ---------------------- colouriser (portable AWK) -----------------
 colour_block() {
@@ -374,6 +504,10 @@ colour_block() {
         m = match(substr(line, start), match_regex);
         if (m == 0) break;
         m = m + start - 1;
+        if (RLENGTH <= 0) {
+          start = m + 1;
+          continue;
+        }
         e = m + RLENGTH - 1;
         for (k = m; k <= e; k++) in_match[k] = 1;
         start = e + 1;
@@ -421,13 +555,11 @@ colour_block() {
 }
 
 safe_colour() {
-  if [[ $no_color == true ]]; then cat; return 0; fi
-  set +e
+  if [[ $color_enabled == false ]]; then
+    plain_block
+    return
+  fi
   colour_block
-  rc=$?
-  set -e
-  if (( rc != 0 )); then cat; fi
-  return 0
 }
 
 # --------------------------- box drawer ---------------------------
@@ -637,8 +769,8 @@ if [[ -n $header_text ]]; then
   fi
   $build_box && header_payload=$(printf '%s\n' "$header_payload" | box_draw)
 
-  if [[ $no_color == true ]]; then
-    printf '%s\n' "$header_payload"
+  if [[ $color_enabled == false ]]; then
+    printf '%s\n' "$header_payload" | plain_block
   else
     case $animation_style in
     classic) printf '%s\n' "$header_payload" | animate_classic ;;
@@ -652,6 +784,10 @@ fi
 # --------------------- ASCII-image import (ANSI as-is) -------------------------
 TERM_WIDTH=$(tput cols 2>/dev/null || echo "$TERM_WIDTH")
 TERM_HEIGHT=$(tput lines 2>/dev/null || echo "$TERM_HEIGHT")
+(( TERM_WIDTH > 0 )) || TERM_WIDTH=80
+(( TERM_HEIGHT > 0 )) || TERM_HEIGHT=24
+(( TERM_WIDTH  > 160 )) && TERM_WIDTH=160
+(( TERM_HEIGHT >  60 )) && TERM_HEIGHT=60
 
 if [[ -n $ascii_image ]]; then
   if command -v chafa >/dev/null 2>&1; then
@@ -666,9 +802,6 @@ if [[ -n $ascii_image ]]; then
   files=("-")
 fi
 
-# defaults: read stdin
-[[ ${#files[@]} -eq 0 ]] && files=("-")
-
 # -------------------- stream-safe fast path -----------------------
 # This is what fixes: tail -f ... | chromacat --log ...
 if [[ $stream_mode == true && -z $ascii_image && $animation_style == "none" ]]; then
@@ -676,7 +809,7 @@ if [[ $stream_mode == true && -z $ascii_image && $animation_style == "none" ]]; 
     if [[ $f == "-" ]]; then
       safe_colour
     else
-      cat "$f" | safe_colour
+      safe_colour < "$f"
     fi
   done
   exit 0
@@ -691,14 +824,24 @@ for f in "${files[@]}"; do
   fi
 
   if [[ -n $ascii_image ]]; then
-    printf '%s\n' "$ascii_payload"
+    if [[ $color_enabled == false ]]; then
+      printf '%s\n' "$ascii_payload" | plain_block
+    else
+      printf '%s\n' "$ascii_payload"
+    fi
     continue
   fi
 
+  # Strip SGR before width-sensitive box rendering whenever plain/no-color was
+  # explicitly requested. Unicode display width remains best-effort and is
+  # documented because exact wcwidth would require a non-core dependency.
+  if [[ $build_box == true && ( $color_enabled == false || $strip_ansi == true ) ]]; then
+    input=$(printf '%s\n' "$input" | strip_sgr_stream)
+  fi
   $build_box && input=$(printf '%s\n' "$input" | box_draw)
 
-  if [[ $no_color == true ]]; then
-    printf '%s\n' "$input"
+  if [[ $color_enabled == false ]]; then
+    printf '%s\n' "$input" | plain_block
     continue
   fi
 
