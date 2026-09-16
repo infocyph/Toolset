@@ -48,4 +48,27 @@ replace_once(
     '  tasks="report packages apt apt-residuals journal logs tmp tmpfiles usercache langcaches snap flatpak docker podman containerd kernels coredumps buildcache browsers timeshift pkgbig inode-scan fshints all"\n',
 )
 
+# `head` closes its input early and can make upstream `sort` fail with SIGPIPE
+# under `set -o pipefail`. Use sed for bounded display while consuming input.
+replace_once(
+    '    done | sort -nr | head -20\n',
+    "    done | sort -nr | sed -n '1,20p'\n",
+)
+replace_once(
+    '      done | sort -nr | head -15\n',
+    "      done | sort -nr | sed -n '1,15p'\n",
+)
+replace_once(
+    '    done | sort -nr | head -"$top"\n',
+    '    done | sort -nr | sed -n "1,${top}p"\n',
+)
+replace_once(
+    "    dpkg-query -Wf='${Installed-Size}\\t${Package}\\n' | sort -nr | head -30 |\n",
+    "    dpkg-query -Wf='${Installed-Size}\\t${Package}\\n' | sort -nr | sed -n '1,30p' |\n",
+)
+replace_once(
+    "    rpm -qa --qf '%{SIZE}\\t%{NAME}\\n' | sort -nr | head -30 |\n",
+    "    rpm -qa --qf '%{SIZE}\\t%{NAME}\\n' | sort -nr | sed -n '1,30p' |\n",
+)
+
 path.write_text(text)
