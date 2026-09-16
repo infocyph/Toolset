@@ -17,8 +17,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  shell:
-    name: Shell validation
+  static:
+    name: Static shell validation
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -31,8 +31,159 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends shellcheck
 
-      - name: Static checks
-        run: bash tests/static.sh
+      - name: Run static checks
+        run: |
+          mkdir -p reports
+          set -o pipefail
+          bash tests/static.sh 2>&1 | tee reports/static.log
 
-      - name: Smoke checks
+      - name: Upload static report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: static-report
+          path: reports/static.log
+          if-no-files-found: error
+          retention-days: 14
+
+  smoke:
+    name: Baseline smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run smoke checks
         run: bash tests/smoke.sh
+
+  contracts:
+    name: Standalone CLI contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate help/version/non-TTY contracts
+        run: bash tests/contracts.sh
+
+      - name: Upload contract reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-contract-reports
+          path: reports/contracts/
+          if-no-files-found: error
+          retention-days: 14
+
+  distro:
+    name: Distro smoke (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Debian 13
+            image: debian:13-slim
+            family: debian
+          - name: Ubuntu 24.04
+            image: ubuntu:24.04
+            family: debian
+          - name: Fedora 42
+            image: fedora:42
+            family: fedora
+          - name: Alpine 3.22
+            image: alpine:3.22
+            family: alpine
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run distro smoke
+        env:
+          IMAGE: ${{ matrix.image }}
+          FAMILY: ${{ matrix.family }}
+        run: |
+          case "$FAMILY" in
+            alpine)
+              docker run --rm \
+                -v "$PWD:/workspace:ro" \
+                -w /workspace \
+                "$IMAGE" \
+                sh -lc 'apk add --no-cache bash >/dev/null && bash tests/distro-smoke.sh'
+              ;;
+            *)
+              docker run --rm \
+                -v "$PWD:/workspace:ro" \
+                -w /workspace \
+                "$IMAGE" \
+                bash tests/distro-smoke.sh
+              ;;
+          esac
+
+  distribution:
+    name: Standalone distribution artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build and verify standalone artifacts
+        run: bash tests/distribution.sh
+
+      - name: Upload distribution snapshot
+        uses: actions/upload-artifact@v7
+        with:
+          name: standalone-toolset-snapshot
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  gate:
+    name: CI gate
+    if: always()
+    needs:
+      - static
+      - smoke
+      - contracts
+      - distro
+      - distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Summarize validation results
+        env:
+          STATIC_RESULT: ${{ needs.static.result }}
+          SMOKE_RESULT: ${{ needs.smoke.result }}
+          CONTRACT_RESULT: ${{ needs.contracts.result }}
+          DISTRO_RESULT: ${{ needs.distro.result }}
+          DISTRIBUTION_RESULT: ${{ needs.distribution.result }}
+        run: |
+          {
+            echo '## Toolset CI gate'
+            echo
+            echo '| Check | Result |'
+            echo '|---|---|'
+            echo "| Static | $STATIC_RESULT |"
+            echo "| Baseline smoke | $SMOKE_RESULT |"
+            echo "| CLI contracts | $CONTRACT_RESULT |"
+            echo "| Distro smoke | $DISTRO_RESULT |"
+            echo "| Distribution | $DISTRIBUTION_RESULT |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for result in \
+            "$STATIC_RESULT" \
+            "$SMOKE_RESULT" \
+            "$CONTRACT_RESULT" \
+            "$DISTRO_RESULT" \
+            "$DISTRIBUTION_RESULT"; do
+            [[ "$result" == success ]] || exit 1
+          done
