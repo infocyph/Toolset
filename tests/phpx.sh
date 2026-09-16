@@ -62,15 +62,19 @@ pass "logging is non-fatal for read-only commands"
 # Read-only FPM config must not require root. Exercise the identity boundary only
 # when the harness itself can switch users; ordinary CI smoke runs skip this part.
 if (( EUID == 0 )) && command -v runuser >/dev/null 2>&1 && id nobody >/dev/null 2>&1; then
+  chmod 755 -- "$TMP_ROOT"
   nonroot_home="$TMP_ROOT/nobody-home"
   mkdir -p -- "$nonroot_home"
   chmod 777 -- "$nonroot_home"
-  nonroot_output="$(runuser -u nobody -- env HOME="$nonroot_home" PHPX_NO_LOG=1 bash "$ROOT_DIR/PHP/phpx" fpm config 8.3)"
+  test_phpx="$TMP_ROOT/phpx"
+  cp -- "$ROOT_DIR/PHP/phpx" "$test_phpx"
+  chmod 755 -- "$test_phpx"
+  nonroot_output="$(runuser -u nobody -- env HOME="$nonroot_home" PHPX_NO_LOG=1 bash "$test_phpx" fpm config 8.3)"
   assert_contains "$nonroot_output" "PHP-FPM config paths for 8.3" "non-root fpm config"
   pass "read-only FPM config works without root"
 
   set +e
-  mutation_output="$(runuser -u nobody -- env HOME="$nonroot_home" PHPX_NO_LOG=1 bash "$ROOT_DIR/PHP/phpx" fpm restart 8.3 2>&1)"
+  mutation_output="$(runuser -u nobody -- env HOME="$nonroot_home" PHPX_NO_LOG=1 bash "$test_phpx" fpm restart 8.3 2>&1)"
   mutation_rc=$?
   set -e
   ((mutation_rc != 0)) || fail "non-root FPM restart unexpectedly succeeded"
