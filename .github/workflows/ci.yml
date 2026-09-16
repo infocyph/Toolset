@@ -118,6 +118,42 @@ jobs:
       - name: Run gitx repository/AI checks
         run: bash tests/gitx.sh
 
+  presentation:
+    name: ChromaCat presentation integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run ChromaCat pipeline/no-color/stream checks
+        run: bash tests/chromacat.sh
+
+  governance:
+    name: Documentation and security governance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Verify live help/version documentation contracts
+        run: bash tests/docs.sh
+
+      - name: Run cross-cutting security audit
+        run: bash tests/security-audit.sh
+
+      - name: Upload security audit report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: security-audit-report
+          path: reports/security-audit.txt
+          if-no-files-found: error
+          retention-days: 14
+
   contracts:
     name: Standalone CLI contracts
     runs-on: ubuntu-latest
@@ -230,6 +266,8 @@ jobs:
       - smoke
       - safety
       - security
+      - presentation
+      - governance
       - contracts
       - distro
       - distribution
@@ -243,6 +281,8 @@ jobs:
           SMOKE_RESULT: ${{ needs.smoke.result }}
           SAFETY_RESULT: ${{ needs.safety.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
+          PRESENTATION_RESULT: ${{ needs.presentation.result }}
+          GOVERNANCE_RESULT: ${{ needs.governance.result }}
           CONTRACT_RESULT: ${{ needs.contracts.result }}
           DISTRO_RESULT: ${{ needs.distro.result }}
           DISTRIBUTION_RESULT: ${{ needs.distribution.result }}
@@ -256,6 +296,8 @@ jobs:
             echo "| Baseline smoke | $SMOKE_RESULT |"
             echo "| High-impact safety | $SAFETY_RESULT |"
             echo "| Security/automation | $SECURITY_RESULT |"
+            echo "| ChromaCat presentation | $PRESENTATION_RESULT |"
+            echo "| Docs/security governance | $GOVERNANCE_RESULT |"
             echo "| CLI contracts | $CONTRACT_RESULT |"
             echo "| Distro smoke | $DISTRO_RESULT |"
             echo "| Distribution | $DISTRIBUTION_RESULT |"
@@ -266,6 +308,8 @@ jobs:
             "$SMOKE_RESULT" \
             "$SAFETY_RESULT" \
             "$SECURITY_RESULT" \
+            "$PRESENTATION_RESULT" \
+            "$GOVERNANCE_RESULT" \
             "$CONTRACT_RESULT" \
             "$DISTRO_RESULT" \
             "$DISTRIBUTION_RESULT"; do
