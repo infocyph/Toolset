@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - '*.*'
 
 permissions:
   contents: write
@@ -31,8 +31,8 @@ jobs:
           set -Eeuo pipefail
           tag="$GITHUB_REF_NAME"
 
-          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
-            echo "Release tag must use vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N format: $tag" >&2
+          if ! [[ "$tag" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "Stable Toolset release tags must use MAJOR.MINOR format (for example 2.0): $tag" >&2
             exit 1
           fi
 
@@ -61,13 +61,14 @@ jobs:
           bash tests/chromacat.sh
           bash tests/docs.sh
           bash tests/security-audit.sh
+          bash tests/release-delivery.sh
 
       - name: Build release assets
         run: |
           set -Eeuo pipefail
           RELEASE_TAG="$GITHUB_REF_NAME"
           SOURCE_COMMIT="$(git rev-parse HEAD)"
-          SUITE_VERSION="${RELEASE_TAG#v}"
+          SUITE_VERSION="$RELEASE_TAG"
           export RELEASE_TAG SOURCE_COMMIT SUITE_VERSION
           bash tests/distribution.sh
 
@@ -82,7 +83,7 @@ jobs:
 
           manifest = json.loads(Path('dist/manifest.json').read_text())
           suite = manifest['suite']
-          expected_version = os.environ['RELEASE_TAG'].removeprefix('v')
+          expected_version = os.environ['RELEASE_TAG']
 
           assert suite['version'] == expected_version
           assert suite['release_tag'] == os.environ['RELEASE_TAG']
@@ -99,17 +100,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          args=(
-            --repo "$GITHUB_REPOSITORY"
-            --verify-tag
-            --title "Toolset $version"
-            --generate-notes
-          )
-          if [[ "$GITHUB_REF_NAME" == *-rc.* ]]; then
-            args+=(--prerelease)
-          fi
-
+          version="$GITHUB_REF_NAME"
           gh release create "$GITHUB_REF_NAME" \
             dist/chromacat \
             dist/cleanx \
@@ -121,7 +112,10 @@ jobs:
             dist/install.sh \
             dist/SHA256SUMS \
             dist/manifest.json \
-            "${args[@]}"
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Toolset $version" \
+            --generate-notes
 
       - name: Verify published assets and exact-release installer
         env:
