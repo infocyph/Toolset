@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: toolset-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Validate and publish standalone assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate immutable release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          tag="$GITHUB_REF_NAME"
+
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must use strict vMAJOR.MINOR.PATCH format: $tag" >&2
+            exit 1
+          fi
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists; published releases are immutable." >&2
+            exit 1
+          fi
+
+          tagged_commit=$(git rev-list -n 1 "$tag")
+          if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
+            echo "Tag $tag does not resolve to the checked-out commit." >&2
+            exit 1
+          fi
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Run static validation
+        run: bash tests/static.sh
+
+      - name: Run standalone CLI contracts
+        run: bash tests/contracts.sh
+
+      - name: Build release assets
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          export SUITE_VERSION="${RELEASE_TAG#v}"
+          bash tests/distribution.sh
+
+      - name: Verify release manifest identity
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = json.loads(Path('dist/manifest.json').read_text())
+          suite = manifest['suite']
+          expected_version = os.environ['RELEASE_TAG'].removeprefix('v')
+
+          assert suite['version'] == expected_version
+          assert suite['release_tag'] == os.environ['RELEASE_TAG']
+          assert suite['source_commit'] == os.environ['SOURCE_COMMIT']
+          assert len(manifest['tools']) == 7
+          PY
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            dist/chromacat \
+            dist/cleanx \
+            dist/dockex \
+            dist/gitx \
+            dist/netx \
+            dist/phpx \
+            dist/sqlitex \
+            dist/SHA256SUMS \
+            dist/manifest.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Toolset $version" \
+            --generate-notes
