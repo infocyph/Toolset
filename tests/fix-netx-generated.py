@@ -43,4 +43,55 @@ if count != 1:
 # with an actual newline rather than a literal backslash-n token.
 t = t.replace(r"printf '}\\n'", r"printf '}\n'", 1)
 
+# `read` returns failure at EOF when curl -w has no trailing newline. Under
+# `set -e` that made an otherwise successful trace command exit 1. Capture the
+# one-line metrics with command substitution instead and retain hard bounds.
+http_pattern = r'''http_trace\(\) \{.*?\n\}\n\nproxy_cmd\(\)'''
+http_replacement = r'''http_trace() {
+  require_curl
+  local url="" timeout=5
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --timeout)
+      timeout="$2"
+      shift
+      ;;
+    *) url="$1" ;;
+    esac
+    shift || true
+  done
+  [[ -z "$url" ]] && die "http trace: url required"
+  is_positive_int "$timeout" || die "http trace: --timeout must be > 0"
+
+  section "HTTP TRACE"
+  kv "URL" "$url"
+  kv "Timeout" "${timeout}s"
+
+  local out
+  out="$(curl_bounded "$timeout" -sS -o /dev/null \
+    -w 'dns=%{time_namelookup}s connect=%{time_connect}s tls=%{time_appconnect}s ttfb=%{time_starttransfer}s total=%{time_total}s status=%{http_code} size=%{size_download}B redirects=%{num_redirects}' \
+    "$url" || printf '%s' 'dns=0 connect=0 tls=0 ttfb=0 total=0 status=000 size=0 redirects=0')"
+  local tok k v
+  for tok in $out; do
+    k=${tok%%=*}
+    v=${tok#*=}
+    case "$k" in
+    dns) kv "DNS" "$v" ;;
+    connect) kv "Connect" "$v" ;;
+    tls) kv "TLS" "$v" ;;
+    ttfb) kv "TTFB" "$v" ;;
+    total) kv "Total" "$v" ;;
+    status) kv "Status" "$v" ;;
+    size) kv "Size" "$v" ;;
+    redirects) kv "Redirects" "$v" ;;
+    esac
+  done
+  return 0
+}
+
+proxy_cmd()'''
+t, count = re.subn(http_pattern, lambda _m: http_replacement, t, count=1, flags=re.S)
+if count != 1:
+    raise SystemExit('generated http_trace function not found')
+
 p.write_text(t)
