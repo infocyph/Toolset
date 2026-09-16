@@ -6,6 +6,7 @@ on:
       - plan/toolset-linux-cli-hardening
     paths:
       - tests/patch-cleanx-phase2-foundation.py
+      - .github/workflows/apply-cleanx-phase2-foundation.yml
 
 permissions:
   contents: write
