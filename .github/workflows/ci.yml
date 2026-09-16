@@ -15,43 +15,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  phase1-autofix:
-    name: Phase 1 targeted autofix
-    if: ${{ github.event_name == 'pull_request' && github.head_ref == 'plan/toolset-linux-cli-hardening' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout head branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.head_ref }}
-
-      - name: Apply targeted source fixes
-        run: python3 tests/phase1_autofix.py
-
-      - name: Validate and push if changed
-        shell: bash
-        run: |
-          bash -n Network/netx
-          bash -n PHP/phpx
-          bash -n Docker/dockex
-          bash -n Git/gitx
-          bash -n Sqlite/sqlitex
-
-          if git diff --quiet; then
-            echo 'No Phase 1 source fixes remain to apply.'
-            exit 0
-          fi
-
-          git config user.name 'A. B. M. Mahmudul Hasan'
-          git config user.email 'abmmhasan@users.noreply.github.com'
-          git add Network/netx PHP/phpx Docker/dockex Git/gitx Sqlite/sqlitex
-          git commit -m 'fix: normalize phase 1 CLI contracts and static errors'
-          git push origin HEAD:plan/toolset-linux-cli-hardening
-
   static:
     name: Static shell validation
     runs-on: ubuntu-latest
