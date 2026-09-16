@@ -3,6 +3,7 @@ from pathlib import Path
 
 p = Path('Sqlite/sqlitex')
 t = p.read_text()
+
 old = """    printf 'BEGIN IMMEDIATE;
 '
 """
@@ -12,4 +13,19 @@ BEGIN IMMEDIATE;
 """
 if old not in t:
     raise SystemExit('transaction begin block not found')
-p.write_text(t.replace(old, new, 1))
+t = t.replace(old, new, 1)
+
+old = '''  [[ "$applied_any" == false ]] && log_info "No new migrations to apply."
+}
+'''
+new = '''  if [[ "$applied_any" == false ]]; then
+    log_info "No new migrations to apply."
+  fi
+  return 0
+}
+'''
+if old not in t:
+    raise SystemExit('migrate_up return block not found')
+t = t.replace(old, new, 1)
+
+p.write_text(t)
