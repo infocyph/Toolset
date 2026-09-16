@@ -59,8 +59,9 @@ assert_contains "$(cat "$log_stdout")" "PHP-FPM config paths for 8.3" "fpm confi
 [[ ! -s "$log_stderr" ]] || fail "logging failure polluted stderr for read-only command"
 pass "logging is non-fatal for read-only commands"
 
-# Read-only FPM config must not require root. Use nobody when runuser is available.
-if command -v runuser >/dev/null 2>&1 && id nobody >/dev/null 2>&1; then
+# Read-only FPM config must not require root. Exercise the identity boundary only
+# when the harness itself can switch users; ordinary CI smoke runs skip this part.
+if (( EUID == 0 )) && command -v runuser >/dev/null 2>&1 && id nobody >/dev/null 2>&1; then
   nonroot_home="$TMP_ROOT/nobody-home"
   mkdir -p -- "$nonroot_home"
   chmod 777 -- "$nonroot_home"
@@ -76,7 +77,7 @@ if command -v runuser >/dev/null 2>&1 && id nobody >/dev/null 2>&1; then
   assert_contains "$mutation_output" "requires root privileges" "FPM mutation should enforce root"
   pass "FPM mutation requires root"
 else
-  printf 'SKIP: runuser/nobody unavailable for privilege-boundary test\n'
+  printf 'SKIP: root/runuser/nobody unavailable for identity-switch privilege test\n'
 fi
 
 # Syntax checking is a generic PHP capability and must not depend on apt/systemd.
