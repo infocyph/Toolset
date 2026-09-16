@@ -20,11 +20,10 @@ jobs:
           ref: plan/toolset-linux-cli-hardening
           fetch-depth: 0
 
-      - name: Apply gitx local-first AI provider integration
+      - name: Finalize custom Ollama endpoint support
         run: |
           set -Eeuo pipefail
-          python3 .github/scripts/add-gitx-ollama.py
-          python3 .github/scripts/fix-gitx-ollama-test.py
+          python3 .github/scripts/fix-gitx-ollama-custom-url.py
           bash -n Git/gitx tests/gitx.sh
 
       - name: Install validation dependencies
@@ -47,5 +46,5 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add Git/gitx Git/README.md tests/gitx.sh
           git diff --cached --quiet && exit 0
-          git commit -m 'feat: prefer local Ollama for gitx AI commits'
+          git commit -m 'feat: support custom Ollama endpoints in gitx'
           git push origin HEAD:plan/toolset-linux-cli-hardening
