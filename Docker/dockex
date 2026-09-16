@@ -938,7 +938,7 @@ trace_from_container() {
       echo "nc: TCP connect to $host:$port FAILED."
     fi
   elif docker exec "$container_name" command -v telnet >/dev/null 2>&1; then
-    if docker exec "$container_name" sh -c "echo quit | telnet '$host' '$port'" >/dev/null 2>&1; then
+    if printf 'quit\n' | docker exec -i "$container_name" telnet "$host" "$port" >/dev/null 2>&1; then
       echo "telnet: TCP connect to $host:$port succeeded."
     else
       echo "telnet: TCP connect to $host:$port FAILED."
