@@ -43,4 +43,4 @@ jobs:
           git commit -m 'fix(phpx): harden mutation and upstream trust paths'
           git push origin HEAD:plan/toolset-linux-cli-hardening
 
-# retrigger after privilege-harness correction
+# rerun after aligning syntax-test contract
