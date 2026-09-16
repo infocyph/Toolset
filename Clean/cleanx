@@ -61,6 +61,7 @@ INODE_TOP=50
 
 # per-run derived
 CONFIG_OVERRIDE_FILE=""
+CHANNEL_OVERRIDE=""
 EXCLUDE_GLOBS=()
 INCLUDE_GLOBS=()
 
@@ -428,7 +429,7 @@ inode_top_current_dir() {
     while IFS= read -r name; do
       c=$(find "./$name" -xdev -printf '.' 2>/dev/null | wc -c)
       printf "%12d  %s\n" "$c" "$name"
-    done | sort -nr | head -20
+    done | sort -nr | sed -n '1,20p'
 }
 inode_hotspots_var() {
   for d in /var /var/log /var/cache /var/tmp /var/spool; do
@@ -438,7 +439,7 @@ inode_hotspots_var() {
       while IFS= read -r -d '' dir; do
         c=$(find "$dir" -xdev -mindepth 1 -maxdepth 1 -printf '.' 2>/dev/null | wc -c)
         printf "%12d  %s\n" "$c" "$dir"
-      done | sort -nr | head -15
+      done | sort -nr | sed -n '1,15p'
     echo
   done
 }
@@ -458,7 +459,7 @@ inode_scan() {
     while IFS= read -r -d '' d; do
       c=$(find "$d" -xdev -mindepth 1 -maxdepth 1 -printf '.' 2>/dev/null | wc -c)
       printf "%12d  %s\n" "$c" "$d"
-    done | sort -nr | head -"$top"
+    done | sort -nr | sed -n "1,${top}p"
 }
 
 # ---------- Report ----------
@@ -474,13 +475,13 @@ report() {
     du --files0-from=- -xh --one-file-system | sort -h | tail -20 || true
   echo
   info "Current directory — top 20 by inode count:"
-  inode_top_current_dir
+  inode_top_current_dir || true
   echo
   info "/var hotspots by inode count:"
-  inode_hotspots_var
+  inode_hotspots_var || true
   echo
   info "Deleted-but-open files:"
-  inode_deleted_open_files
+  inode_deleted_open_files || true
   echo
 }
 
@@ -787,10 +788,10 @@ task_timeshift() {
 task_pkgbig() {
   info "Top 30 installed packages by size"
   if command -v dpkg-query >/dev/null 2>&1; then
-    dpkg-query -Wf='${Installed-Size}\t${Package}\n' | sort -nr | head -30 |
+    dpkg-query -Wf='${Installed-Size}\t${Package}\n' | sort -nr | sed -n '1,30p' |
       awk '{printf "%8.1f MB  %s\n", $1/1024, $2}'
   elif command -v rpm >/dev/null 2>&1; then
-    rpm -qa --qf '%{SIZE}\t%{NAME}\n' | sort -nr | head -30 |
+    rpm -qa --qf '%{SIZE}\t%{NAME}\n' | sort -nr | sed -n '1,30p' |
       awk '{printf "%8.1f MB  %s\n", $1/1048576, $2}'
   else
     warn "Neither dpkg-query nor rpm is available; package-size report skipped."
@@ -1002,7 +1003,7 @@ _cleanx()
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
   opts="--dry-run --yes --aggressive --low-impact --force --secure-erase --quota= --json --config= --journal-keep= --log-max= --tmp-days= --snap-retain= --user= --inode-path= --inode-depth= --inode-top= --exclude-glob= --include-glob= --help --version --check-update --update --channel= --print-config --doctor --completions="
-  tasks="report apt apt-residuals journal logs tmp tmpfiles usercache langcaches snap flatpak docker podman containerd kernels coredumps buildcache browsers timeshift pkgbig inode-scan fshints all"
+  tasks="report packages apt apt-residuals journal logs tmp tmpfiles usercache langcaches snap flatpak docker podman containerd kernels coredumps buildcache browsers timeshift pkgbig inode-scan fshints all"
   if [[ $cur == --* ]]; then
     COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
   else
@@ -1177,12 +1178,14 @@ REQUESTED_TASKS=()
 for arg in "$@"; do
   case "$arg" in
   --config=*) CONFIG_OVERRIDE_FILE="${arg#*=}" ;;
+  --channel=*) CHANNEL_OVERRIDE="${arg#*=}" ;;
   --json) JSON_REPORT=1 ;;
   esac
 done
 
 load_default_configs
 [[ -n "$CONFIG_OVERRIDE_FILE" ]] && load_config_file "$CONFIG_OVERRIDE_FILE" 1
+[[ -n "$CHANNEL_OVERRIDE" ]] && CHANNEL="$CHANNEL_OVERRIDE"
 resolve_target_user
 
 # Now parse all args
