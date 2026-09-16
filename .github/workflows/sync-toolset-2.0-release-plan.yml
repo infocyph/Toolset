@@ -1,0 +1,51 @@
+name: Sync Toolset 2.0 release plan once
+
+on:
+  push:
+    branches:
+      - plan/toolset-linux-cli-hardening
+    paths:
+      - .github/workflows/sync-toolset-2.0-release-plan.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: plan/toolset-linux-cli-hardening
+          fetch-depth: 0
+
+      - name: Apply release-contract and plan synchronization
+        run: |
+          set -Eeuo pipefail
+          python3 .github/scripts/sync-toolset-2.0-release-plan.py
+          bash -n install.sh Git/gitx PHP/phpx Clean/cleanx ChromaCat/chromacat tests/release-delivery.sh
+
+      - name: Install validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck jq
+
+      - name: Validate synchronized candidate
+        run: |
+          set -Eeuo pipefail
+          bash tests/static.sh
+          bash tests/contracts.sh
+          bash tests/docs.sh
+          bash tests/security-audit.sh
+          bash tests/release-delivery.sh
+
+      - name: Commit synchronized release-ready state
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m 'docs: synchronize Toolset 2.0 release readiness'
+          git push origin HEAD:plan/toolset-linux-cli-hardening
