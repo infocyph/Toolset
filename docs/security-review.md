@@ -61,7 +61,7 @@ Other network downloads are command-specific. Examples include:
 - Gemini requests in `gitx` with timeout, response-size and staged-diff limits;
 - bounded diagnostic HTTP/TLS/public-IP operations in `netx`.
 
-Release tags/assets are treated as immutable. Release candidates use explicit `-rc.N` prerelease tags so acceptance testing can exercise the same checksum/install/self-update path without becoming `releases/latest`.
+Release tags/assets are immutable. Before merge, `tests/release-delivery.sh` exercises exact tag `2.0` through a trusted local mirror and injects a transient connection reset; after merge, the maintainer creates tag `2.0` and the release workflow repeats live verification.
 
 ### Secrets and environment output
 
@@ -84,7 +84,7 @@ The consolidated dependency, output and security contracts live in [`cli-contrac
 
 ## Release gate
 
-Toolset 2.0/RC is security-ready only when all of the following remain green on the exact candidate source:
+Toolset 2.0 is pre-merge security/release-ready only when all of the following remain green on the exact candidate source:
 
 1. static Bash/ShellCheck/workflow validation;
 2. destructive/data safety fixtures (`cleanx`, `phpx`, `dockex`, `sqlitex`);
@@ -93,4 +93,4 @@ Toolset 2.0/RC is security-ready only when all of the following remain green on 
 5. documentation/live-help contract verification;
 6. this cross-cutting security audit;
 7. distribution checksum/manifest verification;
-8. published RC asset download, checksum, installer and exact-release self-update verification.
+8. simulated exact-`2.0` checksum/install/self-update delivery with transient retry; after tag `2.0` exists, the release workflow repeats these checks against published GitHub assets.

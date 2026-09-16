@@ -17,7 +17,7 @@ bash install.sh chromacat
 Exact reproducible release:
 
 ```bash
-bash install.sh --release v2.0.0 chromacat
+bash install.sh --release 2.0 chromacat
 ```
 
 ## Requirements
@@ -52,7 +52,7 @@ Exit `0` means success; non-zero means the requested operation did not complete 
 
 ## Self-update
 
-Where `chromacat` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=vX.Y.Z[-rc.N]` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
+Where `chromacat` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=2.0` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
 
 ## Examples
 

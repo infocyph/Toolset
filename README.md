@@ -65,7 +65,7 @@ sudo bash install.sh --prefix /usr/local/bin gitx
 Pin the suite release and verify the installer itself before running it:
 
 ```bash
-release="v2.0.0"
+release="2.0"
 base="https://github.com/infocyph/Toolset/releases/download/${release}"
 
 curl -fsSLO "${base}/install.sh"
@@ -82,7 +82,7 @@ The installer also verifies each requested CLI, syntax-checks it, validates its 
 You can install a release asset without the installer:
 
 ```bash
-release="v2.0.0"
+release="2.0"
 tool="gitx"
 base="https://github.com/infocyph/Toolset/releases/download/${release}"
 
@@ -93,7 +93,7 @@ grep "  ${tool}$" SHA256SUMS | sha256sum -c -
 install -m 0755 "$tool" "$HOME/.local/bin/$tool"
 ```
 
-Release tags follow strict `vMAJOR.MINOR.PATCH` versioning. Published release assets are treated as immutable.
+Stable Toolset suite tags use `MAJOR.MINOR`; Toolset 2.0 is published from immutable tag `2.0`.
 
 
 <!-- TOOLSET2-ROOT-CONTRACT:START -->
@@ -106,7 +106,7 @@ Release tags follow strict `vMAJOR.MINOR.PATCH` versioning. Published release as
 
 Toolset targets Linux with capability-gated features rather than claiming identical behavior on every distribution. CI smoke-covers Debian 13, Ubuntu 24.04, Fedora 42 and Alpine 3.22 with Bash. High-impact operations remain tool-specific and are documented in each tool README and the suite contract.
 
-Released consumers should pin an immutable release tag or commit SHA. Release candidates are GitHub prereleases used for acceptance/downstream integration; stable `vMAJOR.MINOR.PATCH` assets remain immutable.
+Released consumers should pin immutable stable tag `2.0` or the tagged commit SHA; published assets are immutable.
 <!-- TOOLSET2-ROOT-CONTRACT:END -->
 ---
 

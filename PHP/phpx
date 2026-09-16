@@ -3269,12 +3269,15 @@ self_update() (
     base="https://github.com/infocyph/Toolset/releases/latest/download"
     install_args=(--latest)
   else
-    [[ "$release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || {
+    [[ "$release" =~ ^v?[0-9]+\.[0-9]+(\.[0-9]+)?(-rc\.[0-9]+)?$ ]] || {
       printf '%s: invalid TOOLSET_SELF_UPDATE_RELEASE: %s\n' "$tool" "$release" >&2
       return 2
     }
     base="https://github.com/infocyph/Toolset/releases/download/$release"
     install_args=(--release "$release")
+  fi
+  if [[ -n "${TOOLSET_RELEASE_BASE_URL:-}" ]]; then
+    base="${TOOLSET_RELEASE_BASE_URL%/}"
   fi
 
   for cmd in curl sha256sum mktemp install mv awk; do

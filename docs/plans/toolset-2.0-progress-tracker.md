@@ -10,9 +10,9 @@ Legend: `[ ]` not started · `[-]` in progress · `[x]` done · `[!]` blocked / 
 
 ## Current Focus
 
-**Phase 4 — Presentation Path**
+**Release Readiness — final pre-merge gate**
 
-Current task: harden `chromacat`: preserve faithful non-TTY/plain pipeline output, tighten option/no-color/Unicode/TERM behavior, keep streaming bounded, and add golden pipeline/stream fixtures.
+Current task: pass exact `2.0` delivery/self-update verification and leave PR #47 ready for maintainer merge. Merge and tag creation are maintainer actions.
 
 ## Phase 1 — Repository Contract
 
@@ -42,12 +42,12 @@ Current task: harden `chromacat`: preserve faithful non-TTY/plain pipeline outpu
   - [x] `phpx`
   - [x] `sqlitex`
 - [x] Define suite/tool version metadata policy.
-  - [x] Suite release version comes from immutable `vMAJOR.MINOR.PATCH` Git tag.
+  - [x] Suite release version comes from immutable stable tag `2.0`.
   - [x] Each standalone CLI exposes its own embedded tool version.
   - [x] Tool versions may evolve independently of the suite release.
   - [x] `manifest.json` records both suite identity and each tool's version/digest.
 - [x] Add immutable release workflow.
-  - [x] Strict `vMAJOR.MINOR.PATCH` tag validation.
+  - [x] Strict stable `MAJOR.MINOR` tag validation; Toolset 2.0 expects `2.0`.
   - [x] Refuse to overwrite an existing GitHub release.
   - [x] Re-run static and CLI-contract validation from tagged source.
   - [x] Build all seven standalone assets plus the installer.
@@ -88,7 +88,7 @@ Current task: harden `chromacat`: preserve faithful non-TTY/plain pipeline outpu
 - [x] Syntax/static/workflow/smoke CI passes completely.
 - [x] All seven CLI artifacts are executable.
 - [x] All seven expose stable help/version behavior.
-- [x] Immutable semantic-tag release workflow builds/publishes versioned assets with checksums and manifest; actual `v2.0.0` publication remains intentionally deferred until the full hardening cycle is complete.
+- [x] Immutable release workflow publishes checksummed assets/manifest; maintainer creates tag `2.0` only after PR #47 is merged.
 - [x] Stable installation and stable self-update no longer depend on mutable `main`.
 
 ## Phase 2 — Critical Destructive/Data Paths
@@ -192,47 +192,46 @@ Current task: harden `chromacat`: preserve faithful non-TTY/plain pipeline outpu
 
 ## Phase 4 — Presentation Path
 
-### `chromacat`
-
-- [ ] Preserve faithful non-TTY/plain pipeline behavior.
-- [ ] Make unknown options fail clearly instead of implicit `cat` fallback.
-- [ ] Guarantee `--no-color` / `NO_COLOR` ANSI-free output.
-- [ ] Review Unicode display-width behavior.
-- [ ] Keep streaming modes bounded and efficient.
-- [ ] Harden missing TERM/tput behavior.
-- [x] Harden stable self-update baseline through the Phase 1 release channel; review tool-specific behavior during `chromacat` hardening.
-- [ ] Add golden pipeline/no-color/stream tests.
+- [x] `chromacat` faithful non-TTY/plain pipeline behavior.
+- [x] Unknown options fail clearly; explicit passthrough remains available.
+- [x] `--no-color` / `NO_COLOR` output is ANSI-free.
+- [x] Unicode width behavior reviewed/documented.
+- [x] Streaming remains bounded/efficient.
+- [x] Missing TERM/tput handled safely.
+- [x] Stable self-update hardened.
+- [x] Golden pipeline/no-color/stream tests added.
 
 ### Phase 4 Gate
+- [x] Presentation integration suite passes in permanent CI.
 
-- [ ] Pipeline, non-TTY, no-color and streaming tests pass.
+## Phase 5 — Documentation, Release Readiness & Downstream Pins
 
-## Phase 5 — Documentation & Downstream Pins
-
-- [x] Update root README to stable release installation model.
-- [-] Normalize per-tool README sections; installation paths now use stable release assets, broader normalization remains.
-- [ ] Add dependency/capability matrix per tool.
-- [ ] Document destructive/security boundaries per tool.
-- [ ] Document output/exit contracts.
-- [ ] Verify docs against actual `--help`.
-- [ ] Build Toolset 2.0 release candidate.
-- [ ] Verify published release asset checksums and self-update behavior against the RC.
-- [ ] Select immutable Toolset ref for downstream Docker ecosystem.
-- [ ] Update LocalDevStack shared-foundations tracking with accepted Toolset ref.
+- [x] Root/per-tool docs normalized to stable release model.
+- [x] Dependency/capability matrix documented.
+- [x] Destructive/security and output/exit contracts documented.
+- [x] Docs verified against live help/version in CI.
+- [x] Deterministic release assets/checksums/manifest implemented.
+- [x] Portable bounded download retries implemented.
+- [x] Simulated exact `2.0` install/self-update delivery test added.
+- [x] Canonical stable tag selected: `2.0` (no `v`).
+- [ ] **Maintainer:** merge PR #47.
+- [ ] **Maintainer:** create/push tag `2.0` on merged commit.
+- [ ] Release workflow publishes/live-verifies `2.0` assets.
+- [ ] Downstream Docker/LocalDevStack pins immutable tag `2.0` after it exists.
 
 ## Cross-Cutting Security Checklist
 
-- [ ] Review all `eval` occurrences.
-- [ ] Review all `source` of writable/user-controlled config.
-- [ ] Review all fixed `/tmp` paths.
-- [ ] Review all `rm -rf` / `find -delete` paths.
-- [ ] Review remote downloads/checksum policy.
-- [ ] Review secret/environment output.
-- [ ] Review unquoted expansion / missing `--` path delimiters.
-- [ ] Review `bash -c` command construction.
-- [-] Review mutable `main`/`master` URLs; stable install/self-update paths are fixed, development/documentation leftovers will be reviewed in their owning phases.
-- [ ] Review root/sudo assumptions.
-- [ ] Review background processes/trap cleanup.
+- [x] `eval` review.
+- [x] Writable config sourcing review.
+- [x] Fixed `/tmp` review.
+- [x] Recursive deletion / `find -delete` review.
+- [x] Remote download/checksum review.
+- [x] Secret/environment output review.
+- [x] Quoting/path delimiter review.
+- [x] `bash -c` / `sh -c` review.
+- [x] Mutable `main`/`master` URL review.
+- [x] Root/sudo assumption review.
+- [x] Background process/trap cleanup review.
 
 ## Decisions Locked
 
@@ -284,8 +283,8 @@ Current task: harden `chromacat`: preserve faithful non-TTY/plain pipeline outpu
 | 2026-09-16 | Fixed actionlint invocation and completed the full green Phase 1 CI gate. | done |
 | 2026-09-16 | Phase 1 closed; Phase 2 started with `cleanx`. | done |
 | 2026-09-16 | Completed `cleanx` Phase 2 hardening: declarative config, safe locking/deletion, package capability handling, clean JSON, resilient reports, docs and permanent safety tests. | done |
-| 2026-09-16 | Started `phpx` Phase 2 capability and mutation-path hardening. | in progress |
+| 2026-09-16 | Completed `phpx`, `dockex`, and `sqlitex` Phase 2 hardening with permanent safety fixtures. | done |
 
 ## Next Task
 
-Harden `netx`: eliminate TLS/guard `eval`, adopt lazy XDG state, correct IPv4/IPv6 endpoint and address classification, bound network operations, validate JSON output, and add local endpoint/network-namespace fixtures.
+Pass final clean PR CI with exact tag `2.0`, then delete both planning files before maintainer merge. After merge, maintainer creates tag `2.0`; downstream pinning follows only after the tag exists.

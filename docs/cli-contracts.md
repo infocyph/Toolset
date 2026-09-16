@@ -10,7 +10,7 @@ Toolset is seven independent Linux Bash CLIs. Each distributed tool remains a si
 - Human ANSI decoration is suppressed for non-TTY output unless a tool exposes an explicit force-color path.
 - `NO_COLOR` is honored by presentation/human-output paths.
 - Machine-readable modes keep stdout reserved for the requested data; warnings/progress go to stderr.
-- Stable installation and self-update use checksum-verified release assets. Mutable `main` is not a stable channel.
+- Stable installation and self-update use checksum-verified release assets. Mutable `main` is not a stable channel. `TOOLSET_RELEASE_BASE_URL` is an explicit trusted mirror/test override and never disables checksum verification.
 - Exit `0` means success. Any non-zero exit means the requested operation did not complete successfully. Tool-specific subcodes are not a cross-suite API unless that tool documents them explicitly.
 
 ## Dependency and capability matrix
@@ -89,4 +89,4 @@ A Toolset suite release publishes:
 - `SHA256SUMS`
 - `manifest.json`
 
-Stable tags are immutable. Release candidates use prerelease tags and are intended for acceptance/downstream integration testing. Released downstream consumers should pin an exact tag or commit SHA rather than `main`.
+Stable suite tags are immutable. Toolset 2.0 uses canonical tag `2.0`. Released downstream consumers should pin that exact tag or a commit SHA rather than `main`.

@@ -8,7 +8,7 @@ Baseline branch: `main`
 
 Baseline commit reviewed: `6e93735e344ea0e63bd643550ae86181611f694b`
 
-Recommended target: **Toolset 2.0.0**
+Target release: **Toolset 2.0** (stable tag: `2.0`)
 
 This is a repository-wide hardening plan for Toolset itself. Toolset is **not** a Docker support library: every utility remains an independently installable Linux CLI. Docker images, LocalDevStack, and other Infocyph repositories are downstream consumers only.
 
@@ -221,15 +221,7 @@ Do not claim a distro is fully supported when a major command silently assumes `
 
 ### 4.1 Normalize release semantics
 
-Use strict repository release tags going forward:
-
-```text
-v2.0.0
-v2.0.1
-v2.1.0
-```
-
-Keep historical tags unchanged.
+Use immutable suite release tags. Toolset 2.0 uses canonical stable tag `2.0` with no `v` prefix. Maintainer creates that tag only after PR #47 is merged. Historical tags remain unchanged.
 
 Toolset 2.0 should define two levels of version identity:
 
@@ -276,7 +268,7 @@ Release workflow rules:
 - build assets only from the tagged commit;
 - generate SHA-256 values in CI;
 - fail if embedded metadata is invalid;
-- publish only from semantic-version tags;
+- publish only from validated stable `MAJOR.MINOR` suite tags; Toolset 2.0 uses `2.0`;
 - release tags are treated as immutable;
 - minimum `GITHUB_TOKEN` permissions by default, elevating to `contents: write` only in the release job;
 - no scheduled job rewrites a release tag or release asset.
@@ -1167,13 +1159,16 @@ Gate: remove unintended `eval`, unsafe temp paths, secret persistence/output haz
 
 Gate: pipeline/no-color/non-TTY compatibility tests pass.
 
-### Phase 5 — Documentation & downstream pins
+### Phase 5 — Documentation, release readiness & downstream pins
 
-1. Update root/per-tool docs.
-2. Publish 2.0 release candidate.
-3. Verify release assets/checksums/self-update.
-4. Give downstream Docker repos an immutable accepted Toolset ref.
-5. Update LocalDevStack/docker ecosystem only after Toolset’s release contract is stable.
+1. Update/verify docs.
+2. Simulate exact `2.0` release delivery with transient retry.
+3. Pass complete clean PR CI/security/distribution gates.
+4. Delete completed plan/tracker files from merge candidate.
+5. Maintainer merges PR #47.
+6. Maintainer creates/pushes stable tag `2.0`.
+7. Permanent release workflow publishes/live-verifies GitHub assets.
+8. Downstream consumers then pin immutable tag `2.0`.
 
 ---
 

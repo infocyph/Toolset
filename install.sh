@@ -16,7 +16,7 @@ Install one or more standalone Toolset CLIs from immutable GitHub release assets
 
 Options:
   --all                 Install all Toolset CLIs.
-  --release <version>   Install an exact suite release (for example v2.0.0 or v2.0.0-rc.1).
+  --release <version>   Install an exact suite release tag (for example 2.0).
   --latest              Install from the latest stable GitHub release (default).
   --prefix <dir>        Installation directory (default: ~/.local/bin).
   --list                List available tool names.
@@ -24,8 +24,8 @@ Options:
 
 Examples:
   bash install.sh gitx
-  bash install.sh --release v2.0.0 gitx netx
-  bash install.sh --release v2.0.0-rc.1 --all
+  bash install.sh --release 2.0 gitx netx
+  bash install.sh --release 2.0 --all
   bash install.sh --all
   bash install.sh --prefix /usr/local/bin dockex
 
@@ -115,9 +115,9 @@ done
 }
 
 if [[ "$RELEASE" != "latest" ]]; then
-  RELEASE="v${RELEASE#v}"
-  [[ "$RELEASE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || {
-    printf 'install.sh: release must use MAJOR.MINOR.PATCH, vMAJOR.MINOR.PATCH, or an -rc.N prerelease\n' >&2
+  [[ "$RELEASE" =~ ^v?[0-9]+\.[0-9]+(\.[0-9]+)?(-rc\.[0-9]+)?$ ]] || {
+    printf 'install.sh: release must be an exact numeric tag such as 2.0, 2.0.1, or v2.0.1
+' >&2
     exit 2
   }
 fi
@@ -135,6 +135,9 @@ if [[ "$RELEASE" == "latest" ]]; then
 else
   BASE_URL="https://github.com/${REPOSITORY}/releases/download/${RELEASE}"
   RELEASE_LABEL="$RELEASE"
+fi
+if [[ -n "${TOOLSET_RELEASE_BASE_URL:-}" ]]; then
+  BASE_URL="${TOOLSET_RELEASE_BASE_URL%/}"
 fi
 
 mkdir -p -- "$PREFIX" 2>/dev/null || {
