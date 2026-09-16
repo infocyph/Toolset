@@ -14,9 +14,9 @@ concurrency:
 
 jobs:
   release:
-    name: Validate and publish standalone assets
+    name: Validate, publish and verify standalone assets
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout tagged source
@@ -31,8 +31,8 @@ jobs:
           set -Eeuo pipefail
           tag="$GITHUB_REF_NAME"
 
-          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release tag must use strict vMAJOR.MINOR.PATCH format: $tag" >&2
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "Release tag must use vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N format: $tag" >&2
             exit 1
           fi
 
@@ -42,36 +42,37 @@ jobs:
           fi
 
           tagged_commit=$(git rev-list -n 1 "$tag")
-          if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
-            echo "Tag $tag does not resolve to the checked-out commit." >&2
+          checked_out=$(git rev-parse HEAD)
+          if [[ "$tagged_commit" != "$checked_out" || "$checked_out" != "$GITHUB_SHA" ]]; then
+            echo "Tag $tag does not resolve to the checked-out workflow commit." >&2
             exit 1
           fi
 
-      - name: Install ShellCheck
+      - name: Install validation dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends shellcheck
+          sudo apt-get install -y --no-install-recommends shellcheck jq
 
-      - name: Run static validation
-        run: bash tests/static.sh
-
-      - name: Run standalone CLI contracts
-        run: bash tests/contracts.sh
+      - name: Run release validation
+        run: |
+          set -Eeuo pipefail
+          bash tests/static.sh
+          bash tests/contracts.sh
+          bash tests/chromacat.sh
+          bash tests/docs.sh
+          bash tests/security-audit.sh
 
       - name: Build release assets
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-          SOURCE_COMMIT: ${{ github.sha }}
         run: |
+          set -Eeuo pipefail
+          export RELEASE_TAG="$GITHUB_REF_NAME"
+          export SOURCE_COMMIT="$(git rev-parse HEAD)"
           export SUITE_VERSION="${RELEASE_TAG#v}"
           bash tests/distribution.sh
 
       - name: Verify release manifest identity
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-          SOURCE_COMMIT: ${{ github.sha }}
         run: |
-          python3 - <<'PY'
+          RELEASE_TAG="$GITHUB_REF_NAME" SOURCE_COMMIT="$(git rev-parse HEAD)" python3 - <<'PY'
           import json
           import os
           from pathlib import Path
@@ -85,6 +86,9 @@ jobs:
           assert suite['source_commit'] == os.environ['SOURCE_COMMIT']
           assert manifest['installer']['asset'] == 'install.sh'
           assert len(manifest['tools']) == 7
+          assert [item['name'] for item in manifest['tools']] == [
+              'chromacat', 'cleanx', 'dockex', 'gitx', 'netx', 'phpx', 'sqlitex'
+          ]
           PY
 
       - name: Publish GitHub release
@@ -93,6 +97,16 @@ jobs:
         run: |
           set -Eeuo pipefail
           version="${GITHUB_REF_NAME#v}"
+          args=(
+            --repo "$GITHUB_REPOSITORY"
+            --verify-tag
+            --title "Toolset $version"
+            --generate-notes
+          )
+          if [[ "$GITHUB_REF_NAME" == *-rc.* ]]; then
+            args+=(--prerelease)
+          fi
+
           gh release create "$GITHUB_REF_NAME" \
             dist/chromacat \
             dist/cleanx \
@@ -104,7 +118,76 @@ jobs:
             dist/install.sh \
             dist/SHA256SUMS \
             dist/manifest.json \
+            "${args[@]}"
+
+      - name: Verify published assets and exact-release installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          verify_dir="$(mktemp -d)"
+          prefix="$(mktemp -d)"
+          trap 'rm -rf -- "$verify_dir" "$prefix"' EXIT INT TERM
+
+          gh release download "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "Toolset $version" \
-            --generate-notes
+            --dir "$verify_dir"
+
+          (
+            cd "$verify_dir"
+            sha256sum -c SHA256SUMS
+          )
+
+          RELEASE_TAG="$GITHUB_REF_NAME" SOURCE_COMMIT="$(git rev-parse HEAD)" \
+            VERIFY_DIR="$verify_dir" python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ['VERIFY_DIR'])
+          manifest = json.loads((root / 'manifest.json').read_text())
+          assert manifest['suite']['release_tag'] == os.environ['RELEASE_TAG']
+          assert manifest['suite']['source_commit'] == os.environ['SOURCE_COMMIT']
+          for item in manifest['tools']:
+              path = root / item['asset']
+              assert path.is_file()
+              assert hashlib.sha256(path.read_bytes()).hexdigest() == item['sha256']
+          installer = root / manifest['installer']['asset']
+          assert hashlib.sha256(installer.read_bytes()).hexdigest() == manifest['installer']['sha256']
+          PY
+
+          bash "$verify_dir/install.sh" \
+            --release "$GITHUB_REF_NAME" \
+            --prefix "$prefix" \
+            --all
+
+          for tool in chromacat cleanx dockex gitx netx phpx sqlitex; do
+            NO_COLOR=1 PHPX_NO_LOG=1 NETX_COLOR=never TERM=dumb \
+              "$prefix/$tool" --version >/dev/null
+          done
+
+      - name: Verify exact-release self-update paths
+        run: |
+          set -Eeuo pipefail
+          prefix="$(mktemp -d)"
+          trap 'rm -rf -- "$prefix"' EXIT INT TERM
+          bash dist/install.sh --release "$GITHUB_REF_NAME" --prefix "$prefix" gitx phpx cleanx chromacat
+
+          TOOLSET_SELF_UPDATE_RELEASE="$GITHUB_REF_NAME" \
+            "$prefix/gitx" self-update
+          TOOLSET_SELF_UPDATE_RELEASE="$GITHUB_REF_NAME" PHPX_NO_LOG=1 \
+            "$prefix/phpx" self-update
+          TOOLSET_SELF_UPDATE_RELEASE="$GITHUB_REF_NAME" \
+            "$prefix/cleanx" --update
+          TOOLSET_SELF_UPDATE_RELEASE="$GITHUB_REF_NAME" NO_COLOR=1 TERM=dumb \
+            "$prefix/chromacat" --self-update
+
+          for tool in gitx phpx cleanx chromacat; do
+            expected="$(awk -v name="$tool" '$2 == name {print $1; exit}' dist/SHA256SUMS)"
+            actual="$(sha256sum "$prefix/$tool" | awk '{print $1}')"
+            [[ -n "$expected" && "$actual" == "$expected" ]] || {
+              echo "Self-update verification failed for $tool" >&2
+              exit 1
+            }
+          done
