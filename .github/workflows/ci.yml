@@ -41,7 +41,10 @@ jobs:
           ./actionlint -version
 
       - name: Validate GitHub Actions workflows
-        run: ./actionlint -color never
+        run: |
+          mkdir -p reports
+          set -o pipefail
+          ./actionlint 2>&1 | tee reports/actionlint.log
 
       - name: Run static checks
         run: |
@@ -49,13 +52,13 @@ jobs:
           set -o pipefail
           bash tests/static.sh 2>&1 | tee reports/static.log
 
-      - name: Upload static report
+      - name: Upload static reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: static-report
-          path: reports/static.log
-          if-no-files-found: error
+          path: reports/
+          if-no-files-found: warn
           retention-days: 14
 
   smoke:
