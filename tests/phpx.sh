@@ -104,6 +104,47 @@ assert_eq "0" "$syntax_rc" "syntax command should succeed via explicit PHP binar
 [[ "$syntax_output" != *"Parse error"* && "$syntax_output" != *"Fatal error"* ]] || fail "successful syntax run emitted an error"
 pass "syntax checker is independent of package/service backends"
 
+# Upstream installer verification helpers must reject bad digests and accept exact SHA-384.
+verify_file="$TMP_ROOT/verify-me"
+printf 'phpx verification\n' >"$verify_file"
+if command -v sha384sum >/dev/null 2>&1; then
+  expected_sha384="$(sha384sum "$verify_file" | awk '{print $1}')"
+elif command -v openssl >/dev/null 2>&1; then
+  expected_sha384="$(openssl dgst -sha384 "$verify_file" | awk '{print $NF}')"
+else
+  expected_sha384="$(php -r 'echo hash_file("sha384", $argv[1]);' "$verify_file")"
+fi
+verify_sha384 "$verify_file" "$expected_sha384" || fail "SHA-384 helper rejected an exact digest"
+if verify_sha384 "$verify_file" "${expected_sha384%?}0"; then fail "SHA-384 helper accepted a mismatched digest"; fi
+pass "Composer installer SHA-384 verification helper"
+
+# Extension specs are data, never shell fragments.
+validate_extension_name 'redis-6.0' || fail "valid extension name rejected"
+if validate_extension_name 'redis;touch /tmp/pwn'; then fail "unsafe extension name accepted"; fi
+validate_github_extension_spec 'phpredis/phpredis@6.1.0' || fail "valid GitHub extension spec rejected"
+if validate_github_extension_spec 'org/repo@main;touch'; then fail "unsafe GitHub extension spec accepted"; fi
+pass "extension source spec validation"
+
+# Atomic writer must replace complete content without leaving partial temp files.
+atomic_target="$TMP_ROOT/atomic/config.ini"
+printf 'first=value\n' | atomic_write_file "$atomic_target" 0640
+assert_eq 'first=value' "$(cat "$atomic_target")" "atomic write content"
+[[ "$(stat -c '%a' "$atomic_target")" == 640 ]] || fail "atomic writer did not apply requested mode"
+[[ -z "$(find "$(dirname "$atomic_target")" -maxdepth 1 -name '.phpx.tmp.*' -print -quit)" ]] || fail "atomic writer left a temporary file"
+pass "atomic configuration write"
+
+# Config generation must be all-or-nothing and structurally valid.
+config_dir="$TMP_ROOT/generated"
+mkdir -p "$config_dir"
+(
+  cd "$config_dir"
+  generate_php_config development 8.3 >/dev/null
+)
+[[ -s "$config_dir/fpm.development.conf" && -s "$config_dir/php.development.ini" ]] || fail "generated config files missing"
+grep -Fqx '[www]' "$config_dir/fpm.development.conf" || fail "generated FPM pool lacks [www] section"
+grep -Eq '^pm\.max_children = [0-9]+$' "$config_dir/fpm.development.conf" || fail "generated FPM max_children invalid"
+pass "atomic validated PHP/FPM config generation"
+
 # Unknown commands must fail with a dedicated command error.
 set +e
 unknown_output="$(PHPX_NO_LOG=1 bash PHP/phpx definitely-not-a-command 2>&1)"
@@ -113,4 +154,4 @@ assert_eq "2" "$unknown_rc" "unknown phpx command exit code"
 assert_contains "$unknown_output" "Unknown command" "unknown phpx command message"
 pass "unknown command contract"
 
-printf '\nAll phpx foundation safety checks passed.\n'
+printf '\nAll phpx safety checks passed.\n'
