@@ -34,7 +34,7 @@ jobs:
       - name: Validate version contract
         run: |
           set -Eeuo pipefail
-          shellcheck -S error ChromaCat/chromacat Clean/cleanx Docker/dockex Git/gitx Network/netx PHP/phpx Sqlite/sqlitex tests/contracts.sh
+          shellcheck -S error ChromaCat/chromacat Clean/cleanx Docker/dockex Git/gitx Network/netx PHP/phpx Sqlite/sqlitex tests/contracts.sh tests/distribution.sh
           bash tests/contracts.sh
           bash tests/distribution.sh
           python3 - <<'PY'
@@ -45,7 +45,7 @@ jobs:
           assert all(t['version'] == '2.0' for t in m['tools'])
           PY
           if git grep -nE '2\.0\.0-dev|VERSION="1\.3"|VERSION="1\.7\.0"|VERSION="0\.5\.0"' -- \
-            'ChromaCat/chromacat' 'Clean/cleanx' 'Docker/dockex' 'Git/gitx' 'Network/netx' 'PHP/phpx' 'Sqlite/sqlitex' 'tests/generate-manifest.py'; then
+            'ChromaCat/chromacat' 'Clean/cleanx' 'Docker/dockex' 'Git/gitx' 'Network/netx' 'PHP/phpx' 'Sqlite/sqlitex' 'tests/generate-manifest.py' 'tests/distribution.sh'; then
             echo 'Stale pre-2.0 embedded version remains.' >&2
             exit 1
           fi
@@ -55,7 +55,7 @@ jobs:
           set -Eeuo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add ChromaCat/chromacat Clean/cleanx Docker/dockex Git/gitx Network/netx PHP/phpx Sqlite/sqlitex tests/contracts.sh tests/generate-manifest.py
+          git add ChromaCat/chromacat Clean/cleanx Docker/dockex Git/gitx Network/netx PHP/phpx Sqlite/sqlitex tests/contracts.sh tests/generate-manifest.py tests/distribution.sh
           git diff --cached --quiet && exit 0
           git commit -m 'chore: normalize Toolset suite version to 2.0'
           git push origin HEAD:plan/toolset-linux-cli-hardening
