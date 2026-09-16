@@ -30,9 +30,14 @@ for item in "${TOOLS[@]}"; do
   pass "packaged standalone artifact: $name"
 done
 
+install -m 0755 -- install.sh "$DIST_DIR/install.sh"
+bash -n "$DIST_DIR/install.sh"
+[[ -x "$DIST_DIR/install.sh" ]] || fail "packaged installer is not executable"
+pass "packaged installer asset: install.sh"
+
 (
   cd "$DIST_DIR"
-  sha256sum chromacat cleanx dockex gitx netx phpx sqlitex > SHA256SUMS
+  sha256sum chromacat cleanx dockex gitx netx phpx sqlitex install.sh > SHA256SUMS
   sha256sum -c SHA256SUMS
 )
 pass "SHA256SUMS generated and verified"
@@ -65,6 +70,12 @@ for entry in manifest["tools"]:
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
     assert entry["sha256"] == digest
     assert entry["version"]
+
+installer = manifest["installer"]
+installer_path = manifest_path.parent / installer["asset"]
+installer_digest = hashlib.sha256(installer_path.read_bytes()).hexdigest()
+assert installer["asset"] == "install.sh"
+assert installer["sha256"] == installer_digest
 
 print("manifest verified")
 PY
