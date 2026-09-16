@@ -164,6 +164,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Pull distro image with bounded retry
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -Eeuo pipefail
+          for attempt in 1 2 3; do
+            if docker pull "$IMAGE"; then
+              exit 0
+            fi
+            if (( attempt == 3 )); then
+              echo "Failed to pull $IMAGE after $attempt attempts." >&2
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+
       - name: Run distro smoke
         env:
           IMAGE: ${{ matrix.image }}
@@ -171,14 +187,14 @@ jobs:
         run: |
           case "$FAMILY" in
             alpine)
-              docker run --rm \
+              docker run --rm --pull=never \
                 -v "$PWD:/workspace:ro" \
                 -w /workspace \
                 "$IMAGE" \
                 sh -lc 'apk add --no-cache bash >/dev/null && bash tests/distro-smoke.sh'
               ;;
             *)
-              docker run --rm \
+              docker run --rm --pull=never \
                 -v "$PWD:/workspace:ro" \
                 -w /workspace \
                 "$IMAGE" \
