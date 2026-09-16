@@ -31,7 +31,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends shellcheck
           shellcheck --severity=error PHP/phpx
-          bash tests/phpx.sh
+          sudo -E bash tests/phpx.sh
 
       - name: Commit phpx mutation hardening
         run: |
