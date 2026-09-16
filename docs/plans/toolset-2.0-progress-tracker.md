@@ -10,9 +10,9 @@ Legend: `[ ]` not started · `[-]` in progress · `[x]` done · `[!]` blocked / 
 
 ## Current Focus
 
-**Phase 2 — Critical destructive/data paths**
+**Phase 3 — Security / Automation Paths**
 
-Current task: harden `phpx`, starting with capability/package/service boundaries and operation-specific privilege checks, then make installer/config mutation paths transactional and add disposable distro-container coverage.
+Current task: harden `netx` first: remove user-controlled `eval`, make state creation XDG/lazy, correct endpoint/address handling, bound network operations, and add local safety fixtures before moving to `gitx`.
 
 ## Phase 1 — Repository Contract
 
@@ -108,49 +108,49 @@ Current task: harden `phpx`, starting with capability/package/service boundaries
 
 ### `phpx`
 
-- [ ] Separate generic PHP capability from distro package management.
-- [ ] Formalize package-manager backends/capability reporting.
-- [ ] Formalize service-manager detection/backends.
-- [ ] Harden Sury/Ondřej repository/key setup.
-- [ ] Make Composer install/update semantics reproducible and explicit.
-- [ ] Harden PECL/source extension build/rollback.
-- [ ] Make generated config writes atomic + validated.
-- [ ] Make logging non-fatal for read-only commands and secret-safe.
-- [ ] Make root requirement operation-specific.
+- [x] Separate generic PHP capability from distro package management.
+- [x] Formalize package-manager backends/capability reporting.
+- [x] Formalize service-manager detection/backends.
+- [x] Harden Sury/Ondřej repository/key setup.
+- [x] Make Composer install/update semantics reproducible and explicit.
+- [x] Harden PECL/source extension build/rollback.
+- [x] Make generated config writes atomic + validated.
+- [x] Make logging non-fatal for read-only commands and secret-safe.
+- [x] Make root requirement operation-specific.
 - [x] Harden stable self-update baseline through the Phase 1 release channel; review tool-specific behavior during `phpx` hardening.
-- [ ] Add disposable distro-container tests.
+- [x] Add disposable distro-container tests.
 
 ### `dockex`
 
-- [ ] Harden daemon/context/rootless detection.
-- [ ] Replace grep-based container identity matching with Docker-native inspect/filter logic.
-- [ ] Redact environment values by default.
-- [ ] Redesign backup/restore around deterministic tar archive flow.
-- [ ] Scope restore to selected mount/volume; never blind-extract to `/`.
-- [ ] Add explicit live-data consistency warning/quiesce behavior.
-- [ ] Harden cleanup confirmation / non-interactive semantics.
-- [ ] Validate resource update inputs.
-- [ ] Harden benchmark/stats dependency and timeout behavior.
-- [ ] Add ephemeral-Docker tests.
+- [x] Harden daemon/context/rootless detection.
+- [x] Replace grep-based container identity matching with Docker-native inspect/filter logic.
+- [x] Redact environment values by default.
+- [x] Redesign backup/restore around deterministic tar archive flow.
+- [x] Scope restore to selected mount/volume; never blind-extract to `/`.
+- [x] Add explicit live-data consistency warning/quiesce behavior.
+- [x] Harden cleanup confirmation / non-interactive semantics.
+- [x] Validate resource update inputs.
+- [x] Harden benchmark/stats dependency and timeout behavior.
+- [x] Add ephemeral-Docker tests.
 
 ### `sqlitex`
 
-- [ ] Replace raw DB `cp` backup with SQLite-native consistent backup.
-- [ ] Make migration + tracking record transactional where SQLite permits.
-- [ ] Add deterministic migration ordering/history sequence.
-- [ ] Clarify/rename busy-timeout vs real locking semantics.
-- [ ] Validate/quote table identifiers.
-- [ ] Fix CSV/JSON import header/null/column behavior.
-- [ ] Harden reset for WAL/SHM and recovery.
-- [ ] Make export flag semantics consistent.
-- [ ] Make dry-run side-effect-free.
-- [ ] Harden optimize/tune backup/integrity flow.
-- [ ] Add WAL, failure, migration, seed, backup tests.
+- [x] Replace raw DB `cp` backup with SQLite-native consistent backup.
+- [x] Make migration + tracking record transactional where SQLite permits.
+- [x] Add deterministic migration ordering/history sequence.
+- [x] Clarify/rename busy-timeout vs real locking semantics.
+- [x] Validate/quote table identifiers.
+- [x] Fix CSV/JSON import header/null/column behavior.
+- [x] Harden reset for WAL/SHM and recovery.
+- [x] Make export flag semantics consistent.
+- [x] Make dry-run side-effect-free.
+- [x] Harden optimize/tune backup/integrity flow.
+- [x] Add WAL, failure, migration, seed, backup tests.
 
 ### Phase 2 Gate
 
-- [ ] High-impact tools have disposable functional safety tests.
-- [ ] No known unsafe default destructive behavior remains.
+- [x] High-impact tools have disposable functional safety tests.
+- [x] No known unsafe default destructive behavior remains.
 
 ## Phase 3 — Security / Automation Paths
 
@@ -287,4 +287,4 @@ Current task: harden `phpx`, starting with capability/package/service boundaries
 
 ## Next Task
 
-Harden `phpx`: separate read-only PHP capabilities from package/service mutation, formalize package-manager and service-manager backends, make privilege checks operation-specific, then harden repository/Composer/PECL/config-write flows with disposable distro-container tests.
+Harden `netx`: eliminate TLS/guard `eval`, adopt lazy XDG state, correct IPv4/IPv6 endpoint and address classification, bound network operations, validate JSON output, and add local endpoint/network-namespace fixtures.
