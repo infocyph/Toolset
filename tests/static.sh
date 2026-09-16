@@ -27,8 +27,12 @@ for tool in "${TOOLS[@]}"; do
   pass "git executable mode: $tool"
 done
 
+[[ -f install.sh ]] || fail "missing release installer: install.sh"
+bash -n install.sh
+pass "bash syntax: install.sh"
+
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck --severity=error -- "${TOOLS[@]}"
+  shellcheck --severity=error -- "${TOOLS[@]}" install.sh
   pass "ShellCheck error-level gate"
 else
   fail "shellcheck is required for static validation"
