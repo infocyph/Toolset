@@ -24,6 +24,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 .github/scripts/add-gitx-ollama.py
+          python3 .github/scripts/fix-gitx-ollama-test.py
           bash -n Git/gitx tests/gitx.sh
 
       - name: Install validation dependencies
