@@ -81,16 +81,3 @@ Retained background workers are bounded task workers (for example lint/benchmark
 ## Tool-specific boundaries
 
 The consolidated dependency, output and security contracts live in [`cli-contracts.md`](cli-contracts.md). Each per-tool README also carries standardized sections for requirements, capabilities, destructive/security behavior, output/exit behavior and self-update.
-
-## Release gate
-
-Toolset 2.0 is pre-merge security/release-ready only when all of the following remain green on the exact candidate source:
-
-1. static Bash/ShellCheck/workflow validation;
-2. destructive/data safety fixtures (`cleanx`, `phpx`, `dockex`, `sqlitex`);
-3. security/automation fixtures (`netx`, `gitx`);
-4. presentation fixtures (`chromacat`);
-5. documentation/live-help contract verification;
-6. this cross-cutting security audit;
-7. distribution checksum/manifest verification;
-8. simulated exact-`2.0` checksum/install/self-update delivery with transient retry; after tag `2.0` exists, the release workflow repeats these checks against published GitHub assets.
