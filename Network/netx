@@ -2,7 +2,7 @@
 # netx - Network toolbox for diagnostics, security and benchmarks
 set -euo pipefail
 
-VERSION="0.4.0"
+VERSION="0.5.0"
 
 # Global flags (set in main)
 NETX_JSON=0
@@ -150,7 +150,8 @@ Outbound Guard:
   netx guard diff [--file path]
   netx guard watch [--interval N] [--file path]
                     [--exclude-user list] [--exclude-port list]
-                    [--exclude-cidr list] [--exec cmd]
+                    [--exclude-cidr list] [--exec command [args...]]
+                    # --exec is argv-only and must be the final option
 
 Security / Suspicious Listeners:
   netx sec listeners [--exclude-user list] [--exclude-port list]
@@ -183,21 +184,120 @@ Path / Firewall / Report:
   netx fw list [--raw]
   netx report [--out file]
 
+Security note: listener/outbound risk scoring is heuristic triage, not a security verdict.
 EOF
 }
 
-NETX_DIR="${HOME}/.netx"
-mkdir -p "$NETX_DIR"
+NETX_STATE_DIR="${NETX_STATE_HOME:-${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/netx}"
+NETX_CONFIG_DIR="${NETX_CONFIG_HOME:-${XDG_CONFIG_HOME:-${HOME:-/tmp}/.config}/netx}"
+NETX_CONNECT_TIMEOUT="${NETX_CONNECT_TIMEOUT:-3}"
+NETX_OPERATION_TIMEOUT="${NETX_OPERATION_TIMEOUT:-10}"
+
+ensure_state_dir() {
+  mkdir -p -m 0700 -- "$NETX_STATE_DIR"
+}
+
+state_file() {
+  printf '%s/%s\n' "$NETX_STATE_DIR" "$1"
+}
 
 split_csv() { tr ',' '\n' <<<"$1"; }
 
-is_private_ip() {
-  local ip="$1"
-  case "$ip" in
-  10.* | 192.168.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[0-1].* | 127.*) return 0 ;;
-  ::1 | fc* | fd* | fe80:*) return 0 ;;
-  esac
+is_uint() { [[ "${1:-}" =~ ^[0-9]+$ ]]; }
+is_positive_int() { is_uint "${1:-}" && ((10#${1} > 0)); }
+
+validate_port() {
+  local p="${1:-}"
+  is_uint "$p" && ((10#$p >= 1 && 10#$p <= 65535))
+}
+
+split_endpoint() {
+  local endpoint="${1:-}" host port
+  if [[ "$endpoint" =~ ^\[([^]]+)\]:([^:]*)$ ]]; then
+    host="${BASH_REMATCH[1]}"
+    port="${BASH_REMATCH[2]}"
+  elif [[ "$endpoint" == *:* ]]; then
+    host="${endpoint%:*}"
+    port="${endpoint##*:}"
+    [[ -n "$host" ]] || host='::'
+  else
+    host="$endpoint"
+    port=''
+  fi
+  printf '%s|%s\n' "$host" "$port"
+}
+
+is_non_public_ip() {
+  local ip="${1:-}" a b c d
+  ip="${ip#[}"
+  ip="${ip%]}"
+  ip="${ip%%%*}"
+  ip="${ip,,}"
+
+  if [[ "$ip" == *:* ]]; then
+    case "$ip" in
+      ::|::1|fc*|fd*|ff*|2001:db8:*|2001:db8::*) return 0 ;;
+      fe[89ab]*:*) return 0 ;;
+    esac
+    return 1
+  fi
+
+  IFS='.' read -r a b c d <<<"$ip"
+  for octet in "$a" "$b" "$c" "$d"; do
+    is_uint "$octet" || return 1
+    ((10#$octet <= 255)) || return 1
+  done
+
+  a=$((10#$a)); b=$((10#$b))
+  ((a == 0 || a == 10 || a == 127)) && return 0
+  ((a == 169 && b == 254)) && return 0
+  ((a == 172 && b >= 16 && b <= 31)) && return 0
+  ((a == 192 && b == 168)) && return 0
+  ((a == 100 && b >= 64 && b <= 127)) && return 0
+  ((a == 192 && b == 0)) && return 0
+  ((a == 192 && b == 2)) && return 0
+  ((a == 198 && (b == 18 || b == 19 || b == 51))) && return 0
+  ((a == 203 && b == 0)) && return 0
+  ((a >= 224)) && return 0
   return 1
+}
+
+# Compatibility name retained for callers/tests; semantics intentionally include
+# reserved, loopback, link-local, documentation and shared address space.
+is_private_ip() { is_non_public_ip "$@"; }
+
+curl_bounded() {
+  local max_time="${1:-$NETX_OPERATION_TIMEOUT}"
+  shift || true
+  curl --connect-timeout "$NETX_CONNECT_TIMEOUT" --max-time "$max_time" "$@"
+}
+
+json_escape() {
+  local data
+  data="$(cat)"
+  data=${data//\\/\\\\}
+  data=${data//\"/\\\"}
+  data=${data//$'\b'/\\b}
+  data=${data//$'\f'/\\f}
+  data=${data//$'\n'/\\n}
+  data=${data//$'\r'/\\r}
+  data=${data//$'\t'/\\t}
+  printf '%s' "$data"
+}
+
+validate_json_file() {
+  local file="$1"
+  if have jq; then
+    jq -e . "$file" >/dev/null 2>&1
+  elif have python3; then
+    python3 -m json.tool "$file" >/dev/null 2>&1
+  else
+    return 0
+  fi
+}
+
+privilege_hint() {
+  err "$1 may require root or Linux network capabilities (for example CAP_NET_ADMIN/CAP_NET_RAW)."
 }
 
 # Heuristics config
@@ -232,11 +332,10 @@ suspicious_score() {
   [[ "$state" != "ESTAB" && "$state" != "ESTABLISHED" ]] && { echo 0; return; }
 
   local remote_ip remote_port
-  remote_ip=${remote_addr%:*}
-  remote_port=${remote_addr##*:}
+  IFS='|' read -r remote_ip remote_port < <(split_endpoint "$remote_addr")
 
   # Public destination
-  if ! is_private_ip "$remote_ip"; then
+  if ! is_non_public_ip "$remote_ip"; then
     score=$((score + 1))
   fi
 
@@ -248,7 +347,7 @@ suspicious_score() {
       break
     fi
   done
-  if [[ "$remote_port" -ge 1024 && "$safe" -eq 0 ]]; then
+  if is_uint "$remote_port" && ((10#$remote_port >= 1024)) && [[ "$safe" -eq 0 ]]; then
     score=$((score + 1))
   fi
 
@@ -274,7 +373,7 @@ suspicious_score() {
     uid=$(awk '/^Uid:/{print $2}' "/proc/$pid/status" 2>/dev/null || echo "")
     if [[ -n "$uid" ]]; then
       uid_name=$(getent passwd "$uid" 2>/dev/null | cut -d: -f1 || echo "")
-      if [[ -n "$uid_name" && "$uid_name" != "root" ]] && ! is_private_ip "$remote_ip" && [[ "$safe" -eq 0 ]]; then
+      if [[ -n "$uid_name" && "$uid_name" != "root" ]] && ! is_non_public_ip "$remote_ip" && [[ "$safe" -eq 0 ]]; then
         score=$((score + 1))
       fi
     fi
@@ -310,7 +409,7 @@ doctor_cmd() {
   local dns_out="" dns_tool=""
   if have dig; then
     dns_tool="dig"
-    dns_out=$(dig +short "$host" A 2>/dev/null | head -n 5)
+    dns_out=$(dig +time=2 +tries=1 +short "$host" A 2>/dev/null | head -n 5)
     # fallback to NSS (/etc/hosts, etc.) if pure DNS returns nothing (e.g. localhost)
     if [[ -z "$dns_out" ]] && have getent; then
       dns_tool="getent"
@@ -404,7 +503,7 @@ fi
   # Route
   section "Route (first 5 hops)"
   if have traceroute; then
-    traceroute -n -m 20 "$host" 2>/dev/null | head -n 6
+    traceroute -n -w 2 -m 20 "$host" 2>/dev/null | head -n 6
   elif have mtr; then
     mtr -n -c 2 -r -m 10 "$host" 2>/dev/null
   else
@@ -431,7 +530,7 @@ fi
     else
       local status time_total size redirect
       read -r status time_total size redirect < <(
-        curl -sS -o /dev/null --max-time 10 \
+        curl_bounded 10 -sS -o /dev/null \
           -w '%{http_code} %{time_total} %{size_download} %{num_redirects}' \
           "http://$host:$port" || echo "000 0 0 0"
       )
@@ -448,11 +547,7 @@ fi
     if have openssl; then
       local tmp
       tmp=$(mktemp)
-      local cmd="openssl s_client -servername $host -connect $host:$port"
-      if have timeout; then
-        cmd="timeout 5 $cmd"
-      fi
-      if echo | eval "$cmd" 2>/dev/null | openssl x509 -noout -subject -issuer -dates >"$tmp"; then
+      if _tls_s_client "$host" "$port" | openssl x509 -noout -subject -issuer -dates >"$tmp"; then
         sed 's/^/  /' "$tmp"
       else
         echo "  failed to fetch certificate"
@@ -504,9 +599,9 @@ dns_resolve() {
   [[ -z "$name" ]] && die "dns resolve: name required"
   if have dig; then
     if [[ -n "$resolver" ]]; then
-      dig @"$resolver" "$name" "$type" +short
+      dig +time=2 +tries=1 @"$resolver" "$name" "$type" +short
     else
-      dig "$name" "$type" +short
+      dig +time=2 +tries=1 "$name" "$type" +short
     fi
   elif have host; then
     host "$name"
@@ -571,14 +666,14 @@ dns_trace() {
   done
   [[ -z "$name" ]] && die "dns trace: name required"
   have dig || die "dns trace: dig required"
-  dig "$name" "$type" +trace
+  dig +time=2 +tries=1 "$name" "$type" +trace
 }
 
 dns_reverse() {
   local ip="${1:-}"
   [[ -z "$ip" ]] && die "dns reverse: ip required"
   if have dig; then
-    dig -x "$ip" +short
+    dig +time=2 +tries=1 -x "$ip" +short
   elif have host; then
     host "$ip"
   else
@@ -602,8 +697,8 @@ dns_whoami() {
 
   section "DNS whoami (via $resolver)"
   local who ip
-  who=$(dig @"$resolver" +short TXT CH whoami.cloudflare 2>/dev/null | tr -d '"\r' || true)
-  ip=$(dig @"$resolver" +short A whoami.cloudflare 2>/dev/null | head -n1 | tr -d "\r" || true)
+  who=$(dig +time=2 +tries=1 @"$resolver" +short TXT CH whoami.cloudflare 2>/dev/null | tr -d '"\r' || true)
+  ip=$(dig +time=2 +tries=1 @"$resolver" +short A whoami.cloudflare 2>/dev/null | head -n1 | tr -d "\r" || true)
 
   [[ -n "$who" ]] && kv "Resolver sees" "$who" || kv "Resolver sees" "(n/a)"
   [[ -n "$ip" ]] && kv "Egress IP" "$ip" || kv "Egress IP" "(n/a)"
@@ -716,7 +811,7 @@ http_get() {
   kv "URL" "$url"
   kv "Timeout" "${timeout}s"
 
-  local curl_args=(-sS --max-time "$timeout")
+  local curl_args=(-sS --connect-timeout "$NETX_CONNECT_TIMEOUT" --max-time "$timeout")
   ((json)) && curl_args+=(-H 'Accept: application/json')
 
   if ((body || headers)); then
@@ -751,7 +846,7 @@ http_head() {
   done
   [[ -z "$url" ]] && die "http head: url required"
   section "HTTP HEAD $url"
-  curl -sS -I --max-time "$timeout" "$url"
+  curl_bounded "$timeout" -sS -I "$url"
 }
 
 http_trace() {
@@ -768,17 +863,17 @@ http_trace() {
     shift || true
   done
   [[ -z "$url" ]] && die "http trace: url required"
+  is_positive_int "$timeout" || die "http trace: --timeout must be > 0"
 
   section "HTTP TRACE"
   kv "URL" "$url"
   kv "Timeout" "${timeout}s"
 
   local out
-  read -r out < <(
-    curl -sS -o /dev/null --max-time "$timeout" \
-      -w 'dns=%{time_namelookup}s connect=%{time_connect}s tls=%{time_appconnect}s ttfb=%{time_starttransfer}s total=%{time_total}s status=%{http_code} size=%{size_download}B redirects=%{num_redirects}' \
-      "$url" || echo "dns=0 connect=0 tls=0 ttfb=0 total=0 status=000 size=0 redirects=0"
-  )
+  out="$(curl_bounded "$timeout" -sS -o /dev/null \
+    -w 'dns=%{time_namelookup}s connect=%{time_connect}s tls=%{time_appconnect}s ttfb=%{time_starttransfer}s total=%{time_total}s status=%{http_code} size=%{size_download}B redirects=%{num_redirects}' \
+    "$url" || printf '%s' 'dns=0 connect=0 tls=0 ttfb=0 total=0 status=000 size=0 redirects=0')"
+  local tok k v
   for tok in $out; do
     k=${tok%%=*}
     v=${tok#*=}
@@ -793,6 +888,7 @@ http_trace() {
     redirects) kv "Redirects" "$v" ;;
     esac
   done
+  return 0
 }
 
 proxy_cmd() {
@@ -817,9 +913,9 @@ proxy_test() {
   local url="${1:-}"
   [[ -z "$url" ]] && die "proxy test: url required"
   section "Proxy test (direct)"
-  NO_PROXY="*" no_proxy="*" curl -sS -o /dev/null -w 'status=%{http_code} time=%{time_total}s\n' "$url" || echo "  failed"
+  NO_PROXY="*" no_proxy="*" curl_bounded 10 -sS -o /dev/null -w 'status=%{http_code} time=%{time_total}s\n' "$url" || echo "  failed"
   section "Proxy test (env)"
-  curl -sS -o /dev/null -w 'status=%{http_code} time=%{time_total}s\n' "$url" || echo "  failed"
+  curl_bounded 10 -sS -o /dev/null -w 'status=%{http_code} time=%{time_total}s\n' "$url" || echo "  failed"
 }
 
 # -------------------- 4. Benchmarks (curl-only) --------------------
@@ -870,7 +966,7 @@ bench_http() {
   seq 1 "$requests" | xargs -I{} -P "$concurrency" bash -c '
     url="$0"; timeout="$1"
     start=$(date +%s%N 2>/dev/null || echo "$(date +%s)000000000")
-    code=$(curl -sS -o /dev/null --max-time "$timeout" -w "%{http_code}" "$url" 2>/dev/null || echo 0)
+    code=$(curl --connect-timeout 3 -sS -o /dev/null --max-time "$timeout" -w "%{http_code}" "$url" 2>/dev/null || echo 0)
     end=$(date +%s%N 2>/dev/null || echo "$(date +%s)000000000")
     dur_ns=$((end-start))
     printf "%s %s\n" "$code" "$dur_ns"
@@ -975,16 +1071,15 @@ tls_cmd() {
 }
 
 _tls_s_client() {
-  local host="$1" port="$2"; shift 2
-  local extra=("$@")
-  local cmd="openssl s_client -servername $host -connect $host:$port"
-  if ((${#extra[@]})); then
-    cmd+=" ${extra[*]}"
-  fi
-  if have timeout; then
-    cmd="timeout 5 $cmd"
-  fi
-  echo | eval "$cmd" 2>/dev/null
+  local host="$1" port="$2"
+  shift 2
+  local -a extra=("$@") cmd
+  local endpoint
+  validate_port "$port" || { err "invalid TLS port: $port"; return 2; }
+  have timeout || { err "timeout is required for bounded TLS operations"; return 3; }
+  if [[ "$host" == *:* && "$host" != \[*\] ]]; then endpoint="[$host]:$port"; else endpoint="$host:$port"; fi
+  cmd=(openssl s_client -servername "$host" -connect "$endpoint" "${extra[@]}")
+  printf '' | timeout --signal=TERM 5 "${cmd[@]}" 2>/dev/null
 }
 
 tls_info() {
@@ -1296,33 +1391,24 @@ conn_ls() {
 
 conn_record() {
   require_ss_or_netstat
-  local interval=5 duration=120 out="$NETX_DIR/connections.log"
+  local interval=5 duration=120 out="" default_out=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
-    --interval)
-      interval="$2"
-      shift
-      ;;
-    --duration)
-      duration="$2"
-      shift
-      ;;
-    --out)
-      out="$2"
-      shift
-      ;;
+    --interval) interval="$2"; shift ;;
+    --duration) duration="$2"; shift ;;
+    --out) out="$2"; default_out=0; shift ;;
+    *) die "conn record: unknown option '$1'" ;;
     esac
     shift || true
   done
+  is_positive_int "$interval" || die "conn record: --interval must be > 0"
+  is_positive_int "$duration" || die "conn record: --duration must be > 0"
+  if ((default_out)); then ensure_state_dir; out="$(state_file connections.log)"; fi
   local end=$((SECONDS + duration))
   : >"$out"
   while ((SECONDS < end)); do
     echo "### $(date -Is)" >>"$out"
-    if have ss; then
-      ss -tunp >>"$out" 2>/dev/null || true
-    else
-      netstat -tunp >>"$out" 2>/dev/null || true
-    fi
+    if have ss; then ss -tunp >>"$out" 2>/dev/null || true; else netstat -tunp >>"$out" 2>/dev/null || true; fi
     sleep "$interval"
   done
   echo "Recorded to $out"
@@ -1359,7 +1445,7 @@ guard_cmd() {
   esac
 }
 
-guard_file_default="$NETX_DIR/outbound_baseline.txt"
+guard_file_default="$(state_file outbound_baseline.txt)"
 
 guard_snapshot() {
   require_ss_or_netstat
@@ -1373,12 +1459,20 @@ guard_snapshot() {
     esac
     shift || true
   done
+  if [[ "$file" == "$guard_file_default" ]]; then ensure_state_dir; fi
   if have ss; then
     ss -tunp | normalize_conn_ss_line | sort -u >"$file"
   else
     netstat -tunp | normalize_conn_ss_line | sort -u >"$file"
   fi
   echo "Baseline saved to $file"
+}
+
+run_guard_hook() {
+  local payload="$1"
+  shift
+  (($#)) || return 0
+  printf '%s' "$payload" | "$@"
 }
 
 _guard_pretty_line() {
@@ -1419,89 +1513,62 @@ guard_diff() {
 
 guard_watch() {
   require_ss_or_netstat
-  local file="$guard_file_default" interval=20 exec_cmd=""
+  local file="$guard_file_default" interval=20
   local exclude_user="" exclude_port="" exclude_cidr=""
+  local -a exec_argv=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
-    --file)
-      file="$2"
-      shift
-      ;;
-    --interval)
-      interval="$2"
-      shift
-      ;;
-    --exclude-user)
-      exclude_user="$2"
-      shift
-      ;;
-    --exclude-port)
-      exclude_port="$2"
-      shift
-      ;;
-    --exclude-cidr)
-      exclude_cidr="$2"
-      shift
-      ;;
+    --file) file="$2"; shift 2 ;;
+    --interval) interval="$2"; shift 2 ;;
+    --exclude-user) exclude_user="$2"; shift 2 ;;
+    --exclude-port) exclude_port="$2"; shift 2 ;;
+    --exclude-cidr) exclude_cidr="$2"; shift 2 ;;
     --exec)
-      exec_cmd="$2"
       shift
+      (($#)) || die "guard watch: --exec requires a command"
+      exec_argv=("$@")
+      break
       ;;
+    *) die "guard watch: unknown option '$1'" ;;
     esac
-    shift || true
   done
+  is_positive_int "$interval" || die "guard watch: --interval must be > 0"
   [[ -f "$file" ]] || guard_snapshot --file "$file"
   echo "Watching outbound connections every ${interval}s (baseline: $file)"
   while :; do
-    local tmp
+    local tmp new
     tmp=$(mktemp)
-    if have ss; then
-      ss -tunp | normalize_conn_ss_line | sort -u >"$tmp"
-    else
-      netstat -tunp | normalize_conn_ss_line | sort -u >"$tmp"
-    fi
+    trap 'rm -f -- "$tmp"' RETURN
+    if have ss; then ss -tunp | normalize_conn_ss_line | sort -u >"$tmp"; else netstat -tunp | normalize_conn_ss_line | sort -u >"$tmp"; fi
 
     new=$(comm -13 "$file" "$tmp" || true)
     if [[ -n "$new" ]]; then
       section "${c_err}ALERT${c_reset} at $(date -Is)"
-
       while read -r line; do
         [[ -z "$line" ]] && continue
-        IFS='|' read -r proto local remote pid comm user <<<"$line"
-        local_port=${local##*:}
-        remote_ip=${remote%:*}
-        remote_port=${remote##*:}
+        local proto local_ep remote_ep pid comm user local_ip local_port remote_ip remote_port
+        IFS='|' read -r proto local_ep remote_ep pid comm user <<<"$line"
+        IFS='|' read -r local_ip local_port < <(split_endpoint "$local_ep")
+        IFS='|' read -r remote_ip remote_port < <(split_endpoint "$remote_ep")
 
-        # Exclude by pseudo-user (really process name)
         if [[ -n "$exclude_user" ]]; then
-          for e in $(split_csv "$exclude_user"); do
-            [[ "$comm" == "$e" ]] && continue 2
-          done
+          for e in $(split_csv "$exclude_user"); do [[ "$comm" == "$e" ]] && continue 2; done
         fi
-        # Exclude by port (local or remote)
         if [[ -n "$exclude_port" ]]; then
-          for p in $(split_csv "$exclude_port"); do
-            [[ "$local_port" == "$p" || "$remote_port" == "$p" ]] && continue 2
-          done
+          for p in $(split_csv "$exclude_port"); do [[ "$local_port" == "$p" || "$remote_port" == "$p" ]] && continue 2; done
         fi
-        # Simple prefix-based CIDR-ish exclude (e.g. 10.,192.168.,172.16.)
         if [[ -n "$exclude_cidr" ]]; then
-          for c in $(split_csv "$exclude_cidr"); do
-            case "$remote_ip" in
-            "$c"*) continue 2 ;;
-            esac
-          done
+          for c in $(split_csv "$exclude_cidr"); do case "$remote_ip" in "$c"*) continue 2 ;; esac; done
         fi
-
         _guard_pretty_line "$line"
       done <<<"$new"
 
-      if [[ -n "$exec_cmd" ]]; then
-        echo "$new" | eval "$exec_cmd" || true
-      fi
+      if ((${#exec_argv[@]})); then run_guard_hook "$new" "${exec_argv[@]}" || true; fi
     fi
 
-    mv "$tmp" "$file"
+    mv -- "$tmp" "$file"
+    trap - RETURN
+    [[ "${NETX_GUARD_ONCE:-0}" == 1 ]] && break
     sleep "$interval"
   done
 }
@@ -1536,8 +1603,8 @@ sec_listeners() {
   section "Suspicious listeners"
   if have ss; then
     ss -nH -lntup 2>/dev/null | while read -r netid state recvq sendq local_addr peer_addr rest; do
-      local port pid="" comm=""
-      port="${local_addr##*:}"
+      local port pid="" comm="" endpoint_host
+      IFS='|' read -r endpoint_host port < <(split_endpoint "$local_addr")
       if [[ "$rest" =~ pid=([0-9]+) ]]; then pid="${BASH_REMATCH[1]}"; fi
       if [[ "$rest" =~ \"([^\"]+)\" ]]; then comm="${BASH_REMATCH[1]}"; fi
 
@@ -1561,7 +1628,7 @@ sec_listeners() {
 
       local warn=0
       [[ "$local_addr" == "0.0.0.0"* || "$local_addr" == "[::]"* || "$local_addr" == "*:"* ]] && warn=1
-      [[ "$port" -gt 1024 ]] && warn=1
+      is_uint "$port" && ((10#$port > 1024)) && warn=1
       [[ "$path" == /tmp/* || "$path" == /dev/shm/* ]] && warn=1
 
       ((warn)) || continue
@@ -1613,7 +1680,7 @@ sniff_http() {
   echo "URL: $url"
   echo
 
-  curl -k -L --max-time "$timeout" -sS \
+  curl -k -L --connect-timeout "$NETX_CONNECT_TIMEOUT" --max-time "$timeout" -sS \
     -D "$hdr" -o "$body" \
     "$@" "$url" \
     -w $'\n\n---- timing ----\nurl_effective: %{url_effective}\nremote_ip: %{remote_ip}\nremote_port: %{remote_port}\nhttp_code: %{http_code}\nhttp_version: %{http_version}\nssl_verify_result: %{ssl_verify_result}\ntime_namelookup: %{time_namelookup}\ntime_connect: %{time_connect}\ntime_appconnect: %{time_appconnect}\ntime_starttransfer: %{time_starttransfer}\ntime_total: %{time_total}\n' \
@@ -1671,10 +1738,9 @@ sniff_pkt() {
 
   while [[ "${1:-}" ]]; do filter+=("$1"); shift; done
 
-  local SUDO=""
+  local -a privilege=()
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-    have sudo || die "sniff pkt: need root or sudo"
-    SUDO="sudo"
+    if have sudo; then privilege=(sudo --); else privilege_hint "sniff pkt"; return 1; fi
   fi
 
   local -a args=(tcpdump -i "$iface" -s "$snaplen")
@@ -1695,8 +1761,11 @@ sniff_pkt() {
 
   ((${#filter[@]})) && args+=("${filter[@]}")
 
-  echo "Running: ${SUDO:+$SUDO }${args[*]}" >&2
-  exec ${SUDO:+$SUDO } "${args[@]}"
+  printf 'Running:' >&2
+  printf ' %q' "${privilege[@]}" "${args[@]}" >&2
+  printf '
+' >&2
+  exec "${privilege[@]}" "${args[@]}"
 }
 
 # -------------------- 9. IP / Interface / Routes --------------------
@@ -1754,14 +1823,14 @@ ip_public() {
   section "Public IP"
   if ((want4)); then
     local ip4
-    ip4=$(curl -s https://api.seeip.org/jsonip 2>/dev/null | sed -n 's/.*"ip":"\([^"]*\)".*/\1/p')
-    [[ -z "$ip4" ]] && ip4=$(curl -s https://ipv4.icanhazip.com 2>/dev/null)
+    ip4=$(curl_bounded 8 -s https://api.seeip.org/jsonip 2>/dev/null | sed -n 's/.*"ip":"\([^"]*\)".*/\1/p')
+    [[ -z "$ip4" ]] && ip4=$(curl_bounded 8 -s https://ipv4.icanhazip.com 2>/dev/null)
     kv "IPv4" "${ip4:-failed}"
   fi
   if ((want6)); then
     local ip6
-    ip6=$(curl -s "https://api.seeip.org/jsonip?format=json" 2>/dev/null | sed -n 's/.*"ip":"\([^"]*\)".*/\1/p')
-    [[ -z "$ip6" ]] && ip6=$(curl -s https://ipv6.icanhazip.com 2>/dev/null)
+    ip6=$(curl_bounded 8 -s "https://api.seeip.org/jsonip?format=json" 2>/dev/null | sed -n 's/.*"ip":"\([^"]*\)".*/\1/p')
+    [[ -z "$ip6" ]] && ip6=$(curl_bounded 8 -s https://ipv6.icanhazip.com 2>/dev/null)
     kv "IPv6" "${ip6:-failed}"
   fi
 }
@@ -1830,22 +1899,25 @@ route_show() {
   section "Routes"
   printf '%-8s %-20s %-12s %-s\n' "Type" "Destination" "Dev" "Extra"
   ip route show | while read -r dst rest; do
-    dev=$(grep -o 'dev [^ ]*' <<<"$rest" | awk '{print $2}')
-    extra=$(sed "s/.*dev $dev//" <<<"$rest")
-    typ="other"
+    local dev extra typ="other"
+    dev=$(grep -o 'dev [^ ]*' <<<"$rest" | awk '{print $2}' || true)
+    if [[ -n "$dev" ]]; then extra=$(sed "s/.*dev $dev//" <<<"$rest"); else extra="$rest"; fi
     [[ "$dst" == "default" ]] && typ="default"
     printf '%-8s %-20s %-12s %-s\n' "$typ" "$dst" "$dev" "$extra"
   done
+}
+
 route_explain() {
   local target="${1:-}"
   [[ -n "$target" ]] || die "route explain: host required"
-
   have ip || die "route explain: ip required"
 
   local ip_addr=""
-  if have dig; then
-    ip_addr=$(dig +short "$target" A 2>/dev/null | head -n1 || true)
-    [[ -z "$ip_addr" ]] && ip_addr=$(dig +short "$target" AAAA 2>/dev/null | head -n1 || true)
+  if [[ "$target" == *:* || "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    ip_addr="$target"
+  elif have dig; then
+    ip_addr=$(dig +time=2 +tries=1 +short "$target" A 2>/dev/null | head -n1 || true)
+    [[ -z "$ip_addr" ]] && ip_addr=$(dig +time=2 +tries=1 +short "$target" AAAA 2>/dev/null | head -n1 || true)
   fi
   if [[ -z "$ip_addr" ]] && have getent; then
     ip_addr=$(getent ahostsv4 "$target" 2>/dev/null | awk 'NR==1{print $1}' || true)
@@ -1871,7 +1943,12 @@ route_explain() {
     gw=$(grep -oE ' via [^ ]+' <<<"$out" | awk '{print $2}' || true)
     src=$(grep -oE ' src [^ ]+' <<<"$out" | awk '{print $2}' || true)
     printf '{"target":"%s","ip":"%s","dev":"%s","via":"%s","src":"%s","raw":"%s"}\n' \
-      "$target" "$ip_addr" "${dev:-}" "${gw:-}" "${src:-}" "$(printf '%s' "$out" | sed 's/"/\\"/g')"
+      "$(printf '%s' "$target" | json_escape)" \
+      "$(printf '%s' "$ip_addr" | json_escape)" \
+      "$(printf '%s' "${dev:-}" | json_escape)" \
+      "$(printf '%s' "${gw:-}" | json_escape)" \
+      "$(printf '%s' "${src:-}" | json_escape)" \
+      "$(printf '%s' "$out" | json_escape)"
     return 0
   fi
 
@@ -1890,8 +1967,7 @@ route_explain() {
   [[ -n "$dev" ]] && kv "Interface" "$dev"
   [[ -n "$gw" ]] && kv "Gateway" "$gw"
   [[ -n "$src" ]] && kv "Source IP" "$src"
-}
-
+  return 0
 }
 
 # -------------------- 10. Watchers / Waiters --------------------
@@ -1947,7 +2023,7 @@ watch_http() {
   [[ -z "$url" ]] && die "watch http: url required"
   while :; do
     local code
-    code=$(curl -sS -o /dev/null -w '%{http_code}' "$url" || echo 0)
+    code=$(curl_bounded "${NETX_WATCH_HTTP_TIMEOUT:-10}" -sS -o /dev/null -w '%{http_code}' "$url" || echo 0)
     printf '%s status=%s (expect %s)\n' "$(date -Is)" "$code" "$expect"
     sleep "$interval"
   done
@@ -2021,7 +2097,7 @@ stack_check() {
   done
   [[ -z "$name" ]] && die "stack check: name required"
   if [[ -z "$cfg" ]]; then
-    local dir="${NETX_STACK_DIR:-$HOME/.config/netx/stacks}"
+    local dir="${NETX_STACK_DIR:-$NETX_CONFIG_DIR/stacks}"
     cfg="$dir/${name}.conf"
   fi
   [[ -f "$cfg" ]] || die "stack config not found: $cfg"
@@ -2041,8 +2117,8 @@ stack_check() {
       printf "[HTTP] %-12s %s -> " "$svc" "$target"
       http_trace "$target" 2>/dev/null || echo "failed"
     else
-      host=${target%:*}
-      port=${target##*:}
+      IFS='|' read -r host port < <(split_endpoint "$target")
+      validate_port "$port" || { echo "${c_err}invalid target${c_reset}"; continue; }
       printf "[TCP ] %-12s %s:%s -> " "$svc" "$host" "$port"
       if port_check "$host" "$port" --timeout 2 >/dev/null 2>&1; then
         echo "${c_ok}OK${c_reset}"
@@ -2086,6 +2162,7 @@ ns_inspect() {
   if ! ip netns exec "$ns" ip -o addr show 2>/dev/null; then
     echo "  Cannot open network namespace '$ns'"
     echo "  Hint: this expects a netns name (from 'ip netns ls'), not an interface like 'wlp0s20f3'."
+    [[ "${EUID:-$(id -u)}" -ne 0 ]] && privilege_hint "ns inspect"
     return 1
   fi
   section "Namespace $ns - routes"
@@ -2098,7 +2175,10 @@ ns_exec() {
   shift || true
   [[ -z "$ns" ]] && die "ns exec: ns required"
   [[ $# -eq 0 ]] && die "ns exec: command required"
-  ip netns exec "$ns" "$@"
+  if ! ip netns exec "$ns" "$@"; then
+    [[ "${EUID:-$(id -u)}" -ne 0 ]] && privilege_hint "ns exec"
+    return 1
+  fi
 }
 
 # -------------------- 13. Path trace --------------------
@@ -2129,7 +2209,7 @@ path_trace() {
   if have mtr; then
     mtr -n -c 3 -r -m "$max_hops" "$host"
   elif have traceroute; then
-    traceroute -n -m "$max_hops" "$host"
+    traceroute -n -w 2 -m "$max_hops" "$host"
   else
     die "path trace: need mtr or traceroute"
   fi
@@ -2150,50 +2230,38 @@ fw_cmd() {
 fw_summary() {
   section "Firewall summary"
   if have nft; then
-    local out
-    out=$(nft list ruleset 2>/dev/null || true)
-    if [[ -z "$out" ]]; then
-      echo "  nftables present but no rules (or insufficient permissions)"
+    local out rc=0
+    out=$(nft list ruleset 2>/dev/null) || rc=$?
+    if ((rc != 0)); then
+      privilege_hint "fw summary"
+      return "$rc"
+    elif [[ -z "$out" ]]; then
+      echo "  nftables present with no rules"
     else
       echo "$out" | head -n 80 | sed 's/^/  /'
       local lines
-      lines=$(printf '%s\n' "$out" | wc -l | awk '{print $1}')
-      if ((lines > 80)); then
-        echo "  ... (truncated, use 'netx fw list --raw' for full ruleset)"
-      fi
+      lines=$(printf '%s
+' "$out" | wc -l | awk '{print $1}')
+      ((lines > 80)) && echo "  ... (truncated, use 'netx fw list --raw' for full ruleset)"
     fi
   elif have iptables; then
-    iptables -L -n --line-numbers | sed 's/^/  /'
+    if ! iptables -L -n --line-numbers | sed 's/^/  /'; then privilege_hint "fw summary"; return 1; fi
   else
     echo "  No nftables/iptables found"
   fi
-  if have ufw; then
-    section "UFW status"
-    ufw status 2>/dev/null | sed 's/^/  /'
-  fi
+  if have ufw; then ufw status 2>/dev/null | sed 's/^/  /' || true; fi
 }
 
 fw_list() {
   local raw=0
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-    --raw) raw=1 ;;
-    esac
-    shift || true
-  done
+  while [[ $# -gt 0 ]]; do case "$1" in --raw) raw=1 ;; *) die "fw list: unknown option '$1'" ;; esac; shift || true; done
   section "Firewall rules"
   if have nft; then
-    if ((raw)); then
-      nft list ruleset
-    else
-      nft list ruleset | sed 's/^/  /'
-    fi
+    if ((raw)); then nft list ruleset || { privilege_hint "fw list"; return 1; }
+    else nft list ruleset | sed 's/^/  /' || { privilege_hint "fw list"; return 1; }; fi
   elif have iptables; then
-    if ((raw)); then
-      iptables-save
-    else
-      iptables -S | sed 's/^/  /'
-    fi
+    if ((raw)); then iptables-save || { privilege_hint "fw list"; return 1; }
+    else iptables -S | sed 's/^/  /' || { privilege_hint "fw list"; return 1; }; fi
   else
     echo "  No nftables/iptables found"
   fi
@@ -2202,16 +2270,12 @@ fw_list() {
 # -------------------- 15. Net report --------------------
 
 report_cmd() {
-  local out="$NETX_DIR/net-report.txt"
+  local out="" default_out=1
   while [[ $# -gt 0 ]]; do
-    case "$1" in
-    --out)
-      out="$2"
-      shift
-      ;;
-    esac
+    case "$1" in --out) out="$2"; default_out=0; shift ;; *) die "report: unknown option '$1'" ;; esac
     shift || true
   done
+  if ((default_out)); then ensure_state_dir; out="$(state_file net-report.txt)"; fi
   {
     echo "netx report $(date -Is)"
     ip_info || true
@@ -2364,24 +2428,37 @@ main() {
     dispatch_cmd "$cmd" "$@" >"$out" 2>"$errf" || rc=$?
     rc="${rc:-0}"
 
+    local jsonf
+    jsonf="$(mktemp 2>/dev/null || mktemp -t netx)"
     if ((NETX_JSON_NATIVE)); then
-      cat "$out"
+      cp -- "$out" "$jsonf"
     else
-      printf '{'
-      printf '"ok":%s,' "$([[ "$rc" -eq 0 ]] && echo true || echo false)"
-      printf '"exit_code":%s,' "$rc"
-      printf '"cmd":"%s",' "$(printf '%s' "$cmd" | json_escape)"
-      printf '"stdout":"%s",' "$(cat "$out" | json_escape)"
-      printf '"stderr":"%s"' "$(cat "$errf" | json_escape)"
-      printf '}
-'
+      {
+        printf '{'
+        printf '"ok":%s,' "$([[ "$rc" -eq 0 ]] && echo true || echo false)"
+        printf '"exit_code":%s,' "$rc"
+        printf '"cmd":"%s",' "$(printf '%s' "$cmd" | json_escape)"
+        printf '"stdout":"%s",' "$(cat "$out" | json_escape)"
+        printf '"stderr":"%s"' "$(cat "$errf" | json_escape)"
+        printf '}\n'
+      } >"$jsonf"
     fi
-    rm -f "$out" "$errf"
+    if ! validate_json_file "$jsonf"; then
+      err "internal JSON serialization failure"
+      rm -f -- "$out" "$errf" "$jsonf"
+      return 70
+    fi
+    cat "$jsonf"
+    rm -f -- "$out" "$errf" "$jsonf"
     return "$rc"
   fi
 
   dispatch_cmd "$cmd" "$@"
 }
 
+
+if [[ "${NETX_LIBRARY_MODE:-0}" == 1 ]]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 main "$@"
