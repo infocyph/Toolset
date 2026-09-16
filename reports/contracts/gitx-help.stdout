@@ -1,0 +1,112 @@
+Usage: gitx <command> [options]
+
+📂 Repository & Branch Management:
+  status                                           Show repository status, branch tracking, and remote info
+  fetch                                            Fetch remote branches and prune stale references
+  sync                                             Sync alpha and develop with master/main
+  create <branch_type> <name>                      Create a new branch from master/main
+      - branch_type: feature, bugfix, hotfix, release, docs, ci, experiment
+      - name: A short descriptive name for the branch
+  merge <source_branch> <target_branch>            Merge one branch into another
+      - source_branch: The branch to merge from
+      - target_branch: The branch to merge into
+  reset-branch                                     Reset current branch to remote state
+      - Interactive mode with soft/hard reset options
+  prune                                            Prune remote branches and delete local tracking branches
+  cleanup                                          Delete merged branches
+      - Prompts to confirm deletion
+  orphan-branches [days]                           List/delete unmerged branches older than N days (default: 30)
+  compare <branch1> <branch2>                      Compare two branches
+      - branch1: The first branch to compare (optional, default: current)
+      - branch2: The second branch to compare (optional, default: main)
+
+📦 Commit & Change Management:
+  ai-commit                                        Auto-generate commit message using Gemini AI
+      - Uses staged files to suggest a structured commit
+  commit                                           Interactive commit helper
+      - Allows selecting files and entering a commit message
+  amend                                            Amend the last commit message
+      - Optionally enter a new commit message or edit interactively
+  cherry-pick                                      Interactive cherry-pick helper
+  revert                                           Revert specific commits with options
+      - Interactive mode to select commits
+  unstage                                          Unstage all files
+      - Requires confirmation before unstaging
+  stage-deleted                                    Stage all deleted files
+  stage-deleted-dir <directory>                    Stage deleted files in a specific directory
+      - directory: Path to the directory
+  diff [output_file]                               Interactive staged diff (view/save)
+  diff <start> <end> [--stat|--name-only|--patch|--details] [--to-head] [-- <path...>]
+      - start/end: commit/tag OR YYYY-MM-DD YYYY-MM-DD
+      - tip: date diff is inclusive (start-commit parent → end-commit)
+
+🔍 Tracking & Reporting:
+  log-file <file_path>                             View commit history and diffs for a specific file
+      - file_path: Path to the file to inspect
+  commit-report <start_commit..end_commit>         Generate a commit report for a commit range
+  commit-report <start_date> <end_date>            Generate a commit report for a date range
+      - dates: YYYY-MM-DD format
+  worklog <range>|<start_date> <end_date>          Generate CSV worklog for task logs
+      - range: e.g., HEAD~50..HEAD
+      - dates: YYYY-MM-DD format
+  summary [commit_range] [include-all] [mode]      Summarize commits + surviving code per author
+  summary <start_date> <end_date> [include-all] [mode]  Same summary using date window (YYYY-MM-DD)
+      - commit_range: Optional, e.g., HEAD~50
+      - include-all: Optional, include all text-based files
+      - mode: heavy (default, full blame) | lite (no blame, fast)
+  report <start_commit> [end_commit] [file]        Generate PR and commit report
+  report <start_date> <end_date> [file]              Date window (YYYY-MM-DD) → first/last commit boundaries
+      - start_commit: The starting commit hash or tag
+      - end_commit: The ending commit hash or tag (default: HEAD)
+      - file: Output file for the report (optional)
+  count-changes <start_commit> [end_commit]        Count changes (insertions, deletions) between two commits
+  list-changes <branch1> <branch2>                 List files changed between two branches
+      - branch1: The first branch
+      - branch2: The second branch
+  changelog <start_commit> <end_commit>            Generate a changelog between commits or tags
+  changelog <start_date> <end_date> [file]           Date window (YYYY-MM-DD) → first/last commit boundaries
+      - start_commit: The starting commit hash or tag
+      - end_commit: The ending commit hash or tag
+
+🔖 Tags & Releases:
+  tag <version>                                    Tag the current branch with a version (e.g., v1.0.0)
+      - version: Must follow semantic versioning (vX.Y.Z)
+  latest-tag                                       Get the latest tag in the repository
+  initial-commit                                   Get the initial commit hash
+
+🗄️ Stashing & Cleanup:
+  stash [subcommand]                               Manage stash operations
+      - stash                      (interactive menu)
+      - stash save [msg...]           Save with message (default WIP-style)
+      - stash list                 List stashes
+      - stash apply <n>            Apply stash@{n}
+      - stash pop <n>              Pop stash@{n}
+      - stash drop <n>             Drop stash@{n}
+      - stash rename <n> <name...>    Rename stash@{n}
+      - stash clear                Delete all stashes
+  wip <save|list|pop|apply|clear>                  Opinionated WIP stash helper
+  clean [--force]                                 Clean untracked files and directories
+      - Interactive mode by default
+      - --force: Non-interactive full clean (git clean -fd)
+  large-files                                      Show the largest files in the repository
+      - Prompts for the number of files to display
+
+⚙️ Configuration & Utilities:
+  add-remote <name> <url>                          Add a new remote repository
+  push-remote <remote> <branch>                    Push to a specific remote branch
+  pull-remote <remote> <branch>                    Pull from a specific remote branch
+  config                                           Edit Git configuration (add/edit/remove keys)
+  set-lf                                           Set Git to use LF line endings
+  doctor                                           Run repository health checks
+  hooks init                                       Install Git hook templates
+  self-update                                      Update gitx to the latest version
+  summarize [short]                                Repository summary (branches, tags, contributors, etc.)
+
+🔹 Example Usages:
+  gitx commit                                      # Interactive commit helper
+  gitx report v1.0.0 v2.0.0                        # Generate PR and commit report
+  gitx reset-branch                                # Reset current branch to match remote
+  gitx compare develop main                        # Compare two branches
+  gitx summary HEAD~50 include-all heavy           # Full blame, accurate surviving code
+  gitx worklog 2025-01-01 2025-01-31               # CSV worklog for a month
+

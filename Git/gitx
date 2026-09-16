@@ -2182,12 +2182,37 @@ self_update() (
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf -- "$tmp_dir"' EXIT INT TERM
 
-  curl --fail --location --silent --show-error --retry 3 \
-    --connect-timeout 10 --max-time 120 \
-    "$base/SHA256SUMS" --output "$tmp_dir/SHA256SUMS"
-  curl --fail --location --silent --show-error --retry 3 \
-    --connect-timeout 10 --max-time 120 \
-    "$base/install.sh" --output "$tmp_dir/install.sh"
+  toolset_download_with_retry() {
+    local url="$1" output="$2"
+    local max_attempts="${TOOLSET_DOWNLOAD_ATTEMPTS:-4}"
+    local attempt rc=1
+
+    [[ "$max_attempts" =~ ^[1-9][0-9]*$ ]] || {
+      printf '%s: TOOLSET_DOWNLOAD_ATTEMPTS must be a positive integer\n' "$tool" >&2
+      return 2
+    }
+
+    for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+      if curl --fail --location --silent --show-error \
+        --connect-timeout 10 --max-time 120 \
+        "$url" --output "$output"; then
+        return 0
+      else
+        rc=$?
+      fi
+
+      if ((attempt < max_attempts)); then
+        printf '%s: download failed (attempt %d/%d); retrying...\n' \
+          "$tool" "$attempt" "$max_attempts" >&2
+        sleep "$attempt"
+      fi
+    done
+
+    return "$rc"
+  }
+
+  toolset_download_with_retry "$base/SHA256SUMS" "$tmp_dir/SHA256SUMS"
+  toolset_download_with_retry "$base/install.sh" "$tmp_dir/install.sh"
 
   checksum_line="$(awk '$2 == "install.sh" {print; exit}' "$tmp_dir/SHA256SUMS")"
   [[ -n "$checksum_line" ]] || {

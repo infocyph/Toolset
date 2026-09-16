@@ -1,0 +1,52 @@
+chromacat 1.3 – colourful text printer
+
+USAGE
+  chromacat [OPTIONS] [FILE]...
+
+COLOUR / ANIMATION
+  -p, --spread <f>         Rainbow spread (default 3.0)
+  -F, --freq   <f>         Rainbow frequency (default 0.1)
+  -S, --seed   <n>         Seed (0=random)
+  -a, --animate            Classic scrolling animation
+  -aa, --line              Line-by-line reveal animation
+      --style <name>       Animation style (classic|line|none)
+      --per-line           One colour per line (faster/log-friendly)
+  -d, --duration <sec>     Animation seconds (default 1)
+  -s, --speed <fps>        Frames / second (default 5.0)
+  -m, --match <regex>      Colour only matching text
+      --only-match         Hide non-matching characters
+      --strip-ansi         Strip ANSI before colouring
+      --log                Preset (no animation + per-line + stream-safe)
+      --stream             Stream-safe mode for tail -f / endless input
+
+APPEARANCE
+  -i, --invert             Invert foreground / background
+  -t, --truecolor          Prefer 24-bit colour if supported
+  -f, --force              Colour even if stdout not a TTY
+      --no-color           Disable colouring (also respects NO_COLOR)
+  -b, --box                Draw ASCII box (requires finite input)
+  -B, --box-style <name>   default|dashed|dash2|round|double|heavy|parchment|simple|shell|html|plus|comment|php|chain
+      --title <text>       Box title line
+      --center             Center-align box content
+      --pad <n>            Padding inside box (default 0)
+  -O, --orientation <o>    h|v|d (or horizontal|vertical|diagonal)
+  -P, --palette <file>     Palette file (HEX per line)
+  -T, --theme <name(s)>    Themes (comma list)
+      --list-themes        List themes and exit
+      --sample-theme <n>   Print theme sample and exit
+      --random-theme       Pick random theme
+  -I, --image <file>       ASCII-art mode via img2txt/jp2a/chafa
+      --blink              Blinking text
+      --image-opacity <n>  Image brightness (0–100, default 100)
+
+MISC
+      --cat                Raw byte-for-byte passthrough; disables presentation processing
+  -H, --header <text>      Render banner (figlet if available)
+  -U, --self-update        Fetch latest chromacat and replace current script
+  -v, --version            Print version and exit
+  -h, --help               Show this help
+
+EXAMPLES
+  echo "TEST" | chromacat
+  tail -f app.log | chromacat --log --strip-ansi --match 'ERROR|WARN'
+  echo "TEST" | chromacat -T neon --per-line -b -B round --title "ChromaCat" --center --pad 1

@@ -157,15 +157,41 @@ CURL_ARGS=(
   --location
   --silent
   --show-error
-  --retry 3
   --connect-timeout 10
   --max-time 120
 )
 
+DOWNLOAD_ATTEMPTS="${TOOLSET_DOWNLOAD_ATTEMPTS:-4}"
+[[ "$DOWNLOAD_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || {
+  printf 'install.sh: TOOLSET_DOWNLOAD_ATTEMPTS must be a positive integer\n' >&2
+  exit 2
+}
+
+download_with_retry() {
+  local url="$1" output="$2"
+  local attempt rc=1
+
+  for ((attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++)); do
+    if curl "${CURL_ARGS[@]}" "$url" --output "$output"; then
+      return 0
+    else
+      rc=$?
+    fi
+
+    if ((attempt < DOWNLOAD_ATTEMPTS)); then
+      printf 'install.sh: download failed (attempt %d/%d); retrying...\n' \
+        "$attempt" "$DOWNLOAD_ATTEMPTS" >&2
+      sleep "$attempt"
+    fi
+  done
+
+  return "$rc"
+}
+
 printf 'Fetching Toolset %s checksums...\n' "$RELEASE_LABEL"
-curl "${CURL_ARGS[@]}" \
+download_with_retry \
   "$BASE_URL/SHA256SUMS" \
-  --output "$TMP_DIR/SHA256SUMS"
+  "$TMP_DIR/SHA256SUMS"
 
 for tool in "${SELECTED[@]}"; do
   printf 'Installing %s from %s...\n' "$tool" "$RELEASE_LABEL"
@@ -176,9 +202,9 @@ for tool in "${SELECTED[@]}"; do
     exit 1
   }
 
-  curl "${CURL_ARGS[@]}" \
+  download_with_retry \
     "$BASE_URL/$tool" \
-    --output "$TMP_DIR/$tool"
+    "$TMP_DIR/$tool"
 
   (
     cd "$TMP_DIR"
