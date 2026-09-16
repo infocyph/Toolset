@@ -94,4 +94,89 @@ t, count = re.subn(http_pattern, lambda _m: http_replacement, t, count=1, flags=
 if count != 1:
     raise SystemExit('generated http_trace function not found')
 
+# The source previously nested route_explain inside route_show because the
+# route_show closing brace was misplaced. Replace both functions as one block
+# so direct `route explain` is always defined and native JSON is escaped safely.
+route_pattern = r'''route_show\(\) \{.*?\n\}\n\n# -------------------- 10\. Watchers / Waiters'''
+route_replacement = r'''route_show() {
+  have ip || die "ip required"
+  section "Routes"
+  printf '%-8s %-20s %-12s %-s\n' "Type" "Destination" "Dev" "Extra"
+  ip route show | while read -r dst rest; do
+    local dev extra typ="other"
+    dev=$(grep -o 'dev [^ ]*' <<<"$rest" | awk '{print $2}' || true)
+    if [[ -n "$dev" ]]; then extra=$(sed "s/.*dev $dev//" <<<"$rest"); else extra="$rest"; fi
+    [[ "$dst" == "default" ]] && typ="default"
+    printf '%-8s %-20s %-12s %-s\n' "$typ" "$dst" "$dev" "$extra"
+  done
+}
+
+route_explain() {
+  local target="${1:-}"
+  [[ -n "$target" ]] || die "route explain: host required"
+  have ip || die "route explain: ip required"
+
+  local ip_addr=""
+  if [[ "$target" == *:* || "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    ip_addr="$target"
+  elif have dig; then
+    ip_addr=$(dig +time=2 +tries=1 +short "$target" A 2>/dev/null | head -n1 || true)
+    [[ -z "$ip_addr" ]] && ip_addr=$(dig +time=2 +tries=1 +short "$target" AAAA 2>/dev/null | head -n1 || true)
+  fi
+  if [[ -z "$ip_addr" ]] && have getent; then
+    ip_addr=$(getent ahostsv4 "$target" 2>/dev/null | awk 'NR==1{print $1}' || true)
+    [[ -z "$ip_addr" ]] && ip_addr=$(getent ahostsv6 "$target" 2>/dev/null | awk 'NR==1{print $1}' || true)
+  fi
+  [[ -z "$ip_addr" ]] && ip_addr="$target"
+
+  local out
+  out=$(ip route get "$ip_addr" 2>/dev/null || true)
+
+  if ((NETX_QUIET)); then
+    local dev
+    dev=$(grep -oE ' dev [^ ]+' <<<"$out" | awk '{print $2}' || true)
+    [[ -n "$dev" ]] && { echo "$dev"; return 0; }
+    echo "$out"
+    return 0
+  fi
+
+  if ((NETX_JSON)); then
+    NETX_JSON_NATIVE=1
+    local dev gw src
+    dev=$(grep -oE ' dev [^ ]+' <<<"$out" | awk '{print $2}' || true)
+    gw=$(grep -oE ' via [^ ]+' <<<"$out" | awk '{print $2}' || true)
+    src=$(grep -oE ' src [^ ]+' <<<"$out" | awk '{print $2}' || true)
+    printf '{"target":"%s","ip":"%s","dev":"%s","via":"%s","src":"%s","raw":"%s"}\n' \
+      "$(printf '%s' "$target" | json_escape)" \
+      "$(printf '%s' "$ip_addr" | json_escape)" \
+      "$(printf '%s' "${dev:-}" | json_escape)" \
+      "$(printf '%s' "${gw:-}" | json_escape)" \
+      "$(printf '%s' "${src:-}" | json_escape)" \
+      "$(printf '%s' "$out" | json_escape)"
+    return 0
+  fi
+
+  section "Route explain"
+  kv "Target" "$target"
+  kv "Resolved IP" "$ip_addr"
+  if [[ -z "$out" ]]; then
+    echo "  ${c_err}No route found${c_reset}"
+    return 1
+  fi
+  echo "  $out"
+  local dev gw src
+  dev=$(grep -oE ' dev [^ ]+' <<<"$out" | awk '{print $2}' || true)
+  gw=$(grep -oE ' via [^ ]+' <<<"$out" | awk '{print $2}' || true)
+  src=$(grep -oE ' src [^ ]+' <<<"$out" | awk '{print $2}' || true)
+  [[ -n "$dev" ]] && kv "Interface" "$dev"
+  [[ -n "$gw" ]] && kv "Gateway" "$gw"
+  [[ -n "$src" ]] && kv "Source IP" "$src"
+  return 0
+}
+
+# -------------------- 10. Watchers / Waiters'''
+t, count = re.subn(route_pattern, lambda _m: route_replacement, t, count=1, flags=re.S)
+if count != 1:
+    raise SystemExit('generated route block not found')
+
 p.write_text(t)
