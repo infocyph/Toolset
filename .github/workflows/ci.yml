@@ -238,6 +238,18 @@ jobs:
               ;;
           esac
 
+  release_delivery:
+    name: Simulated 2.0 release delivery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Verify exact 2.0 install/self-update delivery with transient retry
+        run: bash tests/release-delivery.sh
+
   distribution:
     name: Standalone distribution artifacts
     runs-on: ubuntu-latest
@@ -270,6 +282,7 @@ jobs:
       - governance
       - contracts
       - distro
+      - release_delivery
       - distribution
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -285,6 +298,7 @@ jobs:
           GOVERNANCE_RESULT: ${{ needs.governance.result }}
           CONTRACT_RESULT: ${{ needs.contracts.result }}
           DISTRO_RESULT: ${{ needs.distro.result }}
+          RELEASE_DELIVERY_RESULT: ${{ needs.release_delivery.result }}
           DISTRIBUTION_RESULT: ${{ needs.distribution.result }}
         run: |
           {
@@ -300,6 +314,7 @@ jobs:
             echo "| Docs/security governance | $GOVERNANCE_RESULT |"
             echo "| CLI contracts | $CONTRACT_RESULT |"
             echo "| Distro smoke | $DISTRO_RESULT |"
+            echo "| Simulated 2.0 release delivery | $RELEASE_DELIVERY_RESULT |"
             echo "| Distribution | $DISTRIBUTION_RESULT |"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -312,6 +327,7 @@ jobs:
             "$GOVERNANCE_RESULT" \
             "$CONTRACT_RESULT" \
             "$DISTRO_RESULT" \
+            "$RELEASE_DELIVERY_RESULT" \
             "$DISTRIBUTION_RESULT"; do
             [[ "$result" == success ]] || exit 1
           done
