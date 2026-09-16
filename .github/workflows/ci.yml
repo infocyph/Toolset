@@ -15,6 +15,158 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  phase1-autofix:
+    name: Phase 1 targeted autofix
+    if: github.event_name == 'pull_request' && github.head_ref == 'plan/toolset-linux-cli-hardening'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout head branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+
+      - name: Apply targeted source fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('Network/netx')
+          text = path.read_text()
+          text = text.replace('grep -E ":$port[[:space:]]"', 'grep -E ":${port}[[:space:]]"', 1)
+          path.write_text(text)
+
+          path = Path('PHP/phpx')
+          text = path.read_text()
+          if '  _phpx_progress() {' in text and '  # Collect file list (null-safe)' in text:
+              start = text.index('  _phpx_progress() {')
+              end = text.index('  # Collect file list (null-safe)', start)
+              block = text[start:end]
+              if 'carriage return' in block and "printf '\\r\\033[2K%-*.*s'" not in block:
+                  replacement = '''  _phpx_progress() {
+            (( show_progress )) || return 0
+            local msg="$1"
+            # \\r = carriage return, \\033[2K = clear whole line
+            printf '\\r\\033[2K%-*.*s' "$cols" "$cols" "$msg" >&2
+          }
+
+          _phpx_clear_line() {
+            (( show_progress )) || return 0
+            printf '\\r\\033[2K' >&2
+          }
+
+'''
+                  text = text[:start] + replacement + text[end:]
+          path.write_text(text)
+
+          path = Path('Docker/dockex')
+          text = path.read_text()
+          if 'VERSION="2.0.0-dev"' not in text:
+              text = text.replace('set -euo pipefail\n', 'set -euo pipefail\n\nVERSION="2.0.0-dev"\n', 1)
+          deps = 'require_cmd docker\nrequire_cmd jq\nrequire_cmd awk\n\n'
+          if deps in text:
+              text = text.replace(deps, '', 1)
+          marker = '}\n\n# ------------------ container helpers ------------------- #'
+          if 'printf \'dockex %s\\n\'' not in text and marker in text:
+              insert = '''}
+
+          case "${1:-}" in
+          -h | --help | help)
+            show_usage
+            exit 0
+            ;;
+          -V | --version | version)
+            printf 'dockex %s\\n' "$VERSION"
+            exit 0
+            ;;
+          esac
+
+          require_cmd docker
+          require_cmd jq
+          require_cmd awk
+
+          # ------------------ container helpers ------------------- #'''
+              text = text.replace(marker, insert, 1)
+          path.write_text(text)
+
+          path = Path('Git/gitx')
+          text = path.read_text()
+          if 'VERSION="2.0.0-dev"' not in text:
+              text = text.replace('#!/bin/bash\n', '#!/bin/bash\n\nVERSION="2.0.0-dev"\n', 1)
+          text = text.replace('  echo ""\n  exit 1\n}\n\nrequire_sudo() {', '  echo ""\n}\n\nrequire_sudo() {', 1)
+          dispatch = 'case "$cmd" in\nai-commit) generate_ai_commit ;;'
+          if dispatch in text:
+              text = text.replace(dispatch, '''case "$cmd" in
+          -h | --help | help) usage ;;
+          -V | --version | version) printf 'gitx %s\\n' "$VERSION" ;;
+          "") usage ;;
+          ai-commit) generate_ai_commit ;;''', 1)
+          invalid = 'summary) generate_git_summary "$@" ;;\n*) usage ;;\nesac'
+          if invalid in text:
+              text = text.replace(invalid, '''summary) generate_git_summary "$@" ;;
+          *)
+            echo "Error: Unknown command '$cmd'." >&2
+            usage >&2
+            exit 2
+            ;;
+          esac''', 1)
+          path.write_text(text)
+
+          path = Path('Sqlite/sqlitex')
+          text = path.read_text()
+          if 'VERSION="2.0.0-dev"' not in text:
+              text = text.replace('#!/usr/bin/env bash\nset -euo pipefail\n', '#!/usr/bin/env bash\nset -euo pipefail\n\nVERSION="2.0.0-dev"\n', 1)
+          old = '''  tune             [--profile dev|prod|safe]
+          EOF
+            exit 1
+          }
+
+          # Parse global options'''
+          if old in text:
+              new = '''  tune             [--profile dev|prod|safe]
+          EOF
+          }
+
+          case "${1:-}" in
+          -h | --help | help)
+            usage
+            exit 0
+            ;;
+          -V | --version | version)
+            printf 'sqlitex %s\\n' "$VERSION"
+            exit 0
+            ;;
+          esac
+
+          # Parse global options'''
+              text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+
+      - name: Validate and push if changed
+        shell: bash
+        run: |
+          bash -n Network/netx
+          bash -n PHP/phpx
+          bash -n Docker/dockex
+          bash -n Git/gitx
+          bash -n Sqlite/sqlitex
+
+          if git diff --quiet; then
+            echo 'No Phase 1 source fixes remain to apply.'
+            exit 0
+          fi
+
+          git config user.name 'A. B. M. Mahmudul Hasan'
+          git config user.email 'abmmhasan@users.noreply.github.com'
+          git add Network/netx PHP/phpx Docker/dockex Git/gitx Sqlite/sqlitex
+          git commit -m 'fix: normalize phase 1 CLI contracts and static errors'
+          git push origin HEAD:plan/toolset-linux-cli-hardening
+
   static:
     name: Static shell validation
     runs-on: ubuntu-latest
