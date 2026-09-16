@@ -97,6 +97,27 @@ jobs:
         if: ${{ hashFiles('tests/sqlitex.sh') != '' }}
         run: bash tests/sqlitex.sh
 
+  security:
+    name: Security and automation integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install security integration dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            jq iproute2 netcat-openbsd openssl curl file
+
+      - name: Run netx security/network checks
+        run: bash tests/netx.sh
+
+      - name: Run gitx repository/AI checks
+        run: bash tests/gitx.sh
+
   contracts:
     name: Standalone CLI contracts
     runs-on: ubuntu-latest
@@ -192,6 +213,7 @@ jobs:
       - static
       - smoke
       - safety
+      - security
       - contracts
       - distro
       - distribution
@@ -204,6 +226,7 @@ jobs:
           STATIC_RESULT: ${{ needs.static.result }}
           SMOKE_RESULT: ${{ needs.smoke.result }}
           SAFETY_RESULT: ${{ needs.safety.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
           CONTRACT_RESULT: ${{ needs.contracts.result }}
           DISTRO_RESULT: ${{ needs.distro.result }}
           DISTRIBUTION_RESULT: ${{ needs.distribution.result }}
@@ -216,6 +239,7 @@ jobs:
             echo "| Static/workflows | $STATIC_RESULT |"
             echo "| Baseline smoke | $SMOKE_RESULT |"
             echo "| High-impact safety | $SAFETY_RESULT |"
+            echo "| Security/automation | $SECURITY_RESULT |"
             echo "| CLI contracts | $CONTRACT_RESULT |"
             echo "| Distro smoke | $DISTRO_RESULT |"
             echo "| Distribution | $DISTRIBUTION_RESULT |"
@@ -225,6 +249,7 @@ jobs:
             "$STATIC_RESULT" \
             "$SMOKE_RESULT" \
             "$SAFETY_RESULT" \
+            "$SECURITY_RESULT" \
             "$CONTRACT_RESULT" \
             "$DISTRO_RESULT" \
             "$DISTRIBUTION_RESULT"; do
