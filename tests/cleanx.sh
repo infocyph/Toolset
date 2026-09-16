@@ -118,7 +118,18 @@ pass "unknown option fails clearly"
 # JSON mode must reserve stdout for one parseable JSON document.
 json_out="$TMP_ROOT/report.json"
 json_log="$TMP_ROOT/report.stderr"
+set +e
 timeout 30 bash Clean/cleanx --json --dry-run report >"$json_out" 2>"$json_log"
+json_rc=$?
+set -e
+if ((json_rc != 0)); then
+  printf 'cleanx JSON report failed with status %d\n' "$json_rc" >&2
+  printf '%s\n' '--- stderr ---' >&2
+  cat "$json_log" >&2 || true
+  printf '%s\n' '--- stdout ---' >&2
+  cat "$json_out" >&2 || true
+  fail "JSON report command failed"
+fi
 python3 - "$json_out" <<'PY'
 import json
 import sys
