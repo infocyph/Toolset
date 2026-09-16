@@ -48,6 +48,26 @@ bash install.sh gitx netx sqlitex
 bash install.sh --all
 ```
 
+### Single-tool one-liners
+
+For a quick individual install, use the same checksum-verifying installer in one command. This intentionally avoids `curl | bash`:
+
+```bash
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh chromacat && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh cleanx && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh dockex && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh gitx && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh netx && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh phpx && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh sqlitex && rm -f install.sh
+```
+
+For an exact Toolset 2.0 install, replace `releases/latest/download` with `releases/download/2.0` and pass `--release 2.0`, for example:
+
+```bash
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/download/2.0/install.sh" && bash install.sh --release 2.0 chromacat && rm -f install.sh
+```
+
 Use another writable installation directory when needed:
 
 ```bash
@@ -95,13 +115,10 @@ install -m 0755 "$tool" "$HOME/.local/bin/$tool"
 
 Stable Toolset suite tags use `MAJOR.MINOR`; Toolset 2.0 is published from immutable tag `2.0`.
 
-
 <!-- TOOLSET2-ROOT-CONTRACT:START -->
 ## Support, Safety & Automation Contracts
 
 - [CLI dependency/capability, security and output contracts](docs/cli-contracts.md)
-- [Toolset 2.0 implementation plan](docs/plans/toolset-2.0-standalone-linux-cli-hardening-plan.md)
-- [Live 2.0 implementation tracker](docs/plans/toolset-2.0-progress-tracker.md)
 - [2.0 security review](docs/security-review.md)
 
 Toolset targets Linux with capability-gated features rather than claiming identical behavior on every distribution. CI smoke-covers Debian 13, Ubuntu 24.04, Fedora 42 and Alpine 3.22 with Bash. High-impact operations remain tool-specific and are documented in each tool README and the suite contract.
