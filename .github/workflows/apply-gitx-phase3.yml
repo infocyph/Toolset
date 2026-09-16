@@ -6,6 +6,7 @@ on:
       - plan/toolset-linux-cli-hardening
     paths:
       - tests/patch-gitx-phase3.py
+      - tests/fix-gitx-generated.py
       - tests/gitx.sh
       - .github/workflows/apply-gitx-phase3.yml
 
@@ -24,7 +25,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply gitx hardening
-        run: python3 tests/patch-gitx-phase3.py
+        run: |
+          python3 tests/patch-gitx-phase3.py
+          python3 tests/fix-gitx-generated.py
 
       - name: Install validation dependencies
         run: |
