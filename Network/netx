@@ -2,7 +2,7 @@
 # netx - Network toolbox for diagnostics, security and benchmarks
 set -euo pipefail
 
-VERSION="2.0"
+VERSION="2.0.1"
 
 # Global flags (set in main)
 NETX_JSON=0
