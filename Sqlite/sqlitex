@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.0"
+VERSION="2.0.1"
 
 # ===========================================
 # Global Configuration (with defaults)
