@@ -11,13 +11,13 @@ Latest stable (checksum-verifying installer):
 
 ```bash
 curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
-bash install.sh netx
+sudo bash install.sh netx
 ```
 
 Exact reproducible release:
 
 ```bash
-bash install.sh --release 2.0 netx
+sudo bash install.sh --release 2.0.1 netx
 ```
 
 ## Requirements
@@ -52,7 +52,7 @@ Exit `0` means success; non-zero means the requested operation did not complete 
 
 ## Self-update
 
-Where `netx` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=2.0` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
+Where `netx` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=2.0.1` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
 
 ## Examples
 
@@ -87,7 +87,7 @@ It’s **non-invasive** – just thin wrappers over `ip`, `ss`/`netstat`, `curl`
 
 ```bash
 curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
-bash install.sh netx
+sudo bash install.sh netx
 ```
 
 (Adjust the path if your repo layout is different.)

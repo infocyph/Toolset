@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 REPOSITORY="infocyph/Toolset"
-PREFIX="${HOME}/.local/bin"
+PREFIX="/usr/local/bin"
 RELEASE="latest"
 
 TOOLS=(chromacat cleanx dockex gitx netx phpx sqlitex)
@@ -16,18 +16,18 @@ Install one or more standalone Toolset CLIs from immutable GitHub release assets
 
 Options:
   --all                 Install all Toolset CLIs.
-  --release <version>   Install an exact suite release tag (for example 2.0).
+  --release <version>   Install an exact suite release tag (for example 2.0.1).
   --latest              Install from the latest stable GitHub release (default).
-  --prefix <dir>        Installation directory (default: ~/.local/bin).
+  --prefix <dir>        Installation directory (default: /usr/local/bin).
   --list                List available tool names.
   -h, --help            Show this help.
 
 Examples:
-  bash install.sh gitx
-  bash install.sh --release 2.0 gitx netx
-  bash install.sh --release 2.0 --all
-  bash install.sh --all
-  bash install.sh --prefix /usr/local/bin dockex
+  sudo bash install.sh gitx
+  sudo bash install.sh --release 2.0.1 gitx netx
+  sudo bash install.sh --release 2.0.1 --all
+  sudo bash install.sh --all
+  bash install.sh --prefix "$HOME/bin" dockex
 
 The installer downloads SHA256SUMS from the same release, verifies every selected
 asset, runs bash -n and --version, then atomically replaces the destination file.

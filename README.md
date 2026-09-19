@@ -34,18 +34,18 @@ Stable installations use **GitHub release assets**, not the mutable `main` branc
 
 ### Latest stable release
 
-The release installer defaults to `~/.local/bin` and verifies every selected tool against `SHA256SUMS` before installation:
+The release installer defaults to `/usr/local/bin` and verifies every selected tool against `SHA256SUMS` before installation:
 
 ```bash
 curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
-bash install.sh gitx
+sudo bash install.sh gitx
 ```
 
 Install several tools or the whole suite:
 
 ```bash
-bash install.sh gitx netx sqlitex
-bash install.sh --all
+sudo bash install.sh gitx netx sqlitex
+sudo bash install.sh --all
 ```
 
 ### One liners
@@ -53,50 +53,52 @@ bash install.sh --all
 For a quick all/individual install, use the same checksum-verifying installer in one command.
 
 ```bash
-curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh --all && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && sudo bash install.sh --all && rm -f install.sh
 ```
 
 ```bash
-curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh chromacat && rm -f install.sh
-curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh cleanx && rm -f install.sh
-curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh dockex && rm -f install.sh
-curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh gitx && rm -f install.sh
-curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh netx && rm -f install.sh
-curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh phpx && rm -f install.sh
-curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && bash install.sh sqlitex && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && sudo bash install.sh chromacat && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && sudo bash install.sh cleanx && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && sudo bash install.sh dockex && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && sudo bash install.sh gitx && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && sudo bash install.sh netx && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && sudo bash install.sh phpx && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" && sudo bash install.sh sqlitex && rm -f install.sh
 ```
 
-For an exact Toolset 2.0 install, replace `releases/latest/download` with `releases/download/2.0` and pass `--release 2.0`, for example:
+For an exact Toolset 2.0.1 install, replace `releases/latest/download` with `releases/download/2.0.1` and pass `--release 2.0.1`, for example:
 
 ```bash
-curl -fsSLO "https://github.com/infocyph/Toolset/releases/download/2.0/install.sh" && bash install.sh --release 2.0 chromacat && rm -f install.sh
+curl -fsSLO "https://github.com/infocyph/Toolset/releases/download/2.0.1/install.sh" && sudo bash install.sh --release 2.0.1 chromacat && rm -f install.sh
 ```
 
-Use another writable installation directory when needed:
+The installer defaults to `/usr/local/bin`, so normal installation uses explicit privilege elevation:
+
+```bash
+sudo bash install.sh gitx
+```
+
+The installer never invokes `sudo` itself. For a deliberate user-local install, override the prefix explicitly:
 
 ```bash
 bash install.sh --prefix "$HOME/bin" gitx
 ```
 
-For a system-wide directory, privilege elevation is explicit; the installer never invokes `sudo` itself:
-
-```bash
-sudo bash install.sh --prefix /usr/local/bin gitx
-```
+When upgrading from Toolset 2.0, an older copy under `~/.local/bin` is not removed automatically. If your shell puts that directory before `/usr/local/bin`, check resolution with `type -a gitx` (or the relevant tool) and remove the stale user-local copy manually after verifying the new installation.
 
 ### Exact reproducible release
 
 Pin the suite release and verify the installer itself before running it:
 
 ```bash
-release="2.0"
+release="2.0.1"
 base="https://github.com/infocyph/Toolset/releases/download/${release}"
 
 curl -fsSLO "${base}/install.sh"
 curl -fsSLO "${base}/SHA256SUMS"
 grep '  install.sh$' SHA256SUMS | sha256sum -c -
 
-bash install.sh --release "$release" gitx netx
+sudo bash install.sh --release "$release" gitx netx
 ```
 
 The installer also verifies each requested CLI, syntax-checks it, validates its `--version` contract, stages the replacement in the destination directory, and preserves an existing installation as `<tool>.previous`.
@@ -106,7 +108,7 @@ The installer also verifies each requested CLI, syntax-checks it, validates its 
 You can install a release asset without the installer:
 
 ```bash
-release="2.0"
+release="2.0.1"
 tool="gitx"
 base="https://github.com/infocyph/Toolset/releases/download/${release}"
 
@@ -114,10 +116,10 @@ curl -fsSLO "${base}/${tool}"
 curl -fsSLO "${base}/SHA256SUMS"
 grep "  ${tool}$" SHA256SUMS | sha256sum -c -
 
-install -m 0755 "$tool" "$HOME/.local/bin/$tool"
+sudo install -m 0755 "$tool" "/usr/local/bin/$tool"
 ```
 
-Stable Toolset suite tags use `MAJOR.MINOR`; Toolset 2.0 is published from immutable tag `2.0`.
+Stable Toolset suite tags use `MAJOR.MINOR` or `MAJOR.MINOR.PATCH`. Toolset 2.0 remains immutable at tag `2.0`; this maintenance release is `2.0.1`.
 
 <!-- TOOLSET2-ROOT-CONTRACT:START -->
 ## Support, Safety & Automation Contracts
@@ -127,7 +129,7 @@ Stable Toolset suite tags use `MAJOR.MINOR`; Toolset 2.0 is published from immut
 
 Toolset targets Linux with capability-gated features rather than claiming identical behavior on every distribution. CI smoke-covers Debian 13, Ubuntu 24.04, Fedora 42 and Alpine 3.22 with Bash. High-impact operations remain tool-specific and are documented in each tool README and the suite contract.
 
-Released consumers should pin immutable stable tag `2.0` or the tagged commit SHA; published assets are immutable.
+Released consumers should pin immutable stable tag `2.0.1` (or another exact release tag) or the tagged commit SHA; published assets are immutable.
 <!-- TOOLSET2-ROOT-CONTRACT:END -->
 ---
 

@@ -11,13 +11,13 @@ Latest stable (checksum-verifying installer):
 
 ```bash
 curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
-bash install.sh gitx
+sudo bash install.sh gitx
 ```
 
 Exact reproducible release:
 
 ```bash
-bash install.sh --release 2.0 gitx
+sudo bash install.sh --release 2.0.1 gitx
 ```
 
 ## Requirements
@@ -52,7 +52,7 @@ Exit `0` means success; non-zero means the requested operation did not complete 
 
 ## Self-update
 
-Where `gitx` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=2.0` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
+Where `gitx` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=2.0.1` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
 
 ## Examples
 
@@ -81,7 +81,7 @@ It never hides Git – it just wires composable commands into practical workflow
 
 ```bash
 curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
-bash install.sh gitx
+sudo bash install.sh gitx
 ````
 
 ## Usage
@@ -852,7 +852,7 @@ Optionally activates them by copying without `.gitx`.
 #### `self-update`
 
 ```bash
-gitx self-update
+sudo gitx self-update
 ```
 
 Downloads latest script from GitHub, compares SHA-256, backs up and replaces if newer.
@@ -881,6 +881,6 @@ gitx summary HEAD~100 include-all heavy
 gitx worklog 2025-01-01 2025-01-31 >worklog-2025-01.csv
 gitx doctor
 gitx hooks init
-gitx self-update
+sudo gitx self-update
 gitx large-files
 ```

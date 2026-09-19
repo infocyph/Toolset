@@ -43,7 +43,7 @@ pass "packaged installer asset: install.sh"
 pass "SHA256SUMS generated and verified"
 
 DIST_DIR="$DIST_DIR" \
-SUITE_VERSION="${SUITE_VERSION:-2.0}" \
+SUITE_VERSION="${SUITE_VERSION:-2.0.1}" \
 RELEASE_TAG="${RELEASE_TAG:-}" \
 SOURCE_COMMIT="${SOURCE_COMMIT:-}" \
   python3 tests/generate-manifest.py >/dev/null
