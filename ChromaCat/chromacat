@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-VERSION="2.0"
+VERSION="2.0.1"
 
 # ---------------------------- defaults ----------------------------
 spread=3.0  freq=0.1  seed=0
