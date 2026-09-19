@@ -16,7 +16,7 @@ Install one or more standalone Toolset CLIs from immutable GitHub release assets
 
 Options:
   --all                 Install all Toolset CLIs.
-  --release <version>   Install an exact suite release tag (for example 2.0).
+  --release <version>   Install an exact suite release tag (for example 2.0.1).
   --latest              Install from the latest stable GitHub release (default).
   --prefix <dir>        Installation directory (default: /usr/local/bin).
   --list                List available tool names.
