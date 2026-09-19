@@ -84,6 +84,8 @@ The installer never invokes `sudo` itself. For a deliberate user-local install, 
 bash install.sh --prefix "$HOME/bin" gitx
 ```
 
+When upgrading from Toolset 2.0, an older copy under `~/.local/bin` is not removed automatically. If your shell puts that directory before `/usr/local/bin`, check resolution with `type -a gitx` (or the relevant tool) and remove the stale user-local copy manually after verifying the new installation.
+
 ### Exact reproducible release
 
 Pin the suite release and verify the installer itself before running it:
