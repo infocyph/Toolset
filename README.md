@@ -34,18 +34,18 @@ Stable installations use **GitHub release assets**, not the mutable `main` branc
 
 ### Latest stable release
 
-The release installer defaults to `~/.local/bin` and verifies every selected tool against `SHA256SUMS` before installation:
+The release installer defaults to `/usr/local/bin` and verifies every selected tool against `SHA256SUMS` before installation:
 
 ```bash
 curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
-bash install.sh gitx
+sudo bash install.sh gitx
 ```
 
 Install several tools or the whole suite:
 
 ```bash
-bash install.sh gitx netx sqlitex
-bash install.sh --all
+sudo bash install.sh gitx netx sqlitex
+sudo bash install.sh --all
 ```
 
 ### One liners
@@ -106,7 +106,7 @@ The installer also verifies each requested CLI, syntax-checks it, validates its 
 You can install a release asset without the installer:
 
 ```bash
-release="2.0"
+release="2.0.1"
 tool="gitx"
 base="https://github.com/infocyph/Toolset/releases/download/${release}"
 
@@ -127,7 +127,7 @@ Stable Toolset suite tags use `MAJOR.MINOR` or `MAJOR.MINOR.PATCH`. Toolset 2.0 
 
 Toolset targets Linux with capability-gated features rather than claiming identical behavior on every distribution. CI smoke-covers Debian 13, Ubuntu 24.04, Fedora 42 and Alpine 3.22 with Bash. High-impact operations remain tool-specific and are documented in each tool README and the suite contract.
 
-Released consumers should pin immutable stable tag `2.0` or the tagged commit SHA; published assets are immutable.
+Released consumers should pin immutable stable tag `2.0.1` (or another exact release tag) or the tagged commit SHA; published assets are immutable.
 <!-- TOOLSET2-ROOT-CONTRACT:END -->
 ---
 
