@@ -239,7 +239,7 @@ jobs:
           esac
 
   release_delivery:
-    name: Simulated 2.0 release delivery
+    name: Simulated 2.0.1 release delivery
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
@@ -247,7 +247,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Verify exact 2.0 install/self-update delivery with transient retry
+      - name: Verify exact 2.0.1 install/self-update delivery with transient retry
         run: bash tests/release-delivery.sh
 
   distribution:
