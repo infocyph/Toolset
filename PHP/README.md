@@ -11,13 +11,13 @@ Latest stable (checksum-verifying installer):
 
 ```bash
 curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
-bash install.sh phpx
+sudo bash install.sh phpx
 ```
 
 Exact reproducible release:
 
 ```bash
-bash install.sh --release 2.0 phpx
+sudo bash install.sh --release 2.0.1 phpx
 ```
 
 ## Requirements
@@ -52,7 +52,7 @@ Exit `0` means success; non-zero means the requested operation did not complete 
 
 ## Self-update
 
-Where `phpx` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=2.0` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
+Where `phpx` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=2.0.1` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
 
 ## Examples
 
@@ -113,7 +113,7 @@ High-impact commands (`switch`, `install`, `remove`, `sury`, `self-update`) run 
 
 ```bash
 curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
-bash install.sh phpx
+sudo bash install.sh phpx
 ```
 
 ---
@@ -478,7 +478,7 @@ Adds Sury/Ondřej repo (Debian/Ubuntu) and runs `apt update`.
 #### `self-update`
 
 ```bash
-phpx self-update
+sudo phpx self-update
 ```
 
 Updates `/usr/local/bin/phpx` from the official source.
@@ -517,7 +517,7 @@ phpx ext 8.2 --install=redis,imagick
 phpx syntax --exclude storage --exclude bootstrap/cache
 
 phpx sury
-phpx self-update
+sudo phpx self-update
 ```
 
 ---
