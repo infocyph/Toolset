@@ -28,7 +28,9 @@ pass "all distributable scripts are present and non-empty"
 
 installer_help="$(HOME="$(mktemp -d)" bash install.sh --help)"
 assert_contains "$installer_help" "Install one or more standalone Toolset CLIs" "installer help contract"
-pass "installer --help works without network access"
+assert_contains "$installer_help" "default: /usr/local/bin" "installer default prefix contract"
+grep -Fq 'PREFIX="/usr/local/bin"' install.sh || fail "installer default prefix must be /usr/local/bin"
+pass "installer --help works without network access and defaults to /usr/local/bin"
 
 installer_list="$(bash install.sh --list)"
 for name in chromacat cleanx dockex gitx netx phpx sqlitex; do
