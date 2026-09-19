@@ -11,13 +11,13 @@ Latest stable (checksum-verifying installer):
 
 ```bash
 curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
-bash install.sh chromacat
+sudo bash install.sh chromacat
 ```
 
 Exact reproducible release:
 
 ```bash
-bash install.sh --release 2.0 chromacat
+sudo bash install.sh --release 2.0.1 chromacat
 ```
 
 ## Requirements
@@ -52,7 +52,7 @@ Exit `0` means success; non-zero means the requested operation did not complete 
 
 ## Self-update
 
-Where `chromacat` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=2.0` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
+Where `chromacat` exposes self-update, the stable channel uses checksum-verified GitHub release assets. `TOOLSET_SELF_UPDATE_RELEASE=2.0.1` may pin an exact release for acceptance/rollback verification; mutable `main` is never the stable default. If the tool does not expose self-update, reinstall through the release installer.
 
 ## Examples
 
@@ -83,7 +83,7 @@ When it can’t safely colour (or you didn’t ask for anything special), it beh
 
 ```bash
 curl -fsSLO "https://github.com/infocyph/Toolset/releases/latest/download/install.sh"
-bash install.sh chromacat
+sudo bash install.sh chromacat
 ```
 
 Or keep it in your `$HOME/bin` and add that to `PATH`.
@@ -337,8 +337,8 @@ chromacat -H "Release v1.0.0" -b --box-style double --center --pad 1
 #### Self-update
 
 ```bash
-chromacat --self-update
-CHROMACAT_PATH=/usr/local/bin/chromacat chromacat -U
+sudo chromacat --self-update
+sudo env CHROMACAT_PATH=/usr/local/bin/chromacat chromacat -U
 ```
 
 The updater:
@@ -348,7 +348,7 @@ The updater:
 3. If `sha256sum` is available, compares local vs remote
 4. Replaces the target and makes it executable
 
-If it cannot overwrite the target, it suggests `sudo` or setting `CHROMACAT_PATH`.
+The default `/usr/local/bin` installation is root-owned, so self-update normally uses `sudo`. A custom writable `--prefix` installation may update without elevation.
 
 ---
 
