@@ -31,8 +31,8 @@ jobs:
           set -Eeuo pipefail
           tag="$GITHUB_REF_NAME"
 
-          if ! [[ "$tag" =~ ^[0-9]+\.[0-9]+$ ]]; then
-            echo "Stable Toolset release tags must use MAJOR.MINOR format (for example 2.0): $tag" >&2
+          if ! [[ "$tag" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "Stable Toolset release tags must use MAJOR.MINOR or MAJOR.MINOR.PATCH format (for example 2.0 or 2.0.1): $tag" >&2
             exit 1
           fi
 
