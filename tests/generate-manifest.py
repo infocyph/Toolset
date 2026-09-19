@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / os.environ.get("DIST_DIR", "dist")
-SUITE_VERSION = os.environ.get("SUITE_VERSION", "2.0")
+SUITE_VERSION = os.environ.get("SUITE_VERSION", "2.0.1")
 RELEASE_TAG = os.environ.get("RELEASE_TAG", "")
 SOURCE_COMMIT = os.environ.get("SOURCE_COMMIT", "")
 
