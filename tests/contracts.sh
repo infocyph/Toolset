@@ -24,7 +24,7 @@ mkdir -p -- "$REPORT_DIR"
 TMP_HOME="$(mktemp -d)"
 trap 'rm -rf -- "$TMP_HOME"' EXIT
 
-EXPECTED_VERSION="${TOOLSET_EXPECTED_VERSION:-2.0}"
+EXPECTED_VERSION="${TOOLSET_EXPECTED_VERSION:-2.0.1}"
 failures=0
 
 run_flag() {
